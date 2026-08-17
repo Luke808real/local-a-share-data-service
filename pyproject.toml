@@ -1,0 +1,16 @@
+[project]
+name = "local-a-share-market-data-service"
+version = "0.0.0"
+description = "Local A-share market facts service runtime"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cnequity @ git+https://github.com/rootSunc/CNEquity.git@a18ee0484dfb0801650175471724def3228b8a17",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.4.2",
+]
+
+[tool.uv]
+package = false
