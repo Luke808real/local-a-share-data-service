@@ -1,10 +1,16 @@
+import ast
 import importlib
+import importlib.util
 import importlib.metadata as metadata
 import json
+import sqlite3
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +25,7 @@ LEGACY_ROOTS = (
 )
 CONFIG_PATH = ROOT / "config" / "cnequity.toml"
 CONTRACT_PATH = ROOT / "docs" / "contracts" / "R2_CNEQUITY_BASELINE_CONTRACT.md"
+VERIFIER_PATH = ROOT / "tools" / "verify_r2_baseline.py"
 PINNED_REQUIREMENT = (
     "cnequity @ git+https://github.com/rootSunc/CNEquity.git@"
     f"{UPSTREAM_SHA}"
@@ -48,6 +55,56 @@ def _mapping_keys(value: object) -> set[str]:
     for child in value.values():
         keys.update(_mapping_keys(child))
     return keys
+
+
+def _load_r2_baseline_verifier():
+    assert VERIFIER_PATH.is_file()
+    spec = importlib.util.spec_from_file_location("r2_baseline_verifier", VERIFIER_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _make_synthetic_zero_data_baseline(tmp_path: Path, verifier):
+    root = tmp_path / "zero-data-root"
+    for relative_dir in sorted(
+        verifier.EXPECTED_DIRECTORIES,
+        key=lambda value: (len(Path(value).parts), value),
+    ):
+        (root / relative_dir).mkdir(parents=True, exist_ok=True)
+
+    manifest_path = root / "meta" / "manifest.db"
+    with sqlite3.connect(manifest_path) as connection:
+        connection.execute(
+            "CREATE TABLE ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE ingestion_batches (run_id TEXT NOT NULL, batch_id TEXT NOT NULL)"
+        )
+
+    import duckdb
+
+    duckdb_path = root / "duckdb" / "cnequity.duckdb"
+    connection = duckdb.connect(str(duckdb_path))
+    try:
+        for view_name in verifier.EXPECTED_DUCKDB_VIEWS:
+            quoted_name = '"' + view_name.replace('"', '""') + '"'
+            connection.execute(
+                f"CREATE VIEW {quoted_name} AS "
+                "SELECT CAST(NULL AS VARCHAR) AS _empty WHERE FALSE"
+            )
+    finally:
+        connection.close()
+
+    config_path = tmp_path / "cnequity.toml"
+    config_path.write_text(
+        f'[data]\nroot = "{root.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    return root, config_path
 
 
 def test_python_version_selects_cpython_312_line():
@@ -343,3 +400,113 @@ def test_baseline_contract_freezes_fail_closed_status_and_turnover_contracts():
         "Provider selection, ingestion, and reconciliation belong to R4",
     ]:
         assert phrase.casefold() in normalized_text
+
+
+def test_zero_data_verifier_accepts_clean_synthetic_layout_without_tree_change(tmp_path):
+    verifier = _load_r2_baseline_verifier()
+    root, config_path = _make_synthetic_zero_data_baseline(tmp_path, verifier)
+    before = verifier.snapshot_tree(root)
+
+    result = verifier.verify_baseline(config_path)
+
+    assert result["zero_market_data"] is True
+    assert result["tree_unchanged"] is True
+    assert result["manifest"]["ingestion_runs"] == 0
+    assert result["manifest"]["ingestion_batches"] == 0
+    assert result["published_state"] == {"state_files": []}
+    assert result["duckdb"]["physical_tables"] == []
+    assert result["duckdb"]["views"] == sorted(verifier.EXPECTED_DUCKDB_VIEWS)
+    assert result["direct_url_commit"] == UPSTREAM_SHA
+    assert before == verifier.snapshot_tree(root)
+
+
+@pytest.mark.parametrize(
+    "relative_file",
+    ["meta/source_snapshots/unexpected.json", "meta/on_demand/unexpected.json"],
+)
+def test_zero_data_verifier_rejects_unexpected_source_and_on_demand_files(
+    tmp_path, relative_file
+):
+    verifier = _load_r2_baseline_verifier()
+    root, config_path = _make_synthetic_zero_data_baseline(tmp_path, verifier)
+    (root / relative_file).write_text("unexpected", encoding="utf-8")
+
+    with pytest.raises(verifier.VerificationError, match="unexpected regular file"):
+        verifier.verify_baseline(config_path)
+
+
+def test_zero_data_verifier_rejects_nonempty_manifest_wal(tmp_path):
+    verifier = _load_r2_baseline_verifier()
+    root, config_path = _make_synthetic_zero_data_baseline(tmp_path, verifier)
+    (root / "meta" / "manifest.db-wal").write_bytes(b"uncheckpointed")
+
+    with pytest.raises(verifier.VerificationError, match="non-empty SQLite WAL"):
+        verifier.verify_baseline(config_path)
+
+
+def test_zero_data_verifier_rejects_unobserved_zero_byte_sidecars(tmp_path):
+    verifier = _load_r2_baseline_verifier()
+    root, config_path = _make_synthetic_zero_data_baseline(tmp_path, verifier)
+    (root / "meta" / "manifest.db-shm").write_bytes(b"")
+
+    with pytest.raises(verifier.VerificationError, match="unexpected regular file"):
+        verifier.verify_baseline(config_path)
+
+
+def test_zero_data_verifier_rejects_symlinks_and_path_escapes(tmp_path):
+    verifier = _load_r2_baseline_verifier()
+    root, config_path = _make_synthetic_zero_data_baseline(tmp_path, verifier)
+    (root / "raw" / "escape").symlink_to(tmp_path / "outside")
+
+    with pytest.raises(verifier.VerificationError, match="symlink"):
+        verifier.verify_baseline(config_path)
+
+
+def test_zero_data_verifier_source_has_only_read_only_database_access():
+    source = VERIFIER_PATH.read_text(encoding="utf-8")
+    parsed = ast.parse(source)
+
+    imported_modules = {
+        node.module
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    assert not any(module.startswith("cnequity.") for module in imported_modules)
+
+    names = {node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)}
+    assert {"Manifest", "StateStore", "ensure_duckdb_views"}.isdisjoint(names)
+
+    sqlite_connects = [
+        node
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "sqlite3"
+        and node.func.attr == "connect"
+    ]
+    assert len(sqlite_connects) == 1
+    assert any(
+        keyword.arg == "uri"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is True
+        for keyword in sqlite_connects[0].keywords
+    )
+    assert "mode=ro&immutable=1" in source
+
+    duckdb_connects = [
+        node
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "duckdb"
+        and node.func.attr == "connect"
+    ]
+    assert len(duckdb_connects) == 1
+    assert any(
+        keyword.arg == "read_only"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is True
+        for keyword in duckdb_connects[0].keywords
+    )

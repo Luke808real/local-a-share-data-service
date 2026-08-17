@@ -68,6 +68,19 @@ empty views. Thus the DuckDB file is a writable-layout artifact during
 initialization, while the zero-data R2 baseline is view-only metadata with no
 market-data rows.
 
+### Observed Task 3 layout-only facts
+
+The authorized layout command was run once against the configured root. Its
+post-layout inventory contained exactly the documented directories plus
+`meta/manifest.db` (28,672 B) and `duckdb/cnequity.duckdb` (274,432 B). No
+`manifest.db-wal`, `manifest.db-shm`, or DuckDB WAL sidecar was observed.
+
+The authorized doctor probe left no `.cne_write_probe`, sidecar, entry, or
+file-content change. It changed only the authoritative root directory mtime and
+ctime, as expected from creating and unlinking that probe. The layout remains
+zero-data: all data-bearing directories are empty, both manifest ingestion
+counts are zero, and DuckDB contains views only.
+
 ## R2 zero-data and no-legacy-reuse invariants
 
 `zero-market-data` is an R2 invariant: Task 2 creates no root, invokes no
