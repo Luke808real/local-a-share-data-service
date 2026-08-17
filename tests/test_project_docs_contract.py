@@ -8,6 +8,7 @@ REQUIRED_FILES = [
     "docs/ROADMAP.md",
     "docs/PROJECT_STATE.md",
     "docs/DECISIONS.md",
+    "reports/audits/R1_LOCAL_ASSET_AUDIT_INDEPENDENT_REPORT.md",
 ]
 
 
@@ -25,14 +26,15 @@ def test_master_spec_is_frozen_v1():
     assert "LOCAL_DATA_MVP" in text
 
 
-def test_project_state_hands_off_blocked_r1_for_independent_audit():
+def test_project_state_activates_r2_after_r1_audit_pass():
     text = (ROOT / "docs/PROJECT_STATE.md").read_text(encoding="utf-8")
     assert "AS_OF: 2026-08-18" in text
-    assert "CURRENT_PHASE: R1 — LOCAL ASSET AUDIT" in text
+    assert "CURRENT_PHASE: R2 — CNEQUITY BASELINE" in text
+    assert "R2_EXECUTION: NOT_STARTED" in text
     assert "R0 AUDIT_PASS — exact commit" in text
     assert "0a96271b1a62cf1e2ab4e6eae48b3905c3601414" in text
     assert "independently reviewed via GitHub by GPT-5.6 Sol on 2026-08-17." in text
-    assert "BRANCH: research/r1-local-asset-audit" in text
+    assert "BRANCH: main" in text
     assert "STATUS: CONTRACT_AUDITED_WITH_BLOCKERS" in text
     assert "VERSION: v0.7.2" in text
     assert "SHA: a18ee0484dfb0801650175471724def3228b8a17" in text
@@ -48,12 +50,31 @@ def test_project_state_hands_off_blocked_r1_for_independent_audit():
         "industry: REJECT — ABSENT_PRIMARY_SW_INDUSTRY",
         "index: CROSSCHECK_ONLY",
         "READONLY_BREACH_INDETERMINATE",
-        "AUTHOR_STATUS: BLOCKED",
-        "independent audit of the exact R1 commit",
-        "DO_NOT_ACTIVATE_R2",
+        "OWNER_RECOVERY: AUTHORIZED_AND_COMPLETED",
+        "R1 AUDIT_PASS — exact pushed commit",
+        "09e9254042ad747983d40d794595135fb58e2d80",
+        "Prepare and independently review the R2 CNEQUITY BASELINE implementation plan",
+        "Do not execute R3 before R2 AUDIT_PASS",
     ]:
         assert phrase in text
-    assert "R1 AUDIT_PASS" not in text
+    assert "R2 AUDIT_PASS — exact pushed commit" not in text
+
+
+def test_r1_independent_audit_report_records_exact_commit_and_recovery():
+    text = (
+        ROOT / "reports/audits/R1_LOCAL_ASSET_AUDIT_INDEPENDENT_REPORT.md"
+    ).read_text(encoding="utf-8")
+    for phrase in [
+        "R1: AUDIT_PASS",
+        "09e9254042ad747983d40d794595135fb58e2d80",
+        "R1_EXIT_GATE: SATISFIED",
+        "R2_ACTIVATION: ALLOWED_WITH_FAIL_CLOSED_CARRY_FORWARD",
+        "READONLY_BREACH_INDETERMINATE",
+        "manifest.db-wal",
+        "manifest.db-shm",
+        "OWNER_RECOVERY",
+    ]:
+        assert phrase in text
 
 
 def test_agents_contract_contains_hard_boundaries():
