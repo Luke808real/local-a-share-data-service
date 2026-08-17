@@ -161,6 +161,8 @@ def _footer_column_values(
     metadata: object,
     field_names: tuple[str, ...],
     value_normaliser: object,
+    *,
+    constant_only: bool = False,
 ) -> tuple[tuple[str, ...] | None, bool]:
     values: list[str] = []
     field_seen = False
@@ -188,7 +190,13 @@ def _footer_column_values(
         if minimum is None or maximum is None:
             complete = False
             continue
-        values.extend((minimum, maximum))
+        if constant_only:
+            if minimum != maximum:
+                complete = False
+                continue
+            values.append(minimum)
+        else:
+            values.extend((minimum, maximum))
     if not field_seen or not complete or not values:
         return None, False
     return tuple(values), True
@@ -246,10 +254,16 @@ def _footer_metadata(
                 metadata, ("trade_date", "date"), _normalise_date
             )
             sources, source_complete = _footer_column_values(
-                metadata, ("source", "provider"), _normalise_scalar
+                metadata,
+                ("source", "provider"),
+                _normalise_scalar,
+                constant_only=True,
             )
             versions, version_complete = _footer_column_values(
-                metadata, ("data_version", "provider_version"), _normalise_scalar
+                metadata,
+                ("data_version", "provider_version"),
+                _normalise_scalar,
+                constant_only=True,
             )
         except Exception as error:  # Reader failures are reported, never repaired.
             errors.append(f"{path.name}: {type(error).__name__}")

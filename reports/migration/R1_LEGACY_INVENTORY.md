@@ -24,7 +24,7 @@ The sidecars were left untouched. No deletion, repair, compaction, or follow-up 
 
 | Legacy root | Root metadata | Scoped storage observations | Read-only result |
 |---|---:|---|---|
-| `/Users/luke808/AI/asl-shared` | 9,208 files / 266,997,438 B | Dataset paths not supplied; bounded footer evidence listed below | `READONLY_BREACH_INDETERMINATE` |
+| `/Users/luke808/AI/asl-shared` | 9,208 files / 266,997,438 B | Bounded `curated/` and `derived/` footer evidence listed below | `READONLY_BREACH_INDETERMINATE` |
 | `/Users/luke808/AI/asl-r8-5m-lake` | 85 files / 10,449,522 B | Curated 5m Parquet, staging 5m Parquet, metadata SQLite, DuckDB file | Root/direct-child mtimes unchanged; no audit write observed |
 | `/Users/luke808/AI/V flash/data` | 166,226 files / 36,891,393,771 B | Allowed base-market scope: canonical/raw/manifests/lineage/validation plus metadata-only `warehouse.duckdb` | Root/direct-child mtimes unchanged; no audit write observed |
 
@@ -36,13 +36,13 @@ All rows in this section carry `READONLY_BREACH_INDETERMINATE`.
 
 | Dataset | Storage / footer facts | Date coverage proved | Schema / provenance facts | Limits |
 |---|---|---|---|---|
-| instruments | 1 Parquet / 7,736 footer rows | `UNKNOWN` | Schema, source, data-version, distinct symbols `UNKNOWN` | No identity/coverage proof |
-| trading_calendar | 5 Parquet / 1,462 footer rows | 2023-08-07 to 2027-08-07 | Schema and calendar semantic `UNKNOWN` | Does not establish observed daily/5m completeness |
-| daily_bars | 732 Parquet / 4,887,134 footer rows | 2023-08-07 to 2026-08-13 | `symbol,date,OHLC,volume,amount,source,data_version,fetched_at` | Units, PK, distinct symbols, expected coverage `UNKNOWN` |
-| adj_factors | 732 Parquet / 4,866,238 footer rows | 2023-08-07 to 2026-08-13 | Schema/source/data-version `UNKNOWN` | Factor semantic, PK, coverage `UNKNOWN` |
+| instruments | `curated/instruments`: 1 Parquet / 7,736 footer rows | `UNKNOWN` | `symbol,name,exchange,asset_type,list_date,delist_date,prev_symbol,source,data_version,fetched_at`; source `sina`, data version `v1` | Distinct symbols and expected identity/coverage `UNKNOWN` |
+| trading_calendar | `curated/trading_calendar`: 5 Parquet / 1,462 footer rows | 2023-08-07 to 2027-08-07 | `trade_date,is_trading,source,data_version,fetched_at`; source `exchange_calendar`, data version `v1` | Calendar semantic does not establish observed daily/5m completeness |
+| daily_bars | `curated/daily_bars`: 732 Parquet / 4,887,134 footer rows | 2023-08-07 to 2026-08-13 | `symbol,trade_date,open,high,low,close,volume,amount,source,data_version,fetched_at`; data version `v2`; footer source range included `sina` through `tdx_protocol` | Source set is not enumerated by a footer range; units, PK, distinct symbols, and expected coverage `UNKNOWN` |
+| adj_factors | `derived/adj_factors`: 732 Parquet / 4,866,238 footer rows | 2023-08-07 to 2026-08-13 | `trade_date,factor,symbol,adjust_type,data_version,fetched_at,source`; source `sina`, data version `v1` | Factor semantic, PK, and coverage `UNKNOWN` |
 | corporate_actions | 37 Parquet / 70,455 footer rows | 1990-03-01 to 2026-08-17 | Schema/provenance `UNKNOWN` | No adjustment-contract conclusion |
-| trading_status | 37 Parquet / 371,778 footer rows | 2023-08-08 to 2026-08-13 | Schema/status semantic/provenance `UNKNOWN` | No mapping to V1 historical status enum |
-| index_bars | 4 Parquet / 5,856 footer rows | 2023-08-07 to 2026-08-13 | Schema/provenance/index universe `UNKNOWN` | Expected index set not proved |
+| trading_status | `curated/trading_status`: 37 Parquet / 371,778 footer rows | 2023-08-08 to 2026-08-13 | `symbol,trade_date,is_trading,status,source,data_version,fetched_at`; data version `v1` | Source set `UNKNOWN`, including derived-bar-gap groups; no mapping to V1 historical status enum |
+| index_bars | `curated/index_bars`: 4 Parquet / 5,856 footer rows | 2023-08-07 to 2026-08-13 | OHLCV, amount, frequency, and provenance fields; source `tdx_protocol`, data version `v1` | Units, index universe, and expected coverage not proved |
 | minute_bars_5m | Absent in supplied evidence | `UNKNOWN` | `UNKNOWN` | No 5m asset evidence |
 | turnover / float_shares | Absent in supplied evidence | `UNKNOWN` | `UNKNOWN` | No turnover or float-share evidence |
 | SW industry membership | Absent in supplied evidence | `UNKNOWN` | `UNKNOWN` | No primary-industry membership evidence |
@@ -74,7 +74,7 @@ All curated footer statistics show non-null `frequency=5m`, `source=tdx_protocol
 | `meta/state/minute_bars_5m.json` | `last_success_trade_date=2026-07-30` | Not an expected-calendar completeness proof |
 | `duckdb/ashare-lake.duckdb` | 274,432 B; raw catalog bytes identified a `minute_bars_5m` view over curated Parquet | DuckDB reader/catalog query unavailable; byte-string observation is not a formal catalog query |
 
-The root's `backups/`, `derived/`, and `raw/` directories contained no files in the bounded inventory. Current reader limitation: no installed DuckDB/PyArrow reader was available; an in-memory footer parser read no row pages and no packages were installed.
+The root's `backups/`, `derived/`, and `raw/` directories contained no files in the bounded inventory. Reader limitation: the selected interpreter used by the r8 audit worker lacked DuckDB/PyArrow, so that worker used an in-memory custom footer parser, read no row pages, and installed no packages.
 
 ## `/Users/luke808/AI/V flash/data` base-market scope only
 

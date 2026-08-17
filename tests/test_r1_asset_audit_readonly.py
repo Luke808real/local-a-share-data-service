@@ -1,4 +1,5 @@
 import ast
+from datetime import date
 import importlib.util
 from pathlib import Path
 import sys
@@ -82,6 +83,34 @@ def test_synthetic_inventory_does_not_create_files_inside_target(tmp_path):
     assert record.row_count_or_unknown == "UNKNOWN"
     assert record.symbol_count_or_unknown == "UNKNOWN"
     assert record.reader_status in {"READER_UNAVAILABLE", "READER_ERROR"}
+    assert tree_snapshot(target) == before
+
+
+def test_footer_categorical_provenance_requires_constant_values(tmp_path):
+    pyarrow = pytest.importorskip("pyarrow")
+    parquet = pytest.importorskip("pyarrow.parquet")
+    audit = load_audit_module()
+    target = tmp_path / "legacy"
+    dataset = target / "daily_bars"
+    dataset.mkdir(parents=True)
+    parquet.write_table(
+        pyarrow.table(
+            {
+                "symbol": ["000001.SZ", "000002.SZ"],
+                "trade_date": [date(2024, 1, 2), date(2024, 1, 2)],
+                "source": ["alpha", "beta"],
+                "data_version": ["v1", "v1"],
+            }
+        ),
+        dataset / "part-000.parquet",
+    )
+    before = tree_snapshot(target)
+
+    record = audit.discover_datasets(target, max_depth=2)[0]
+
+    assert record.reader_status == "FOOTER_METADATA"
+    assert record.source_values_or_unknown == audit.UNKNOWN
+    assert record.data_version_values_or_unknown == ("v1",)
     assert tree_snapshot(target) == before
 
 
