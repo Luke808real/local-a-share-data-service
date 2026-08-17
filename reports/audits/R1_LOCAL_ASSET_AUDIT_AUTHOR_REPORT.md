@@ -16,7 +16,7 @@ This is author status only. It is not `AUDIT_PASS`, reuse authorization, migrati
 
 ## HEAD_BEFORE_FINAL_COMMIT
 
-`58717019bb6faae9f1c5c667d25987b11b627b8c`
+`5230c41643f7244af20ec19377eb0646a6eb8763`
 
 ## UPSTREAM_CNEQUITY
 
@@ -70,7 +70,7 @@ Daily, adjustment, status, 5m, turnover, index, instruments, and primary SW memb
 
 ## PROHIBITIONS_CONFIRMED
 
-No legacy data rows were accessed for this handoff. No SQLite/DuckDB was opened. No legacy file was deleted, repaired, compacted, moved, renamed, or copied. No R2 work, data-root initialization, download, backfill, cleanup, push, or commit amendment occurred.
+No legacy data rows were accessed for this handoff. No SQLite/DuckDB was opened. No legacy file was deleted, repaired, compacted, moved, renamed, or copied. During authoring and before the final commit, no R2 work, data-root initialization, download, backfill, cleanup, push, or commit amendment occurred. Subsequent controller publication of the exact reviewed commit is allowed; it does not imply a successful push and does not authorize R2 or data work.
 
 ## TESTS
 
