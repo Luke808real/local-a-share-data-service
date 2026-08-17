@@ -3,14 +3,14 @@
 AS_OF: 2026-08-18
 SPEC_VERSION: V1.0 FROZEN
 
-CURRENT_PHASE: R2 — CNEQUITY BASELINE
-R2_EXECUTION: AUTHOR_VERIFICATION_COMPLETE
+CURRENT_PHASE: R3 — DAILY FOUNDATION
+R3_EXECUTION: NOT_STARTED
 
 ## CODE
 
-BRANCH: codex/r2-cnequity-baseline-v01
+BRANCH: main
 HEAD: SELF — commit containing this file
-WORKTREE: CLEAN_AFTER_FINAL_COMMIT
+WORKTREE: DIRTY (pre-existing local-only untracked files; tracked tree clean)
 
 ## UPSTREAM_CNEQUITY
 
@@ -57,23 +57,24 @@ The exact 0 B WAL and 32,768 B SHM sidecars were moved to macOS Trash with
 matching inodes; `manifest.db` size, inode, mtime, and ctime remained unchanged.
 This recovery does not convert the R1 audit into strict read-only PASS.
 
-## R2_CARRY_FORWARD
+## CROSS_PHASE_CARRY_FORWARD
 
 1. on_demand.enabled=false is not an enforceable network guard at this pin;
    upstream query, MCP, and live interfaces remain excluded until R8 installs
    and tests a local-only guard.
 2. Trading-status and turnover contracts are frozen fail-closed. Provider selection, coverage proof, and implementation remain R4 work.
-3. No legacy migration input is authorized. The legacy roots remain excluded
-   and non-authoritative for R2.
+3. No legacy migration input is authorized. R1 assets remain `CROSSCHECK_ONLY`
+   or `REJECT`; R3 must not copy or normalize them as canonical rows.
 4. The initialized root is layout-only zero-data: manifest ingestion runs and
    batches are zero, and DuckDB contains metadata views only.
 
-## R2_AUTHOR_HANDOFF
+## R2_AUDIT
 
 R2_AUTHOR_STATUS: PASS — AUTHOR_ONLY
-R2_AUDIT_STATUS: INDEPENDENT_AUDIT_PENDING
+R2_AUDIT_STATUS: AUDIT_PASS
+AUDITED_COMMIT: e354f59297cc2cf9722304f39a315712761d4b91
 AUTHOR_REPORT: reports/audits/R2_CNEQUITY_BASELINE_AUTHOR_REPORT.md
-This author result is not independent audit approval and does not authorize R3.
+INDEPENDENT_REPORT: reports/audits/R2_CNEQUITY_BASELINE_INDEPENDENT_REPORT.md
 
 LAST_AUDIT:
 R0 AUDIT_PASS — exact commit
@@ -82,7 +83,11 @@ independently reviewed via GitHub by GPT-5.6 Sol on 2026-08-17.
 R1 AUDIT_PASS — exact pushed commit
 09e9254042ad747983d40d794595135fb58e2d80
 independently reviewed by GPT-5.6 Terra/max and adjudicated by the GPT-5.6 Sol root on 2026-08-18.
+R2 AUDIT_PASS — exact pushed commit
+e354f59297cc2cf9722304f39a315712761d4b91
+independently reviewed by GPT-5.6 Terra/max and adjudicated by the GPT-5.6 Sol root on 2026-08-18.
 
 NEXT_ACTION:
-After a non-force review-branch push, independently audit the exact pushed R2
-final commit. DO_NOT_EXECUTE_R3 before R2 AUDIT_PASS.
+Prepare and independently audit the R3 DAILY FOUNDATION implementation plan,
+then execute R3 without treating R1 crosscheck evidence as migration input.
+Do not execute R4 before R3 AUDIT_PASS.

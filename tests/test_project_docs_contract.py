@@ -17,6 +17,7 @@ REQUIRED_FILES = [
     "tools/verify_r2_baseline.py",
     "reports/audits/R1_LOCAL_ASSET_AUDIT_INDEPENDENT_REPORT.md",
     "reports/audits/R2_CNEQUITY_BASELINE_AUTHOR_REPORT.md",
+    "reports/audits/R2_CNEQUITY_BASELINE_INDEPENDENT_REPORT.md",
 ]
 
 
@@ -34,17 +35,17 @@ def test_master_spec_is_frozen_v1():
     assert "LOCAL_DATA_MVP" in text
 
 
-def test_project_state_records_r2_author_handoff_without_audit_claim():
+def test_project_state_activates_r3_after_r2_audit_pass():
     text = (ROOT / "docs/PROJECT_STATE.md").read_text(encoding="utf-8")
     assert "AS_OF: 2026-08-18" in text
-    assert "CURRENT_PHASE: R2 — CNEQUITY BASELINE" in text
-    assert "R2_EXECUTION: AUTHOR_VERIFICATION_COMPLETE" in text
+    assert "CURRENT_PHASE: R3 — DAILY FOUNDATION" in text
+    assert "R3_EXECUTION: NOT_STARTED" in text
     assert "R0 AUDIT_PASS — exact commit" in text
     assert "0a96271b1a62cf1e2ab4e6eae48b3905c3601414" in text
     assert "independently reviewed via GitHub by GPT-5.6 Sol on 2026-08-17." in text
-    assert "BRANCH: codex/r2-cnequity-baseline-v01" in text
+    assert "BRANCH: main" in text
     assert "HEAD: SELF — commit containing this file" in text
-    assert "WORKTREE: CLEAN_AFTER_FINAL_COMMIT" in text
+    assert "WORKTREE: DIRTY (pre-existing local-only untracked files; tracked tree clean)" in text
     assert "STATUS: BASELINE_PINNED" in text
     assert "VERSION: v0.7.2" in text
     assert "SHA: a18ee0484dfb0801650175471724def3228b8a17" in text
@@ -71,17 +72,19 @@ def test_project_state_records_r2_author_handoff_without_audit_claim():
         "R1 AUDIT_PASS — exact pushed commit",
         "09e9254042ad747983d40d794595135fb58e2d80",
         "R2_AUTHOR_STATUS: PASS — AUTHOR_ONLY",
-        "R2_AUDIT_STATUS: INDEPENDENT_AUDIT_PENDING",
+        "R2_AUDIT_STATUS: AUDIT_PASS",
+        "AUDITED_COMMIT: e354f59297cc2cf9722304f39a315712761d4b91",
         "reports/audits/R2_CNEQUITY_BASELINE_AUTHOR_REPORT.md",
+        "reports/audits/R2_CNEQUITY_BASELINE_INDEPENDENT_REPORT.md",
+        "R2 AUDIT_PASS — exact pushed commit",
         "on_demand.enabled=false is not an enforceable network guard",
         "Provider selection, coverage proof, and implementation remain R4 work",
         "No legacy migration input is authorized",
-        "DO_NOT_EXECUTE_R3 before R2 AUDIT_PASS",
+        "Prepare and independently audit the R3 DAILY FOUNDATION implementation plan",
+        "Do not execute R4 before R3 AUDIT_PASS",
     ]:
         assert phrase in text
-    assert "R2_AUDIT_STATUS: AUDIT_PASS" not in text
-    assert "CURRENT_PHASE: R3 —" not in text
-    assert "R3_EXECUTION: ACTIVE" not in text
+    assert "R3 AUDIT_PASS — exact pushed commit" not in text
     assert "R3_EXECUTION: COMPLETE" not in text
 
 
@@ -128,6 +131,26 @@ def test_r2_author_report_is_complete_and_not_an_independent_audit():
         "R8",
         "R4",
         "reports/audits/R2_CNEQUITY_BASELINE_AUTHOR_REPORT.md",
+    ]:
+        assert phrase in text
+
+
+def test_r2_independent_audit_report_records_exact_commit_and_zero_data_gate():
+    text = (
+        ROOT / "reports/audits/R2_CNEQUITY_BASELINE_INDEPENDENT_REPORT.md"
+    ).read_text(encoding="utf-8")
+    for phrase in [
+        "R2: AUDIT_PASS",
+        "e354f59297cc2cf9722304f39a315712761d4b91",
+        "a21614f825e07adb69cd0269ee786bdf0ad0f5c1",
+        "26 passed",
+        "ingestion_runs=0",
+        "ingestion_batches=0",
+        "43 DuckDB views",
+        "0 physical tables",
+        "R2_EXIT_GATE: SATISFIED",
+        "R3_ACTIVATION: ALLOWED_ADMINISTRATIVE_ONLY",
+        "No P0, P1, P2, or P3 defect",
     ]:
         assert phrase in text
 
