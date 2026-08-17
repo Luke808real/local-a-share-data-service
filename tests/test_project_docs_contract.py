@@ -31,3 +31,15 @@ def test_project_state_declares_r0_independent_audit_pending():
     assert "LAST_AUDIT: R0 author verification complete; independent audit pending." in text
     assert "NEXT_ACTION: Independent audit of the exact pushed R0 review commit." in text
     assert "Do not execute R1 before AUDIT_PASS." in text
+
+
+def test_agents_contract_contains_hard_boundaries():
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    for phrase in [
+        "docs/MASTER_SPEC.md",
+        "docs/PROJECT_STATE.md",
+        "FULL_MARKET_AUTHORIZED = YES",
+        "DESIGN_DECISION_REQUIRED",
+        "B1/B2",
+    ]:
+        assert phrase in text
