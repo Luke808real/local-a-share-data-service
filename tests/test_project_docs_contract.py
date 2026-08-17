@@ -25,12 +25,18 @@ def test_master_spec_is_frozen_v1():
     assert "LOCAL_DATA_MVP" in text
 
 
-def test_project_state_declares_r0_independent_audit_pending():
+def test_project_state_activates_r1_after_r0_audit_pass():
     text = (ROOT / "docs/PROJECT_STATE.md").read_text(encoding="utf-8")
-    assert "CURRENT_PHASE: R0 — SPEC FREEZE" in text
-    assert "LAST_AUDIT: R0 author verification complete; independent audit pending." in text
-    assert "NEXT_ACTION: Independent audit of the exact pushed R0 review commit." in text
-    assert "Do not execute R1 before AUDIT_PASS." in text
+    assert "CURRENT_PHASE: R1 — LOCAL ASSET AUDIT" in text
+    assert "R0 AUDIT_PASS — exact commit" in text
+    assert "0a96271b1a62cf1e2ab4e6eae48b3905c3601414" in text
+    assert "independently reviewed via GitHub by GPT-5.6 Sol on 2026-08-17." in text
+    assert "Prepare and execute the approved R1 LOCAL ASSET AUDIT plan" in text
+    assert "in strict read-only mode." in text
+    assert "STATUS: NOT_INITIALIZED" in text
+    assert "STATUS: NOT_AUDITED" in text
+    assert "NOT_PUBLISHED" in text
+    assert "R1 AUDIT_PASS" not in text
 
 
 def test_agents_contract_contains_hard_boundaries():

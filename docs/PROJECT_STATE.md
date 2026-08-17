@@ -3,7 +3,7 @@
 AS_OF: 2026-08-17
 SPEC_VERSION: V1.0 FROZEN
 
-CURRENT_PHASE: R0 — SPEC FREEZE
+CURRENT_PHASE: R1 — LOCAL ASSET AUDIT
 
 ## CODE
 BRANCH: main
@@ -35,7 +35,11 @@ NOT_PUBLISHED
 1. Legacy asset compatibility and coverage are not yet audited.
 2. Current CNEquity upstream contract/version is not yet audited.
 
-LAST_AUDIT: R0 author verification complete; independent audit pending.
+LAST_AUDIT:
+R0 AUDIT_PASS — exact commit
+0a96271b1a62cf1e2ab4e6eae48b3905c3601414
+independently reviewed via GitHub by GPT-5.6 Sol on 2026-08-17.
 
-NEXT_ACTION: Independent audit of the exact pushed R0 review commit.
-Do not execute R1 before AUDIT_PASS.
+NEXT_ACTION:
+Prepare and execute the approved R1 LOCAL ASSET AUDIT plan
+in strict read-only mode.
