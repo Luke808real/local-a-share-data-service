@@ -12,6 +12,11 @@ UPSTREAM_REPOSITORY = "https://github.com/rootSunc/CNEquity.git"
 UPSTREAM_SHA = "a18ee0484dfb0801650175471724def3228b8a17"
 CNEQUITY_VERSION = "0.7.2"
 DATA_ROOT = Path("/Users/luke808/AI/local-a-share-data-service-data")
+LEGACY_ROOTS = (
+    Path("/Users/luke808/AI/asl-shared"),
+    Path("/Users/luke808/AI/asl-r8-5m-lake"),
+    Path("/Users/luke808/AI/V flash/data"),
+)
 CONFIG_PATH = ROOT / "config" / "cnequity.toml"
 CONTRACT_PATH = ROOT / "docs" / "contracts" / "R2_CNEQUITY_BASELINE_CONTRACT.md"
 PINNED_REQUIREMENT = (
@@ -131,6 +136,7 @@ def test_config_freezes_only_the_bounded_r2_runtime_surface():
         "orchestrator",
         "tdx_protocol",
         "sources",
+        "adj_factors",
         "universe",
         "minute_bars",
         "trade_ticks",
@@ -168,6 +174,7 @@ def test_config_freezes_only_the_bounded_r2_runtime_surface():
             "batch_rest_seconds": 120,
         },
     }
+    assert config["adj_factors"] == {"source": "sina", "adjust_types": ["hfq"]}
     assert config["universe"] == {"default": "all_a"}
     assert config["minute_bars"] == {
         "enabled": False,
@@ -193,6 +200,16 @@ def test_config_freezes_only_the_bounded_r2_runtime_surface():
     config_keys = {key.lower().replace("-", "_") for key in _mapping_keys(config)}
     assert FORBIDDEN_CONFIG_KEYS.isdisjoint(config_keys)
     assert "proxy" not in CONFIG_PATH.read_text(encoding="utf-8").lower()
+
+
+def test_configured_data_root_is_statically_disjoint_from_legacy_roots():
+    config_root = Path(_read_toml(CONFIG_PATH)["data"]["root"])
+
+    assert config_root == DATA_ROOT
+    for legacy_root in LEGACY_ROOTS:
+        # These are lexical Path comparisons only: no exists(), stat(), or resolve().
+        assert config_root != legacy_root
+        assert not config_root.is_relative_to(legacy_root)
 
 
 def test_config_daily_waves_are_minimal_and_pinned_validator_accepts_them():
@@ -258,6 +275,7 @@ def test_baseline_contract_records_runtime_layout_and_local_only_boundary():
         "uv.lock",
         "direct_url.json",
         str(DATA_ROOT),
+        *(str(path) for path in LEGACY_ROOTS),
         "staging/",
         "curated/",
         "derived/",
@@ -281,6 +299,12 @@ def test_baseline_contract_records_runtime_layout_and_local_only_boundary():
         "cne query --dataset",
         "--live",
         "R8",
+        "RAW daily authoritative",
+        "HFQ factor",
+        "QFQ/HFQ query derivation",
+        "D007",
+        "D008",
+        "no factor/data execution in R2",
     ]:
         assert phrase in text
 

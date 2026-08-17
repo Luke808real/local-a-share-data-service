@@ -78,10 +78,33 @@ market-data, cache, staging payload, or source snapshot.
 migration input, and no R1 `CROSSCHECK_ONLY` conclusion authorizes a copy,
 normalization, provider choice, or data acquisition.
 
+The following paths are excluded/non-authoritative inputs for R2:
+
+```text
+/Users/luke808/AI/asl-shared
+/Users/luke808/AI/asl-r8-5m-lake
+/Users/luke808/AI/V flash/data
+```
+
+They are boundary labels only in this contract. R2 does not read, list, stat,
+open, hash, copy, modify, or otherwise access them.
+
 The TOML names only future V1-required source/rate-limit blocks. It carries no
 credential, secret, or network-routing setting. Enabling a future source block
 does not select it as a complete or accepted provider for any unresolved R2
 contract.
+
+## Adjustment boundary
+
+`RAW daily authoritative` implements Master Decision D007: stored daily prices
+remain raw/unadjusted market facts. The configured `HFQ factor` source is
+`sina`, and pinned CNEquity stores only `hfq` adjustment factors.
+
+Master Decision D008 keeps the `QFQ/HFQ query derivation` boundary in the
+query layer: HFQ prices derive from raw prices and the stored HFQ factor, while
+QFQ prices derive from raw prices, the HFQ factor, and the symbol's latest HFQ
+anchor. No adjusted-price series becomes a second authoritative stored price.
+There is no factor/data execution in R2.
 
 ## Local-only query boundary
 

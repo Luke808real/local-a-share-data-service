@@ -31,6 +31,10 @@ min_interval_seconds = 1.0
 batch_size = 20
 batch_rest_seconds = 120
 
+[adj_factors]
+source = "sina"
+adjust_types = ["hfq"]
+
 [universe]
 default = "all_a"
 
