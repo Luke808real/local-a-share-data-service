@@ -35,7 +35,7 @@ legacy assets read-only and all unresolved data semantics fail-closed.
 | Authoritative data root | `/Users/luke808/AI/local-a-share-data-service-data` | New, outside Git, outside every legacy root, and absent at plan time. |
 | R2 initialization | `cne init --layout-only` exactly once after preflight | Creates only lake layout, manifest, and DuckDB views; does not run init phases or download data. |
 | macOS workers | `1` | Required by the pinned upstream validator because the TDX client is not fork-safe on macOS. |
-| Query/network defaults | `on_demand.enabled=false`; no MCP `--live`; `tdx_protocol.allow_mock=false` | Query paths must be local-only and fake rows are forbidden. |
+| Query/network defaults | `on_demand.enabled=false`; no MCP `--live`; `tdx_protocol.allow_mock=false`; all pinned upstream query commands excluded through R8 | The config flags are defense in depth only: at this pin `cne query --dataset` ignores `on_demand.enabled` and may fetch/cache remotely. R8 must provide the enforceable local-only guard. |
 | Minute config | disabled in R2; future frequency contract restricted to `5m` | R2 must not fetch data; R5 owns explicit full-market enablement/backfill authorization. |
 
 These choices implement the frozen Spec and do not change D001–D025.
@@ -91,7 +91,17 @@ legacy root. Stop on a SHA mismatch or an existing target path.
 
 ### 1.2 Write RED runtime tests
 
-Create `tests/test_r2_baseline_contract.py` with assertions that:
+Create `tests/test_r2_baseline_contract.py` before the project runtime files.
+Run its initial RED state with this pinned, project-independent runner:
+
+```bash
+uv run --no-project --python 3.12 --with pytest==8.4.2 \
+  pytest -q -p no:cacheprovider tests/test_r2_baseline_contract.py
+```
+
+This may install only the pinned test runner in uv's external cache; it does
+not discover, lock, sync, or install the ASL project and cannot fetch market
+data. The tests assert that:
 
 - `.python-version` selects 3.12;
 - `pyproject.toml` pins CNEquity by the exact immutable Git SHA;
@@ -120,9 +130,11 @@ access. Never install or import from an unpinned CNEquity checkout.
 ### 1.4 Verify runtime
 
 ```bash
-uv run python --version
-uv run python -c "import importlib.metadata as m; print(m.version('cnequity'))"
-uv run cne --version
+uv lock --check --offline
+uv run --frozen --no-sync --offline python --version
+uv run --frozen --no-sync --offline python -c \
+  "import importlib.metadata as m; print(m.version('cnequity'))"
+uv run --frozen --no-sync --offline cne --version
 ```
 
 Expected: CPython 3.12.x and CNEquity 0.7.2. Verify the lock source and installed
@@ -151,7 +163,10 @@ Tests must parse the committed TOML and prove:
 - minute bars are disabled and frequencies are exactly `["5m"]`;
 - no trade-tick, sentiment/news, strategy, or non-V1 collection group is
   enabled;
-- daily/init step references are accepted by pinned CNEquity validation;
+- daily wave/group step references are accepted by pinned CNEquity validation;
+- every configured init phase exists in pinned `INIT_PHASE_STEPS`, every phase
+  expands to a non-empty step list, and every expanded step exists in
+  `STEP_REGISTRY` (upstream `cne config validate` does not check this);
 - the DuckDB path resolves under the authoritative root.
 
 ### 2.2 Create minimal service-owned config
@@ -162,6 +177,10 @@ future approved phases. Do not include credentials or a proxy secret.
 
 The config may declare future network sources and rate limits, but R2 does not
 run them. `allow_mock` remains false. 5m remains disabled until R5.
+`on_demand.enabled=false` is recorded as intent only: pinned
+`cne query --dataset` ignores it, so every upstream query command stays outside
+the executable surface until R8 supplies and tests an enforceable local-only
+adapter. Do not claim the config flag alone prevents network access.
 
 ### 2.3 Freeze baseline contract
 
@@ -174,7 +193,8 @@ Create `docs/contracts/R2_CNEQUITY_BASELINE_CONTRACT.md` recording:
 - manifest SQLite WAL behavior and expected runtime sidecars;
 - DuckDB path and view-only baseline state;
 - config hash/lock hash receipt requirements;
-- local-only query boundary and forbidden `--live` behavior;
+- local-only query boundary, forbidden `--live` behavior, and the pinned
+  `on_demand.enabled` bypass that requires an R8 guard;
 - zero-market-data invariant for R2;
 - no-legacy-reuse invariant.
 
@@ -207,8 +227,11 @@ If exact upstream source contradicts either rule, stop with
 Before the root exists, run only:
 
 ```bash
-uv run cne config validate --config config/cnequity.toml
-uv run cne doctor --config config/cnequity.toml --json
+uv lock --check --offline
+uv run --frozen --no-sync --offline cne config validate \
+  --config config/cnequity.toml
+uv run --frozen --no-sync --offline cne doctor \
+  --config config/cnequity.toml --json
 ```
 
 `config validate` is configuration-only. With a nonexistent root, `doctor`
@@ -241,7 +264,8 @@ legacy root. Stop if any check fails.
 Run exactly:
 
 ```bash
-uv run cne init --config config/cnequity.toml --layout-only
+uv run --frozen --no-sync --offline cne init \
+  --config config/cnequity.toml --layout-only
 ```
 
 Do not omit `--layout-only`. Expected writes are directories, an empty-schema
@@ -256,24 +280,46 @@ It may read/open only the new target root. It must prove and print JSON for:
 - expected directory layout;
 - config and lock SHA-256;
 - manifest schema exists and ingestion run/batch counts are zero;
-- DuckDB file exists and has no market-data rows;
-- no Parquet file exists under staging/curated/derived/raw;
+- DuckDB file exists and contains only the expected empty/view metadata;
+- a full recursive target-root allowlist proves that no market-data/cache file
+  exists anywhere, including `meta/source_snapshots`, `meta/on_demand`,
+  staging, curated, derived, and raw;
 - no `latest_good_as_of` or published batch exists;
 - no path escapes the target root;
 - package version and locked Git SHA match the contract;
 - installed `direct_url.json` proves the immutable Git commit rather than an
   editable, local-path, or PyPI-only origin.
 
+Before opening either database, the verifier must prove the file already exists.
+SQLite may be opened only with a URI containing `mode=ro&immutable=1`; if a
+non-empty WAL exists, stop rather than ignore uncheckpointed state. DuckDB may
+be opened only with `duckdb.connect(path, read_only=True)`. Inspect DuckDB
+catalog metadata only; do not select from dataset views.
+
+The verifier must never instantiate upstream `Manifest`, `StateStore`, or
+`ensure_duckdb_views`, because those are writers at the pin. Capture a complete
+before/after tree snapshot containing relative path, type, size, inode,
+mtime/ctime, and SHA-256 for every file; fail if any entry changes. Reject all
+symlinks and path escapes. The only allowed regular files after layout-only are
+the exact SQLite manifest, DuckDB database, and explicitly observed zero-data
+database sidecars; any Parquet, CSV, JSON cache, staging payload, source
+snapshot, on-demand artifact, or unknown file fails the gate.
+
 Tests must use temporary roots and must not reference or inspect legacy paths.
-The verifier must not create, repair, checkpoint, vacuum, compact, or delete.
+The verifier must not create, repair, checkpoint, vacuum, compact, rename,
+delete, or call any writer helper.
 
 ### 3.4 Doctor and sidecar evidence
 
-Run `cne doctor --json` once against the initialized target. Pinned upstream
+Run the frozen/no-sync/offline `cne doctor --json` once against the initialized target. Pinned upstream
 implements writability checking by creating and removing `.cne_write_probe`;
 this plan explicitly authorizes that temporary probe only inside the new target.
 Record any SQLite `manifest.db-wal`/`manifest.db-shm` files as expected writable
 runtime state, not as a legacy-root incident. Do not delete them manually.
+Capture the target tree before/after doctor and require the probe to be absent
+afterward with no other entry or file-content change. Record the expected
+target-root directory mtime/ctime change caused by creating and unlinking the
+probe; do not misreport that directory-metadata effect as a market-data write.
 
 ### 3.5 Commit Task 3
 
@@ -293,17 +339,23 @@ Run:
 
 ```bash
 uv sync --frozen
-uv run cne --version
-uv run cne config validate --config config/cnequity.toml
-uv run cne doctor --config config/cnequity.toml --json
-uv run python tools/verify_r2_baseline.py --config config/cnequity.toml
-PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider \
+uv lock --check --offline
+uv run --frozen --no-sync --offline cne --version
+uv run --frozen --no-sync --offline cne config validate \
+  --config config/cnequity.toml
+uv run --frozen --no-sync --offline cne doctor \
+  --config config/cnequity.toml --json
+uv run --frozen --no-sync --offline python tools/verify_r2_baseline.py \
+  --config config/cnequity.toml
+PYTHONDONTWRITEBYTECODE=1 uv run --frozen --no-sync --offline \
+  pytest -q -p no:cacheprovider \
   tests/test_r2_baseline_contract.py tests/test_project_docs_contract.py
 git diff --check
 ```
 
-Also verify no Parquet/market-data artifact exists in the target root and no
-network/update command appears in the executed command log.
+Hash `uv.lock` before and after the frozen command sequence and require equality.
+Also verify no Parquet/market-data/cache artifact exists anywhere in the target
+root and no network/update/query command appears in the executed command log.
 
 ### 4.2 Author report
 
@@ -362,7 +414,8 @@ R2 author handoff may be published only when all are true:
 
 1. Exact CNEquity Git SHA and all dependencies are locked reproducibly.
 2. CPython 3.12 runtime and CNEquity 0.7.2 are verified.
-3. Config is valid, local-query safe, secret-free, and macOS-safe.
+3. Config is valid, secret-free, and macOS-safe; pinned upstream query
+   interfaces remain excluded until R8 implements the local-only guard.
 4. The new authoritative root exists outside Git and legacy roots.
 5. Layout/manifest/DuckDB exist with zero ingestion runs and zero market data.
 6. Trading-status and turnover baseline contracts are explicit and fail-closed.
