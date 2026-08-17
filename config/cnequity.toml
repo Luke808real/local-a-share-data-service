@@ -1,0 +1,87 @@
+[data]
+root = "/Users/luke808/AI/local-a-share-data-service-data"
+
+[orchestrator]
+workers = 1
+batch_size = 50
+max_retries = 3
+retry_backoff_seconds = 5
+batch_stale_seconds = 3600
+
+[tdx_protocol]
+enabled = true
+min_interval_ms = 100
+lock_timeout_sec = 15.0
+servers = "auto"
+connect_timeout_sec = 10
+allow_mock = false
+
+[sources.eastmoney]
+enabled = true
+min_interval_seconds = 0.5
+timeout_sec = 30
+
+[sources.sina]
+enabled = true
+min_interval_seconds = 0.3
+
+[sources.baostock]
+enabled = true
+min_interval_seconds = 1.0
+batch_size = 20
+batch_rest_seconds = 120
+
+[universe]
+default = "all_a"
+
+[minute_bars]
+enabled = false
+scope = "all"
+symbols = []
+frequencies = ["5m"]
+fetch_workers = 1
+
+[trade_ticks]
+enabled = false
+scope = "watchlist"
+symbols = []
+max_symbols = 200
+fetch_workers = 1
+
+[[job.daily.waves]]
+name = "reference"
+parallel = true
+steps = ["instruments", "trading_calendar", "trading_status"]
+
+[[job.daily.waves]]
+name = "corporate_actions_to_bars"
+parallel = false
+steps = ["corporate_actions", "daily_bars"]
+
+[[job.daily.waves]]
+name = "index"
+parallel = true
+steps = ["index_bars"]
+
+[[job.daily.waves]]
+name = "finalize"
+parallel = false
+steps = ["compact", "derive_adj_factors", "derive_industry_index", "audit"]
+
+[job.init.phases]
+names = [
+  "phase1_reference",
+  "phase2a_corporate_actions",
+  "phase2c_daily_bars_backfill",
+  "phase3_index_and_status",
+  "phase4_finalize",
+]
+
+[on_demand]
+enabled = false
+datasets = []
+
+[duckdb]
+path = "{data.root}/duckdb/cnequity.duckdb"
+memory_limit = "1GB"
+threads = 1
