@@ -45,13 +45,15 @@ Pre-commit targeted verification from Task 4:
 
 - No R1 work was executed.
 - No CNEquity, market-data, query-path, strategy, TradePlan, forward, backtest, or trading logic was added.
-- No legacy root was accessed for writes.
+- No legacy root was read or modified.
+- No market-data download was performed.
+- No `DATA_ROOT` was initialized.
 - No quality or publish gate was bypassed.
 
 ## BLOCKERS
 
-Independent audit of the exact R0 review commit remains required before `AUDIT_PASS`.
+`REMOTE_PUSH_BLOCKED`: no remote/origin is configured, and the single mandated `git push -u origin HEAD` attempt failed because `origin` does not appear to be a Git repository. Remote configuration/authorization and a successful push are required before an independent audit can audit an exact pushed SHA. Independent `AUDIT_PASS` remains required before R1.
 
 ## NEXT_RECOMMENDATION
 
-Obtain an independent audit of the exact pushed R0 review commit. `DO_NOT_AUTO_CONTINUE`; do not execute R1 before `AUDIT_PASS`.
+Obtain remote configuration/authorization and a successful push; only then can an independent audit use the exact pushed SHA. `DO_NOT_AUTO_CONTINUE`; do not execute R1 before `AUDIT_PASS`.
