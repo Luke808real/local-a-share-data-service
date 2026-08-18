@@ -2563,6 +2563,14 @@ class R3Runner:
 
         sh_sz = partition["sh_sz"]
         bj = partition["bj"]
+        # V08 SH/SZ MVP: BJ is DEFERRED_EXTENSION. A BJ delisted target inside
+        # the SH/SZ scope is unexpected -> fail closed, never call EastMoney.
+        if bj:
+            raise R3Error(
+                "E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP",
+                f"{len(bj)} BJ delisted target(s) under SH/SZ MVP scope; "
+                f"BJ is DEFERRED_EXTENSION: {sorted(bj)[:20]}",
+            )
 
         def _batch_id(symbol: str, attempt: int) -> str:
             return "e-baostock-" + hashlib.sha256(
@@ -2686,59 +2694,9 @@ class R3Runner:
             if not done:
                 unresolved.append(symbol)
 
-        # BJ historical delisted targets: only resolvable when authority is PROVEN
-        bj_unknown_carried: list[str] = []
-        if bj:
-            if BJ_HISTORICAL_AUTHORITY_VERDICT == "PROVEN":
-                for symbol in bj:
-                    attempt = 0
-                    state = None
-                    reason = None
-                    frame = None
-                    while attempt < 3:
-                        attempt += 1
-                        result = em_daily_tristate(
-                            symbol, self.history_start, self.daily_as_of, config=self.cfg
-                        )
-                        state, reason, frame = result["state"], result["reason"], result["frame"]
-                        if state == "EXISTS":
-                            break
-                    if state == "EXISTS" and frame is not None and not frame.is_empty():
-                        frame = with_provenance(
-                            frame, source="eastmoney",
-                            data_version=data_version_for("daily_bars"),
-                        )
-                        batch_id = "e-em-" + hashlib.sha256(
-                            f"{symbol}|{self.history_start}|{self.daily_as_of}".encode()
-                        ).hexdigest()[:12]
-                        manifest.start_batch(
-                            run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
-                            symbols=[symbol], window_start=self.history_start.isoformat(),
-                            window_end=self.daily_as_of.isoformat(), blocks_compaction=True,
-                        )
-                        writer.write_batch("daily_bars", run_id, batch_id, frame)
-                        manifest.finish_batch(
-                            run_id, batch_id, "success",
-                            rows_read=frame.height, rows_written=frame.height,
-                        )
-                        total_rows += frame.height
-                        traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
-                        if not traded.is_empty():
-                            recovered_spans[symbol] = (
-                                traded["trade_date"].min(), traded["trade_date"].max()
-                            )
-                    else:
-                        unresolved.append(symbol)
-            else:
-                bj_unknown_carried = list(bj)
-                self.ledger.append(
-                    {
-                        "stage": "E",
-                        "bj_historical_authority": BJ_HISTORICAL_AUTHORITY_VERDICT,
-                        "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
-                        "targets": bj,
-                    }
-                )
+        # BJ historical EastMoney execution branch is DISABLED under V08
+        # SH/SZ MVP (the EastMoney delisted-bars wrapper path is not reachable
+        # here; it is retained only as future BJ-extension design).
 
         if unresolved:
             raise R3Error(
@@ -2756,13 +2714,12 @@ class R3Runner:
             )
 
         compact = self._compact(run_id)
-        bj_authority = BJ_HISTORICAL_AUTHORITY_VERDICT
-        exit_verdict = v072_exit_verdict(
-            bj_authority,
-            len(bj_unknown_carried) if bj_unknown_carried else None,
-        )
         receipt = {
             "run_id": run_id,
+            "scope": "SH_SZ_MVP",
+            "e_shsz_complete": True,  # SH/SZ recovery done (unresolved == 0)
+            "bj_scope": "DEFERRED_EXTENSION",
+            "bj_execution": "NOT_RUN",
             "target_set_sha": target_set_sha,
             "targets": len(targets),
             "recover": len(recover),
@@ -2772,13 +2729,8 @@ class R3Runner:
             "unresolved": len(unresolved),
             "sina_catalog_role": "CROSSCHECK_ONLY",
             "sina_catalog_symbols_n": len(catalog),
-            "bj_historical_targets": len(bj),
-            "bj_historical_authority": bj_authority,
+            "bj_historical_authority": BJ_HISTORICAL_AUTHORITY_VERDICT,
             "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
-            "bj_historical_unresolved_n": (
-                len(bj_unknown_carried) if bj_unknown_carried else None
-            ),
-            "exit": exit_verdict,
             "compact": compact,
         }
         atomic_write_json(self.meta / "r3-delisted-recovery.json", receipt)
@@ -2806,10 +2758,20 @@ class R3Runner:
         return receipt
 
     def _effective_active(self) -> pl.DataFrame:
+        """SH/SZ MVP active planning set (V08).
+
+        Under R3_CURRENT_MVP_SCOPE = SH_SZ this only returns exchange SH/SZ with
+        asset_type stock/cdr, keeping the existing list/delist effective-as-of
+        semantics. BJ is DEFERRED_EXTENSION and is never classified here as
+        expected_no_data / failed / unexplained-missing / zero / completed.
+        """
         instruments = load_curated_instruments(self.cfg)
         if instruments is None or instruments.is_empty():
             raise R3Error("NO_INSTRUMENTS", "no instruments to plan daily coverage")
-        df = instruments.filter(pl.col("asset_type").is_in(["stock", "cdr"]))
+        df = instruments.filter(
+            (pl.col("asset_type").is_in(["stock", "cdr"]))
+            & (pl.col("exchange").is_in(["SH", "SZ"]))
+        )
         df = df.with_columns(
             pl.when(pl.col("delist_date").is_null() | (pl.col("delist_date") >= self.daily_as_of))
             .then(pl.lit(True))
@@ -2823,30 +2785,32 @@ class R3Runner:
         return df
 
     def _fetch_daily_bars_per_route(self) -> dict[str, Any]:
+        """V08 SH/SZ MVP daily route planning: SH/SZ TDX route only (no BJ route,
+        no EastMoney / em_daily_tristate; f2 is an explicit DEFERRED marker)."""
         spans_shsz: dict[str, tuple[date, date]] = {}
-        spans_bj: dict[str, tuple[date, date]] = {}
         expect_no_data: list[str] = []
         for row in self._effective_active().iter_rows(named=True):
             span = effective_span(row["list_date"], row["delist_date"])
             if span is None:
                 expect_no_data.append(row["symbol"])
                 continue
-            if row["_exchange"] in ("SH", "SZ"):
-                spans_shsz[row["symbol"]] = span
-            else:
-                spans_bj[row["symbol"]] = span
+            spans_shsz[row["symbol"]] = span
 
         run_id = self._new_run("r3_daily_bars")
         f1 = self._tdx_route(run_id, spans_shsz)
-        f2 = self._em_primary_route(run_id, spans_bj)
         compact = self._compact(run_id)
         return {
             "run_id": run_id,
+            "scope": "SH_SZ_MVP",
             "sh_sz_symbols": len(spans_shsz),
-            "bj_symbols": len(spans_bj),
             "expected_no_data": len(expect_no_data),
+            "bj_scope": "DEFERRED_EXTENSION",
+            "bj_execution": "NOT_RUN",
             "f1_tdx": f1,
-            "f2_em_primary": f2,
+            "f2_em_primary": {
+                "status": "DEFERRED",
+                "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+            },
             "compact": compact,
         }
 

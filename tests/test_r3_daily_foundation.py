@@ -3503,6 +3503,161 @@ def test_v08_runner_fails_closed_without_scope_decision_ancestor(monkeypatch, tm
     )
     with pytest.raises(R3Error, match="V08_SCOPE_NOT_ANCESTOR"):
         r3.R3Runner(cfg_path, repo_root=tmp_path, plan_sha=r3.PLAN_SHA)
+
+
+# ============================================================================
+# V08 SH/SZ MVP scope — Stage E / Stage F (BJ deferred; no EastMoney in MVP)
+# ============================================================================
+
+
+def _v08_instruments(*rows):
+    return pl.DataFrame(
+        {
+            "symbol": [r[0] for r in rows],
+            "name": ["X"] * len(rows),
+            "exchange": [r[0].split(".")[1] for r in rows],
+            "asset_type": [r[2] for r in rows],
+            "list_date": [r[3] for r in rows],
+            "delist_date": [r[4] for r in rows],
+            "prev_symbol": [None] * len(rows),
+            "source": ["baostock"] * len(rows),
+            "data_version": ["v1"] * len(rows),
+            "fetched_at": [datetime(2026, 1, 1, tzinfo=timezone.utc)] * len(rows),
+        }
+    )
+
+
+def _v08_active_runner(monkeypatch, instruments_df):
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace()
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: instruments_df)
+    return runner
+
+
+def test_v08_effective_active_shsz_only(monkeypatch):
+    df = _v08_instruments(
+        ("600000.SH", "", "stock", date(2000, 1, 1), None),
+        ("000001.SZ", "", "stock", date(2000, 1, 1), None),
+        ("920001.BJ", "", "stock", date(2021, 1, 1), None),  # BJ must be excluded
+    )
+    runner = _v08_active_runner(monkeypatch, df)
+    out = runner._effective_active()
+    syms = set(out["symbol"].to_list())
+    assert syms == {"600000.SH", "000001.SZ"}
+    assert not any(s.endswith(".BJ") for s in syms)
+
+
+def _v08_f_runner(monkeypatch, instruments_df, captured):
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = Path("unused-meta")  # not used by this route
+    runner.cfg = types.SimpleNamespace()
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner._new_run = lambda job: "frid"
+    runner._compact = lambda rid: {"status": "success"}
+    runner._tdx_route = (
+        lambda rid, spans: captured.setdefault("tdx", {}).update(
+            {s: sp for s, sp in spans.items()}
+        )
+        or {"status": "tdx_ok"}
+    )
+    monkeypatch.setattr(
+        r3.R3Runner,
+        "_em_primary_route",
+        lambda self, rid, spans: (_ for _ in ()).throw(
+            AssertionError("EastMoney _em_primary_route must NOT be called in SH/SZ MVP")
+        ),
+    )
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: instruments_df)
+    return runner
+
+
+def test_v08_f_daily_no_eastmoney_bj_instruments(monkeypatch):
+    df = _v08_instruments(
+        ("600000.SH", "", "stock", date(2000, 1, 1), None),
+        ("920001.BJ", "", "stock", date(2021, 1, 1), None),  # BJ present in instruments
+    )
+    captured = {}
+    runner = _v08_f_runner(monkeypatch, df, captured)
+    receipt = runner._fetch_daily_bars_per_route()
+    # EastMoney route was never reached (would have raised); only TDX route ran
+    assert set(captured["tdx"].keys()) == {"600000.SH"}
+    assert receipt["scope"] == "SH_SZ_MVP"
+    assert receipt["bj_scope"] == "DEFERRED_EXTENSION"
+    assert receipt["bj_execution"] == "NOT_RUN"
+    assert receipt["f2_em_primary"] == {
+        "status": "DEFERRED",
+        "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+    }
+    # BJ is never reported as symbols=0 success
+    assert "bj_symbols" not in receipt
+
+
+def test_v08_f_shsz_effective_span_unchanged(monkeypatch):
+    df = _v08_instruments(
+        ("600000.SH", "", "stock", date(2021, 8, 1), None),  # listed late
+        ("000002.SZ", "", "stock", date(2000, 1, 1), date(2020, 6, 30)),  # delisted < as_of
+    )
+    captured = {}
+    runner = _v08_f_runner(monkeypatch, df, captured)
+    receipt = runner._fetch_daily_bars_per_route()
+    # effective span = [max(list_date, start), min(delist_date, as_of)] unchanged
+    assert captured["tdx"]["600000.SH"] == (date(2021, 8, 1), R3_DAILY_AS_OF)
+    # the delisted-in-window symbol is NOT an F target (its recovery belongs to E)
+    assert "000002.SZ" not in captured["tdx"]
+    assert receipt["expected_no_data"] == 0
+
+
+def test_v08_e_receipt_scope_fields(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    captured = {"fetch_calls": 0}
+    runner, ledger, manifest, writer, captured = _stage_e_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_ok({"600001.SH"}, captured),
+        formal_map=formal,
+        instruments_df=_instruments_with(formal),
+    )
+    receipt = runner._recover_delisted_daily()
+    assert receipt["scope"] == "SH_SZ_MVP"
+    assert receipt["e_shsz_complete"] is True
+    assert receipt["bj_scope"] == "DEFERRED_EXTENSION"
+    assert receipt["bj_execution"] == "NOT_RUN"
+    assert receipt["recovered"] == 1
+    assert "DAILY_READY" not in receipt
+
+
+def test_v08_e_unexpected_bj_target_fails_closed(monkeypatch, tmp_path):
+    formal = {"920001.BJ": date(2023, 6, 30)}
+    captured = {"fetch_calls": 0}
+    runner, ledger, manifest, writer, captured = _stage_e_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_ok({}, captured),
+        formal_map=formal,
+        instruments_df=_instruments_with(formal),
+    )
+    with pytest.raises(R3Error, match="E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP"):
+        runner._recover_delisted_daily()
+    assert captured["fetch_calls"] == 0  # no Baostock recovery either
+
+
+def test_v08_e_has_no_eastmoney_reachability():
+    src = inspect.getsource(r3.R3Runner._recover_delisted_daily)
+    assert "em_daily_tristate" not in src
+    assert "fetch_clist_pages" not in src
+    assert "fetch_bars_via_sina" not in src
+
+
+def test_v08_ef_does_not_touch_g_or_daily_ready():
+    src = inspect.getsource(r3.R3Runner._recover_delisted_daily)
+    src += inspect.getsource(r3.R3Runner._fetch_daily_bars_per_route)
+    for forbidden in ("stage_coverage", "G_coverage", "DAILY_READY", "verified"):
+        assert forbidden not in src
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================

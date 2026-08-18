@@ -459,6 +459,16 @@ trading-session set through `R3_DAILY_AS_OF`.
 
 ### Stage E — Dedicated delisted daily recovery
 
+> **V08 MVP SCOPE (fixed):** `E_SCOPE = SH_SZ_MVP`. Stage E only recovers
+> `.SH`/`.SZ` via pinned Baostock `fetch_delisted_bars`. Under
+> `R3_CURRENT_MVP_SCOPE = SH_SZ` any BJ delisted target is unexpected and fails
+> closed `E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP` (EastMoney is never called; the
+> `em_daily_tristate` EastMoney execution branch is not reachable in the MVP and
+> is retained only as future BJ-extension design). E receipt records
+> `scope=SH_SZ_MVP`, `bj_scope=DEFERRED_EXTENSION`, `bj_execution=NOT_RUN`;
+> `e_shsz_complete` is true once the SH/SZ recovery is done, and the BJ
+> historical gate does not block E SH/SZ completion. DAILY_READY remains FALSE.
+
 Do not call pinned `backfill_delisted_bars`: that helper unconditionally writes
 `derived/delisting_events` when it recovers rows, crossing the R3 boundary.
 Instead implement a narrow, service-owned recovery adapter composed only from
@@ -498,6 +508,18 @@ lake or a copy of the upstream delisting-event subsystem. Do not run public
 `cne delisted backfill`, `delisted repair`, or reconciliation with `--apply`.
 
 ### Stage F — Per-route RAW daily backfill without the generic step
+
+> **V08 MVP SCOPE (fixed):** `F_SCOPE = SH_SZ_MVP`. `_effective_active()` returns
+> only exchange SH/SZ with asset_type stock/cdr and keeps the existing
+> `[max(list_date, history_start), min(delist_date, daily_as_of)]` effective
+> span. F plans only `spans_shsz` and runs only the TDX route
+> (`_tdx_route`); the EastMoney BJ `f2_em_primary`/`em_daily_tristate`/Sina
+> routes are NOT executed under V08 and remain a future BJ-extension design. F
+> receipt records `scope=SH_SZ_MVP`, `bj_scope=DEFERRED_EXTENSION`,
+> `bj_execution=NOT_RUN`, and
+> `f2_em_primary = {status: DEFERRED, reason: BJ_EXTENSION_OUTSIDE_CURRENT_MVP}`
+> (never a symbols=0 success). SH/SZ daily window is 2016-01-01 .. 2026-08-17,
+> RAW/unadjusted; no 2026-08-18+ daily bars are read or written.
 
 Do not call the pinned generic `step_daily_bars` or its unbounded expected-date
 logic. The controller fetches daily bars separately per exchange route and

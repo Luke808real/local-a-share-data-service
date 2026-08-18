@@ -79,11 +79,13 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   `reason = BJ_EXTENSION_OUTSIDE_CURRENT_MVP`) and completes so the frozen stage
   order (A, B, C, C2, D, ...) stays intact and `D_calendar` can proceed later.
   No new stage or BJ subsystem.
-- Delisted recovery targets: SH/SZ = Baostock formal + roster-closed delisted;
-  BJ = any authority-proven target only (none today). `live_missing`/current
-  active names are excluded. `never_issued` classification is not a completion
-  gate (MASTER_SPEC requires delisted presence/resolvability, not enumeration
-  of non-existent codes).
+- E SCOPE = SH/SZ MVP: delisted recovery targets = Baostock formal
+  `.SH`/`.SZ` only (via `fetch_delisted_bars`). A BJ delisted target under this
+  scope fails closed `E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP`; EastMoney
+  (`em_daily_tristate`) is never called in the MVP; the E receipt records
+  `scope=SH_SZ_MVP`, `bj_scope=DEFERRED_EXTENSION`, `bj_execution=NOT_RUN`.
+  `live_missing`/current active names are excluded; `never_issued` is not a
+  completion gate.
 - No symbol is dropped by board, ST, liquidity, or strategy use.
 
 ## Daily fetch
@@ -93,11 +95,13 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
 - SH/SZ: `fetch_daily_bars_parallel(config, symbols=[], start=R3_HISTORY_START,
   end=R3_DAILY_AS_OF, run_id, batch_specs=deterministic chunks)`, controller-owned
   retries with strictly decreasing failed scope.
-- Non-TDX (BJ): partitioned by identical effective span
-  `[max(list_date, start), min(delist_date, as_of)]`; EastMoney is PRIMARY
-  through the service-owned tri-state wrapper with unique controller batch ids
-  and exact retry lineage. Sina is OPTIONAL crosscheck only and never a
-  completion/retry/DAILY_READY gate.
+- F SCOPE = SH/SZ MVP: F plans only `spans_shsz` and executes only the TDX route
+  (`_tdx_route`). The EastMoney BJ primary route (`f2_em_primary` /
+  `em_daily_tristate`) and Sina are NOT executed under V08; they are retained as
+  future BJ-extension design. F receipt records `scope=SH_SZ_MVP`,
+  `bj_scope=DEFERRED_EXTENSION`, `bj_execution=NOT_RUN`, and
+  `f2_em_primary = {status: DEFERRED, reason: BJ_EXTENSION_OUTSIDE_CURRENT_MVP}`
+  — never a symbols=0 success.
 - Coverage requires at least one positive-volume in-window row. Zero-volume
   placeholder rows are not coverage evidence.
 
