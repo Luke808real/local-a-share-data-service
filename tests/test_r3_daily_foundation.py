@@ -3108,6 +3108,61 @@ def test_v074_transition_v073_union_unknown_blocks(monkeypatch, tmp_path):
         )
 
 
+def test_v074_transition_short_lived_symbol_between_samples_passes(monkeypatch, tmp_path):
+    # A real (short-lived) V07.3 union symbol that is present in the stock_basic
+    # authority must NOT be blocked just because its lifespan falls entirely
+    # between two quarterly-end samples.
+    samples = [date(2015, 12, 31), date(2016, 3, 31)]
+    formal = {"600000.SH", "S01.SH"}
+    formal_list_map = {
+        "600000.SH": (date(2000, 1, 1), None),
+        "S01.SH": (date(2016, 1, 10), date(2016, 3, 10)),  # delisted before sample 2016-03-31
+    }
+    v073 = {
+        "route": "V07.3_resumable_roster_closure",
+        "plan_sha": PLAN_SHA,
+        "next_index": 5,
+        "expected_dates_n": 2580,
+        "union_symbols": ["S01.SH"],  # known to stock_basic -> allowed
+    }
+    runner, ctrl, samples2, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=samples, v073_checkpoint=v073,
+        formal=formal, formal_list_map=formal_list_map,
+    )
+    before = (ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_bytes()
+    tr = runner._v074_transition(
+        sample_dates=samples,
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        formal_identity_symbols=formal,
+        formal_list_map=formal_list_map,
+        identity_hash=_v074_hash(sorted(formal)),
+    )
+    assert tr["prior_next_index"] == 5
+    # V07.3 checkpoint bytes remain untouched
+    after = (ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_bytes()
+    assert before == after
+
+
+def test_v074_transition_corrupt_v073_checkpoint_blocks(monkeypatch, tmp_path):
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)]
+    )
+    (ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).write_text(
+        "{ this is not valid JSON"
+    )
+    with pytest.raises(R3Error, match="V073_CHECKPOINT_CORRUPT"):
+        runner._v074_transition(
+            sample_dates=samples,
+            sample_dates_hash=_v074_sample_dates_hash(samples),
+            formal_identity_symbols=ctrl["formal"],
+            formal_list_map=ctrl["formal_list_map"],
+            identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        )
+    # corrupt evidence is never silently treated as empty
+    text = (ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text()
+    assert text == "{ this is not valid JSON"
+
+
 def test_v074_transition_current_b_no_receipt_allowed(monkeypatch, tmp_path):
     v073 = {
         "route": "V07.3_resumable_roster_closure",

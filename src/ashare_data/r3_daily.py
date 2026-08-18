@@ -1599,14 +1599,22 @@ class R3Runner:
     # --- V07.4 transition + quarterly roster audit --------------------------
 
     def _load_v073_checkpoint_evidence(self) -> dict[str, Any]:
-        """Read the SUPERSEDED V07.3 closure checkpoint bytes (read-only)."""
+        """Read the SUPERSEDED V07.3 closure checkpoint (read-only).
+
+        Missing file -> {}. The file exists but is not valid JSON ->
+        V073_CHECKPOINT_CORRUPT (never silently treated as empty evidence; the
+        file stays untouched and read-only).
+        """
         p = self.meta / ROSTER_CHECKPOINT_FILENAME
         if not p.exists():
             return {}
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - never let stale evidence block audit
-            return {}
+        except Exception as exc:  # noqa: BLE001 - corrupt evidence must fail closed
+            raise R3Error(
+                "V073_CHECKPOINT_CORRUPT",
+                f"V07.3 closure checkpoint exists but is not valid JSON: {exc}",
+            ) from exc
 
     def _load_quarterly_checkpoint(self) -> dict[str, Any]:
         p = self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME
@@ -1644,10 +1652,13 @@ class R3Runner:
 
         The V07.3 checkpoint is PRESERVED (bytes never modified) as superseded-
         execution evidence. Its roster union is a read-only CROSSCHECK against
-        the V07.4 formal authority: any old roster symbol that is unknown to
-        query_stock_basic, or that has no valid historical span on any sample
-        date, is an AUTHORITY_CONFLICT fail-closed. The V07.3 next_index is
-        NEVER used as the V07.4 quarterly pointer.
+        the V07.4 formal authority: any old roster symbol that is UNKNOWN to
+        query_stock_basic is an AUTHORITY_CONFLICT fail-closed. A symbol already
+        present in the stock_basic authority is allowed regardless of whether it
+        happens to overlap a quarterly-end sample — stock_basic is the identity
+        authority, V07.3 union is real per-day historical observation, and a
+        quarterly sample must never negate a short-lived symbol. The V07.3
+        next_index is NEVER used as the V07.4 quarterly pointer.
         """
         if (self.meta / "r3-identity-receipt.json").exists():
             raise R3Error(
@@ -1669,23 +1680,11 @@ class R3Runner:
             prior_union = set()
 
         unknown = sorted(prior_union - formal_identity_symbols)
-        span_bad: list[str] = []
-        for sym in sorted(prior_union):
-            if sym in unknown:
-                continue
-            lst, dlst = formal_list_map.get(sym, (None, None))
-            ok = any(
-                (lst is None or lst <= sd) and (dlst is None or dlst >= sd)
-                for sd in sample_dates
-            )
-            if not ok:
-                span_bad.append(sym)
-        if unknown or span_bad:
+        if unknown:
             raise R3Error(
                 "AUTHORITY_CONFLICT",
-                f"V07.3 historical roster contains symbols outside the V07.4 "
-                f"baostock formal authority or its historical span: "
-                f"unknown={unknown[:20]} span_bad={span_bad[:20]}",
+                f"V07.3 historical roster contains symbols unknown to the V07.4 "
+                f"baostock formal authority: unknown={unknown[:20]}",
             )
 
         qckpt_exists = (self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME).exists()
