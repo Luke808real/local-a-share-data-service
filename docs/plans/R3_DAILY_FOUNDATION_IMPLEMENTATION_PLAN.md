@@ -493,10 +493,13 @@ obey the pinned schema/provenance contract.
    `(batch_id, symbols, window_start, window_end)` from the pinned
    `_symbol_batch_id` convention and `config.batch_size`, one chunk per symbol
    slice. Record them in the service ledger.
-3. Invoke pinned `fetch_daily_bars_parallel(config, symbols=[], window,
-   run_id, batch_specs=chunks)` once. This writes a manifest worker batch per
-   chunk, stages only TDX rows, and returns `had_error` plus every failed
-   symbol. It does not trigger any EastMoney/Sina gap-fill.
+3. Invoke the pinned callable once with exact keyword binding
+   `fetch_daily_bars_parallel(config, symbols=[], start=R3_HISTORY_START,
+   end=R3_DAILY_AS_OF, run_id=<manifest run id>, batch_specs=chunks)`. This
+   writes a manifest worker batch per chunk, stages only TDX rows, and returns
+   `had_error` plus every failed symbol. It does not trigger any EastMoney/Sina
+   gap-fill, and with `config.failover_enabled=false` it writes no backup
+   snapshot.
 4. For each failed batch, re-invoke the same pinned callable with only that
    recorded batch spec (deterministic `batch_id`), at most three unchanged
    attempts, and require strict decrease of the failed-symbol set. A batch
