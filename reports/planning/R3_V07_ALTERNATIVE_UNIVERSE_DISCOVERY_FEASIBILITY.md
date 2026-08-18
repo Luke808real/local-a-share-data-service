@@ -96,3 +96,39 @@ Adopt (1)+(2a) if the project accepts the documented BJ historical-delisted
 `UNKNOWN` boundary; otherwise require a new source. Either path needs one
 Sol-authorized R3 contract revision (V07) followed by the normal independent
 plan audit before data execution resumes.
+
+## Sol decision `approve-v07-revision` — evidence bullets (concise)
+
+- **Old dependency graph:** Stage B probes the full `issued_code_space()` via
+  Sina `getKLineData`; 200+data => delisted, 200+empty => never_issued,
+  SOURCE_ERROR => pending (hard gate remaining=0). Stage E/F2 also hard-depend
+  on Sina for BJ bars.
+- **Proposed V07 dependency graph:** SH/SZ current from Stage A (TDX+EM);
+  SH/SZ historical from Baostock `stock_basic` identity + per-day `roster_on`
+  (positive, closed); BJ current from EM clist f12/f13/f14/f26; BJ historical
+  from pinned research step or `UNKNOWN_CARRIED`; BJ daily from EM push2his;
+  Sina sweep downgraded to optional crosscheck.
+- **SH/SZ current authority:** TDX live security list (+EM clist date
+  enrichment) — Stage A already done (7757 rows).
+- **SH/SZ historical authority:** Baostock (identity + rosters + delisted
+  bars) — equivalent/stronger than the Sina sweep for survivorship.
+- **BJ current authority:** EastMoney clist (f13=2 -> .BJ; f14 name, f26 list
+  date) — already used by Stage C2.
+- **BJ historical authority:** `UNPROVABLE_PINNED` expected; no pinned
+  non-Sina source enumerates historical BJ codes. Falls to
+  `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED` (explicit, hashed, fail-closed).
+- **Disposition of partial Sina catalog:** preserved as CROSSCHECK /
+  supplementary evidence only; never used as a completion authority.
+- **NEVER_ISSUED exhaustive sweep still necessary?** No per MASTER_SPEC (which
+  requires delisted presence + resolvability, not enumeration of non-existent
+  codes). Downgraded HARD_GATE -> OPTIONAL_CROSSCHECK for SH/SZ because
+  Baostock rosters positively close the SH/SZ traded universe; remains a real
+  information gap only for BJ historical delisted (UNKNOWN_CARRIED).
+- **Resume point:** from completed Stage A (7757 rows, 337 delisted; partial
+  discovery catalog/ledger preserved); next ratified step = V07 Stage B
+  identity completion, then C/C2/D/E/F/G per the V07 plan.
+- **Remaining blockers:** (1) V07 independent plan audit; (2) BJ historical
+  delisted identity (UNKNOWN_CARRIED) until a pinned source proves it;
+  (3) Sina SOURCE_FRAGILE — crosscheck only, no hard gate.
+
+Full revision contract: `docs/plans/R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN_V07.md`.
