@@ -562,6 +562,15 @@ zero in-window rows after all routes is `UNEXPLAINED_MISSING` and blocks the
 gate. The R3 gap map therefore never claims sessions are normal merely because
 no bar row exists.
 
+Symbol-level coverage requires at least one positive-volume in-window RAW row.
+A zero-volume placeholder is not coverage evidence: without an R4 status
+datasource, R3 cannot distinguish a suspended session from a missing bar, and
+the frozen Spec explicitly forbids inferring suspension from `volume == 0`. A
+symbol whose only in-window rows have zero volume is therefore
+`UNEXPLAINED_MISSING` until R4 proves a permanent suspension. This rule applies
+equally to TDX, Sina, EastMoney-fallback, and delisted-recovery rows, and the
+author report must state how many symbols (if any) were classified this way.
+
 ### Stage G — Read-only delisted coverage gate
 
 After writers exit, call pinned
