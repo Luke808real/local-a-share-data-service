@@ -1,6 +1,6 @@
 # R3 DAILY FOUNDATION IMPLEMENTATION PLAN
 
-**TASK_CONTRACT:** `R3-DAILY-FOUNDATION-V02`
+**TASK_CONTRACT:** `R3-DAILY-FOUNDATION-V03`
 **SPEC_VERSION:** `V1.0 FROZEN`
 **BASE_HEAD:** `0254122a99f0a365d2be12f29a2a59b951497fd3`
 **PHASE:** `R3 — DAILY FOUNDATION`
@@ -223,9 +223,11 @@ broader CLI is not part of R3. The runner must:
   tools/run_r3_daily_foundation.py ...`; uv stays offline and frozen while the
   pinned CNEquity adapters may use the explicitly authorized market endpoints;
 - assert the exact pinned signatures/source identities for `JobEngine.run_job`,
-  `JobEngine._retry_run`, `JobEngine.run_step`, `discover_delisted`,
-  Baostock `fetch_delisted_bars`, Sina `fetch_daily_bars_sina`, EastMoney
-  `fetch_clist_pages`/`clist_rows_to_symbols`, `fetch_bars_via_sina`, and
+  `JobEngine.run_step`, `discover_delisted`, TDX
+  `fetch_daily_bars_parallel`/`fetch_daily_bars`, Baostock
+  `fetch_delisted_bars`, Sina `fetch_daily_bars_sina`/`fetch_bars_via_sina`,
+  EastMoney `fetch_daily_bars`, EastMoney
+  `fetch_clist_pages`/`clist_rows_to_symbols`, and
   `delisted_coverage_report` before the first writer call; unexpected upstream
   drift is `RUNTIME_CONTRACT_DRIFT`;
 - stream logs and progress; never swallow or reinterpret a non-zero exit;
@@ -235,9 +237,11 @@ broader CLI is not part of R3. The runner must:
   JSON, unexpected dataset, or missing compact receipt as non-success;
 - never clean staging. Preserved staged data and manifest evidence are inputs to
   an explicit retry, not permission for deletion;
-- call pinned `_retry_run(..., auto_finalize=False)` only for the exact failed
-  run, then call only the `compact` step after all expected batches resolve.
-  It must never enter the pinned generic finalize chain;
+- never call `run_job(..., retry_failed_only=True)` or the generic daily step.
+  Every retry reuses the exact recorded source/symbol/window scope through the
+  same approved raw adapter (`fetch_daily_bars_parallel` for TDX worker
+  batches, Sina for non-TDX, EastMoney for the explicit fallback); after every
+  expected batch resolves, call only the `compact` step;
 - maintain a service-owned batch ledger for every direct or fallback scope.
   Each record contains run ID, physical dataset, symbols hash and bounded
   sample, window, adapter, attempt, staging relative path/hash, rows, and
@@ -248,10 +252,9 @@ broader CLI is not part of R3. The runner must:
   scope before compact. The compact receipt records the complete input staging
   inventory/hash, and a post-compact proof checks every input PK/provenance is
   present in curated while staging content itself remains unchanged;
-- before `_retry_run`, require every retryable manifest dataset to be in the
-  R3 allowlist and require the service ledger to identify the exact failed
-  scope. Never call `run_job(..., retry_failed_only=True)`. Reject any orphan
-  reconciliation outside the exact current R3 run set;
+- require every manifest batch dataset to be in the R3 allowlist and every
+  retry to match a failed service-ledger scope. Reject any orphan reconciliation
+  or mutation outside the exact current R3 run set;
 - stop before any later task if a gate fails.
 
 The runner must support `--preflight-only`, which is strictly read-only and
@@ -429,9 +432,13 @@ Instead implement a narrow, service-owned recovery adapter composed only from
 the pinned raw-bar adapters:
 
 1. Build an immutable target set from complete Baostock formal-delisting
-   identity plus completed issued-code discovery. Classify every target as
-   `RECOVERY_REQUIRED`, `EXPECTED_NO_DATA_BEFORE_WINDOW`, or `UNRESOLVED` for
-   the exact daily window; hash the full set.
+   identity plus completed issued-code discovery classified-delisted entries.
+   Exclude `live_missing`, `never_issued`, and all currently active names.
+   Compute an explicit `R3_DAILY_AS_OF` cutoff: a discovery terminal on or
+   after the cut-off must re-check evaluation against the active security
+   master; a terminal strictly before it is a delisted target. Classify every
+   target as `RECOVERY_REQUIRED`, `EXPECTED_NO_DATA_BEFORE_WINDOW`, or
+   `UNRESOLVED` for the exact daily window; hash the full set.
 2. Route SH/SZ targets through pinned Baostock `fetch_delisted_bars`, which
    supplies RAW bars with volume in shares and amount in CNY. Route a BJ target
    only through pinned Sina `fetch_daily_bars_sina`, with the explicit amount
@@ -457,46 +464,74 @@ This path is a thin orchestration of pinned source adapters, not a new market
 lake or a copy of the upstream delisting-event subsystem. Do not run public
 `cne delisted backfill`, `delisted repair`, or reconciliation with `--apply`.
 
-### Stage F — Generic full-universe RAW daily backfill
+### Stage F — Per-route RAW daily backfill without the generic step
 
-Run a single pinned `JobEngine.run_job` containing only `daily_bars`, with
-`backfill=True`, `trade_date=R3_DAILY_AS_OF`, explicit `_backfill_start` and
-`_backfill_end`, `workers=1`, and `finalize_run=False`. Run only `compact` after
-every batch resolves. The equivalent CLI shape is:
+Do not call the pinned generic `step_daily_bars` or its unbounded expected-date
+logic. The controller fetches daily bars separately per exchange route and
+keeps `config.failover_enabled=false` so no EastMoney/source backup is written
+implicitly. Every staged daily row must fall inside its symbol's effective
+`[max(list_date, R3_HISTORY_START), min(delist_date, R3_DAILY_AS_OF)]` span and
+obey the pinned schema/provenance contract.
 
-```text
-cne backfill daily_bars --config config/cnequity.toml \
-  --start 2016-01-01 --end 2026-08-17 --workers 1
-```
+#### F1 — SH/SZ via TDX parallel workers
 
-This includes SH/SZ through TDX and BSE/non-TDX symbols through the pinned Sina
-fallback. Before calling the step, start a service-ledger entry and blocking
-manifest controller batch for the full non-TDX fallback symbol/window scope;
-finish it successfully only after the result proves zero failed fallback
-symbol. The generic universe must contain no Stage E delisted target; any
-delegated-delisted ownership here is a controller bug and blocks compact.
-Require step status `success`, both ledgers complete, and successful compact.
+1. Build the effective active SH/SZ symbol set from the security master using
+   verified list/delist dates; exclude Stage E delisted targets, `never_issued`,
+   and `live_missing` from the fetch set.
+2. Create one manifest run with `Manifest.start_run("r3_daily_bars", ...)` and
+   build deterministic `BatchSpec` tuples
+   `(batch_id, symbols, window_start, window_end)` from the pinned
+   `_symbol_batch_id` convention and `config.batch_size`, one chunk per symbol
+   slice. Record them in the service ledger.
+3. Invoke pinned `fetch_daily_bars_parallel(config, symbols=[], window,
+   run_id, batch_specs=chunks)` once. This writes a manifest worker batch per
+   chunk, stages only TDX rows, and returns `had_error` plus every failed
+   symbol. It does not trigger any EastMoney/Sina gap-fill.
+4. For each failed batch, re-invoke the same pinned callable with only that
+   recorded batch spec (deterministic `batch_id`), at most three unchanged
+   attempts, and require strict decrease of the failed-symbol set. A batch
+   whose symbols all prove `EXPECTED_NO_DATA` may be finalized with a success
+   controller batch plus explicit evidence only after at least one
+   `fetch_daily_bars_parallel` attempt proves they are absent.
+5. Never call the pinned generic `step_daily_bars`, `JobEngine.run_job` for
+   daily bars, or the pinned `_retry_run` path under Stage F; the controller
+   owns every failed-batch re-run through the raw parallel callable above.
 
-If a manifest run has retryable failed/warning batches, the runner may invoke
-only the exact pinned internal recovery operation:
+#### F2 — Non-TDX (mainly BJ) via Sina, bounded EastMoney fallback
 
-```text
-JobEngine._retry_run(<exact recorded run_id>, R3_DAILY_AS_OF, auto_finalize=False)
-```
+1. Build the effective active non-TDX symbol set from the security master with
+   verified metadata; the same exclusions apply.
+2. Call pinned `fetch_bars_via_sina(config, symbols, window, run_id)` once for
+   the full set under one blocking controller/ledger pair. Every row staged by
+   that adapter gets `source=sina` and the documented null-amount limitation
+   below.
+3. Interpret the adapter result as partial, not complete: a symbol with failed
+   fetch, empty response, or missing expected effective dates is an explicit
+   retry scope. Retry each scope deterministically through the same exact
+   pinned callable at most three unchanged attempts, recording attempt state.
+4. If a scope still fails, fall back per symbol to pinned EastMoney
+   `fetch_daily_bars` with an explicit service ledger/controller batch and
+   `source=eastmoney` provenance; amount is retained when present. A same-PK
+   Sina/EastMoney value conflict is `DATA_CONFLICT` and blocks the gate.
+5. A symbol keeps the Sina rows when the fallback matches, or the fallback's
+   rows when Sina has none; it never receives both. Compact only after both
+   ledgers show every route complete and the run has zero incomplete manifest
+   batches. Symbols that still report failure or an empty full-window response
+   after every route are `UNEXPLAINED_MISSING` and block the gate; only a
+   bounded, source-documented suspension explanation (interior gap with an
+   observed in-window row) may stay `PENDING_R4_STATUS_EXPLANATION`.
 
-After zero incomplete batches, the runner runs only `compact` and finishes the
-run. Retry at most three controller attempts per unchanged failed scope. The
-runner must prove decreasing failed scope or stop. It must never launch a
-second broad daily backfill while an exact run remains recoverable, and it must
-prove that no adjustment/industry/audit batch was created.
+#### F3 — Daily-bar result classification
 
-`_retry_run` is valid only for upstream manifest worker batches in the R3
-dataset allowlist. It cannot recover the Sina fallback because that pinned path
-does not create its own worker batch. Any failed non-TDX symbol must be retried
-deterministically through pinned `fetch_bars_via_sina` with the exact recorded
-symbol/window scope, a new service attempt, and the same blocking controller
-batch identity. Never accept `_retry_run`'s success as evidence for an
-unresolved service-ledger fallback scope.
+The pinned adapters do not distinguish a suspended session from a source
+outage. The controller records, per symbol, the exact observed effective-date
+set and differences versus the trading calendar, then classifies uncovered
+expected keys as `PENDING_R4_STATUS_EXPLANATION` when the symbol has an
+in-window observed row and the gap is interior or bounded, and as
+`EXPLAINED_MISSING` only for pre-list/effective-span exclusions. A symbol with
+zero in-window rows after all routes is `UNEXPLAINED_MISSING` and blocks the
+gate. The R3 gap map therefore never claims sessions are normal merely because
+no bar row exists.
 
 ### Stage G — Read-only delisted coverage gate
 
