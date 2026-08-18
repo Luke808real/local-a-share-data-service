@@ -484,6 +484,7 @@ class ServiceLedger:
 
 STAGES = ("preflight", "A_instruments", "B_discovery", "C_merge", "C2_enrich", "D_calendar", "E_delisted", "F_daily", "G_coverage")
 STAGE_ORDER = {name: index for index, name in enumerate(STAGES)}
+ENTRY_ORDER = STAGES[1:]  # excludes preflight; preflight never writes stage state
 
 
 class StageMachine:
@@ -502,14 +503,21 @@ class StageMachine:
         state = self.load()
         if stage in state["completed"]:
             raise R3Error("STAGE_ALREADY_COMPLETE", f"stage {stage} already complete")
-        if state.get("current") is not None and state["current"] != stage:
+        if state.get("current") is not None:
             raise R3Error(
                 "STAGE_IN_PROGRESS", f"stage {state['current']} still in progress"
             )
-        if state["completed"]:
-            last_done = state["completed"][-1]
-            if STAGE_ORDER[stage] < STAGE_ORDER[last_done]:
-                raise R3Error("STAGE_ORDER", f"cannot rewind from {last_done} to {stage}")
+        if stage not in ENTRY_ORDER:
+            raise R3Error("STAGE_UNKNOWN", f"cannot enter non-execution stage {stage}")
+        index = ENTRY_ORDER.index(stage)
+        expected_prefix = list(ENTRY_ORDER[:index])
+        if state["completed"] != expected_prefix:
+            raise R3Error(
+                "STAGE_PREREQUISITE",
+                f"stage {stage} requires completed == "
+                f"{expected_prefix or []}; got {state['completed']} "
+                "(forward skip or missing immediate predecessor)",
+            )
         state["current"] = stage
         state["status"] = "running"
         state.setdefault("started_at", datetime.now(timezone.utc).isoformat())
@@ -759,7 +767,7 @@ class R3Runner:
 
         basic_df = fetch_instrument_basics()
         if basic_df.height:
-            identity_df = basic_df.filter(
+            formal_identity_df = basic_df.filter(
                 (pl.col("exchange").is_in(["SH", "SZ"]))
                 & (pl.col("asset_type").is_in(["stock", "cdr"]))
                 & (pl.col("list_date").is_null() | (pl.col("list_date") <= self.daily_as_of))
@@ -768,18 +776,37 @@ class R3Runner:
                     | (pl.col("delist_date") >= self.history_start)
                 )
             )
-            identity_symbols = set(identity_df["symbol"].to_list())
+            formal_identity_symbols = set(formal_identity_df["symbol"].to_list())
+            # ROSTER_CLOSURE_SCOPE: only common-stock names the pinned roster can
+            # actually observe. CDRs (e.g. 689xxx SH) stay in FORMAL_IDENTITY_SCOPE
+            # and are recorded as roster_not_observable, never a false NOT_CLOSED.
+            roster_closure_df = formal_identity_df.filter(
+                pl.col("asset_type").eq("stock")
+            )
+            roster_closure_symbols = set(roster_closure_df["symbol"].to_list())
         else:
-            identity_symbols = set()
+            formal_identity_symbols = set()
+            roster_closure_symbols = set()
         identity_hash = sha256_bytes(
-            json.dumps(sorted(identity_symbols), separators=(",", ":")).encode()
+            json.dumps(sorted(formal_identity_symbols), separators=(",", ":")).encode()
+        )
+        roster_expected_hash = sha256_bytes(
+            json.dumps(sorted(roster_closure_symbols), separators=(",", ":")).encode()
+        )
+        roster_not_observable = formal_identity_symbols - roster_closure_symbols
+        roster_not_observable_hash = (
+            sha256_bytes(
+                json.dumps(sorted(roster_not_observable), separators=(",", ":")).encode()
+            )
+            if roster_not_observable
+            else "0" * 64
         )
 
         dates = list_trading_dates(self.cfg, self.history_start, self.daily_as_of)
         if not dates:
             raise R3Error("NO_TRADING_DATES", "no trading dates in R3 window")
         closure = roster_closure_receipt(
-            dates, roster_on, stock_basic_symbols=identity_symbols
+            dates, roster_on, stock_basic_symbols=roster_closure_symbols
         )
 
         # SH/SZ formal delisted map (Baostock stock_basic, in-window scope)
@@ -853,8 +880,17 @@ class R3Runner:
         receipt = {
             "route": "V07.2_identity_completion",
             "shsz_identity_authority": "Baostock_stock_basic",
-            "shsz_identity_symbols": len(identity_symbols),
+            "shsz_identity_symbols": len(formal_identity_symbols),
             "shsz_identity_hash": identity_hash,
+            "formal_identity_scope": ["SH", "SZ", "stock", "cdr"],
+            "formal_identity_n": len(formal_identity_symbols),
+            "formal_identity_hash": identity_hash,
+            "roster_closure_scope": ["SH", "SZ", "stock"],
+            "roster_expected_n": len(roster_closure_symbols),
+            "roster_expected_hash": roster_expected_hash,
+            "roster_not_observable_identity_n": len(roster_not_observable),
+            "roster_not_observable_identity_hash": roster_not_observable_hash,
+            "roster_not_observable_identity_sample": sorted(roster_not_observable)[:200],
             "shsz_formal_delisted": shsz_formal_delisted,
             "shsz_formal_delisted_n": len(shsz_formal_delisted),
             "shsz_formal_delisted_hash": shsz_formal_delisted_hash,
@@ -1014,35 +1050,77 @@ class R3Runner:
                 "rows": merged.height,
             }
         )
-        compact = self._compact(run_id)
-        post = load_curated_instruments(self.cfg)
-        bad = (
-            post.filter(pl.col("symbol").str.ends_with(".BJ"))
-            .filter(pl.col("name").is_null() | pl.col("list_date").is_null())
-            .height
-        )
-        if bad:
-            raise R3Error("C2_POSTCHECK", f"{bad} BJ rows still lack metadata post-compact")
-        bj_count = int(merged.filter(pl.col("symbol").str.ends_with(".BJ")).height)
-        if bj_count != len(membership):
-            raise R3Error(
-                "C2_POSTCHECK",
-                f"BJ membership mismatch: staged {bj_count}, receipt {len(membership)}",
+        try:
+            compact = self._compact(run_id)
+            post = load_curated_instruments(self.cfg)
+            bad = (
+                post.filter(pl.col("symbol").str.ends_with(".BJ"))
+                .filter(pl.col("name").is_null() | pl.col("list_date").is_null())
+                .height
             )
-        # post-compact BJ set/hash must equal Stage-B bj_current set/hash
-        expected_bj = {m["symbol"] for m in membership}
-        actual_bj = set(
-            post.filter(pl.col("symbol").str.ends_with(".BJ"))["symbol"].to_list()
-        )
-        extra_bj = sorted(actual_bj - expected_bj)
-        missing_bj = sorted(expected_bj - actual_bj)
-        if extra_bj or missing_bj:
-            raise R3Error(
-                "C2_POSTCHECK",
-                f"post-compact BJ set mismatch: extra={len(extra_bj)} "
-                f"missing={len(missing_bj)}; fail-closed, "
-                "not auto-deleting preserved rows",
+            if bad:
+                raise R3Error("C2_POSTCHECK", f"{bad} BJ rows still lack metadata post-compact")
+            bj_count = int(merged.filter(pl.col("symbol").str.ends_with(".BJ")).height)
+            if bj_count != len(membership):
+                raise R3Error(
+                    "C2_POSTCHECK",
+                    f"BJ membership mismatch: staged {bj_count}, receipt {len(membership)}",
+                )
+            expected_bj = {m["symbol"] for m in membership}
+            actual_bj = set(
+                post.filter(pl.col("symbol").str.ends_with(".BJ"))["symbol"].to_list()
             )
+            extra_bj = sorted(actual_bj - expected_bj)
+            missing_bj = sorted(expected_bj - actual_bj)
+            if extra_bj or missing_bj:
+                raise R3Error(
+                    "C2_POSTCHECK",
+                    f"post-compact BJ set mismatch: extra={len(extra_bj)} "
+                    f"missing={len(missing_bj)}; fail-closed, "
+                    "not auto-deleting preserved rows",
+                )
+            # controller terminal success ONLY after compact + post proof
+            self.ledger.append(
+                {
+                    "stage": "C2",
+                    "event": "CONTROLLER_COMPLETE",
+                    "batch_id": batch_id,
+                    "status": "success",
+                    "bj_symbols": bj_count,
+                    "run_id": run_id,
+                }
+            )
+            return {
+                "bj_rows": bj_count,
+                "membership_source": "r3-identity-receipt.json",
+                "run_id": run_id,
+                "compact": compact,
+            }
+        except R3Error as exc:
+            self.ledger.append(
+                {
+                    "stage": "C2",
+                    "event": "CONTROLLER_COMPLETE",
+                    "batch_id": batch_id,
+                    "status": "failed",
+                    "reason": str(exc),
+                    "error_code": exc.code,
+                }
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.ledger.append(
+                {
+                    "stage": "C2",
+                    "event": "CONTROLLER_COMPLETE",
+                    "batch_id": batch_id,
+                    "status": "failed",
+                    "reason": str(exc),
+                    "error_code": "UNEXPECTED",
+                }
+            )
+            raise
+
         return {
             "bj_rows": bj_count,
             "membership_source": "r3-identity-receipt.json",
@@ -1092,7 +1170,14 @@ class R3Runner:
         return receipt
 
     def _recover_delisted_daily(self) -> dict[str, Any]:
-        """R3-safe delisted recovery; never touches backfill_delisted_bars."""
+        """R3-safe delisted recovery; never touches backfill_delisted_bars.
+
+        SH/SZ: prefetch controller+manifest+ledger lineage; exact retries with
+        strict scope; success retries supersede prior failed batches. EXPECTED
+        NO-DATA symbols get explicit terminal ledger evidence (no provider
+        request). Compact is guarded by zero incomplete manifest blocking
+        batches and an asserted complete service scope.
+        """
         self._prepare_network_env()
         from cnequity.adapters.baostock.delisted_bars import fetch_delisted_bars
 
@@ -1118,17 +1203,57 @@ class R3Runner:
         recovered_spans: dict[str, tuple[date, date]] = {}
         total_rows = 0
 
+        # EXPECTED_NO_DATA_BEFORE_WINDOW: explicit terminal evidence, no fetch
+        for symbol in no_data:
+            self.ledger.append(
+                {
+                    "stage": "E",
+                    "event": "EXPECTED_NO_DATA_TERMINAL",
+                    "symbol": symbol,
+                    "ownership": "EXPECTED_NO_DATA_BEFORE_WINDOW",
+                    "adapter": "none",
+                    "status": "terminal_no_provider_request",
+                    "window_start": self.history_start.isoformat(),
+                    "window_end": self.daily_as_of.isoformat(),
+                }
+            )
+
         sh_sz = partition["sh_sz"]
         bj = partition["bj"]
 
-        rows_dict: dict[str, list[dict[str, Any]]] = {}
-        attempts = 0
-        pending = list(sh_sz)
-        while pending and attempts < 3:
-            attempts += 1
-            self.ledger.append({"stage": "E", "attempt": attempts, "pending": len(pending)})
-            still: list[str] = []
-            for symbol in pending:
+        def _batch_id(symbol: str, attempt: int) -> str:
+            return "e-baostock-" + hashlib.sha256(
+                f"{symbol}|{self.history_start}|{self.daily_as_of}|a{attempt}".encode()
+            ).hexdigest()[:12]
+
+        # SH/SZ RECOVERY_REQUIRED with prefetch manifest + service ledger
+        for symbol in sh_sz:
+            attempt = 0
+            prior_failed: list[str] = []
+            done = False
+            while attempt < 3 and not done:
+                attempt += 1
+                batch_id = _batch_id(symbol, attempt)
+                manifest.start_batch(
+                    run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
+                    symbols=[symbol], window_start=self.history_start.isoformat(),
+                    window_end=self.daily_as_of.isoformat(), blocks_compaction=True,
+                )
+                self.ledger.append(
+                    {
+                        "stage": "E",
+                        "event": "ATTEMPT_START",
+                        "symbol": symbol,
+                        "symbol_hash": sha256_bytes(symbol.encode()),
+                        "attempt": attempt,
+                        "window_start": self.history_start.isoformat(),
+                        "window_end": self.daily_as_of.isoformat(),
+                        "adapter": "baostock",
+                        "batch_id": batch_id,
+                        "ownership": "RECOVERY_REQUIRED",
+                        "status": "running",
+                    }
+                )
                 try:
                     frame_rows, _failed = fetch_delisted_bars(
                         [symbol], self.history_start, self.daily_as_of, config=self.cfg
@@ -1136,32 +1261,80 @@ class R3Runner:
                     if _failed:
                         raise RuntimeError(f"baostock failed for {symbol}: {_failed}")
                     frame = pl.DataFrame(frame_rows)
-                    source = "baostock"
                 except Exception as exc:
-                    self.ledger.append({"stage": "E", "symbol": symbol, "error": str(exc)})
-                    still.append(symbol)
+                    manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
+                    prior_failed.append(batch_id)
+                    self.ledger.append(
+                        {
+                            "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                            "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
+                            "status": "failed", "reason": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
                     continue
                 if frame.is_empty():
-                    still.append(symbol)
+                    manifest.finish_batch(run_id, batch_id, "failed",
+                                          error_message="empty baostock response")
+                    prior_failed.append(batch_id)
+                    self.ledger.append(
+                        {
+                            "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                            "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
+                            "status": "failed", "reason": "EMPTY_RESPONSE",
+                        }
+                    )
                     continue
                 frame = frame.with_columns(
-                    [pl.lit(source).alias("source")] if "source" not in frame.columns else []
+                    pl.lit("baostock").alias("source")
+                ) if "source" not in frame.columns else frame
+                frame = with_provenance(
+                    frame, source="baostock", data_version=data_version_for("daily_bars")
                 )
-                rows_dict[symbol] = frame.to_dicts()
+                frame = frame.unique(subset=["symbol", "trade_date"], keep="last")
+                writer.write_batch("daily_bars", run_id, batch_id, frame)
+                manifest.finish_batch(
+                    run_id, batch_id, "success",
+                    rows_read=frame.height, rows_written=frame.height,
+                )
+                if prior_failed:
+                    manifest.supersede_batches(run_id, prior_failed, superseded_by=batch_id)
+                    self.ledger.append(
+                        {
+                            "stage": "E", "event": "ATTEMPT_SUPERSEDE", "symbol": symbol,
+                            "successful_batch_id": batch_id,
+                            "superseded_batch_ids": list(prior_failed),
+                            "superseded_n": len(prior_failed),
+                        }
+                    )
+                prior_failed.clear()
                 traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
                 if not traded.is_empty():
                     recovered_spans[symbol] = (
                         traded["trade_date"].min(),
                         traded["trade_date"].max(),
                     )
-            pending = sorted(set(still))
-        unresolved = pending
+                total_rows += frame.height
+                self.ledger.append(
+                    {
+                        "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                        "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
+                        "status": "success", "rows": frame.height,
+                        "span": (
+                            f"{traded['trade_date'].min()}|{traded['trade_date'].max()}"
+                            if not traded.is_empty()
+                            else None
+                        ),
+                        "symbol_hash": sha256_bytes(symbol.encode()),
+                    }
+                )
+                done = True
+            if not done:
+                unresolved.append(symbol)
 
         # BJ historical delisted targets: only resolvable when authority is PROVEN
         bj_unknown_carried: list[str] = []
         if bj:
             if BJ_HISTORICAL_AUTHORITY_VERDICT == "PROVEN":
-                # Route through §5a EastMoney tri-state wrapper only.
                 for symbol in bj:
                     attempt = 0
                     state = None
@@ -1176,15 +1349,32 @@ class R3Runner:
                         if state == "EXISTS":
                             break
                     if state == "EXISTS" and frame is not None and not frame.is_empty():
-                        rows_dict[symbol] = frame.to_dicts()
+                        frame = with_provenance(
+                            frame, source="eastmoney",
+                            data_version=data_version_for("daily_bars"),
+                        )
+                        batch_id = "e-em-" + hashlib.sha256(
+                            f"{symbol}|{self.history_start}|{self.daily_as_of}".encode()
+                        ).hexdigest()[:12]
+                        manifest.start_batch(
+                            run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
+                            symbols=[symbol], window_start=self.history_start.isoformat(),
+                            window_end=self.daily_as_of.isoformat(), blocks_compaction=True,
+                        )
+                        writer.write_batch("daily_bars", run_id, batch_id, frame)
+                        manifest.finish_batch(
+                            run_id, batch_id, "success",
+                            rows_read=frame.height, rows_written=frame.height,
+                        )
+                        total_rows += frame.height
                         traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
                         if not traded.is_empty():
-                            recovered_spans[symbol] = (traded["trade_date"].min(), traded["trade_date"].max())
+                            recovered_spans[symbol] = (
+                                traded["trade_date"].min(), traded["trade_date"].max()
+                            )
                     else:
                         unresolved.append(symbol)
             else:
-                # Authority unproven: never pretend the BJ historical universe is
-                # complete; carry as UNKNOWN_CARRIED and never set unresolved_n=0.
                 bj_unknown_carried = list(bj)
                 self.ledger.append(
                     {
@@ -1201,26 +1391,14 @@ class R3Runner:
                 f"{len(unresolved)} delisted targets unresolved after retries: {unresolved[:20]}",
             )
 
-        chunk_no = 0
-        for symbol in sorted(rows_dict):
-            frame = pl.DataFrame(rows_dict[symbol])
-            if frame.is_empty():
-                continue
-            frame = with_provenance(
-                frame, source=str(frame["source"][0]) if "source" in frame.columns else "baostock",
-                data_version=data_version_for("daily_bars"),
+        # compact guard: zero incomplete manifest blocking batches for this run
+        incomplete = manifest.incomplete_batch_counts_by_dataset(run_id) or {}
+        blocking = {ds: n for ds, n in incomplete.items() if n > 0}
+        if blocking:
+            raise R3Error(
+                "E_INCOMPLETE_BEFORE_COMPACT",
+                f"incomplete manifest batches before compact: {blocking}",
             )
-            frame = frame.unique(subset=["symbol", "trade_date"], keep="last")
-            batch_id = f"delisted-{chunk_no:05d}"
-            manifest.start_batch(
-                run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
-                symbols=[symbol], window_start=self.history_start.isoformat(),
-                window_end=self.daily_as_of.isoformat(), blocks_compaction=True,
-            )
-            writer.write_batch("daily_bars", run_id, batch_id, frame)
-            manifest.finish_batch(run_id, batch_id, "success", rows_read=frame.height, rows_written=frame.height)
-            total_rows += frame.height
-            chunk_no += 1
 
         compact = self._compact(run_id)
         bj_authority = BJ_HISTORICAL_AUTHORITY_VERDICT
@@ -1318,6 +1496,15 @@ class R3Runner:
         }
 
     def _tdx_route(self, run_id: str, spans: dict[str, tuple[date, date]]) -> dict[str, Any]:
+        """Stage F1 (V07.3): SH/SZ via pinned fetch_daily_bars_parallel.
+
+        Pinned worker-pool behavior is unchanged. The controller records
+        service-ledger ATTEMPT_START/END per attempt (batch specs, symbols hash,
+        window, adapter=tdx, status), retries ONLY the exact failed scope with
+        increasing attempt, requires strict decrease of the failed-symbol set,
+        and raises F1_FAILED_AFTER (so compact is never reached) when any
+        symbol remains failed.
+        """
         symbols = sorted(spans)
         if not symbols:
             return {"symbols": 0}
@@ -1330,24 +1517,82 @@ class R3Runner:
                 (_symbol_batch_id(span[0], span[1], index // batch_size), chunk_symbols, span[0], span[1])
             )
         self.cfg.failover_enabled = False
-        first = fetch_daily_bars_parallel(
-            self.cfg, [], self.history_start, self.daily_as_of, run_id, batch_specs=chunks
-        )
-        failed_symbols = list(first.get("failed_symbols") or [])
-        attempts = 0
-        while failed_symbols and attempts < 3:
-            attempts += 1
-            failed_specs = [
-                chunk for chunk in chunks if any(s in failed_symbols for s in chunk[1])
+
+        def _specs_symbols(specs):
+            out = [s for _bid, syms, _s, _e in specs for s in syms]
+            return out
+
+        attempt = 0
+        prev_failed: set[str] = set()
+        failed: set[str] = set()
+        rows_written_last = 0
+        while True:
+            attempt += 1
+            specs = chunks if attempt == 1 else [
+                ch for ch in chunks if any(s in failed for s in ch[1])
             ]
-            retry = fetch_daily_bars_parallel(
-                self.cfg, [], self.history_start, self.daily_as_of, run_id, batch_specs=failed_specs
-            )
-            new_failed = [s for s in (retry.get("failed_symbols") or []) if s in failed_symbols]
-            if len(new_failed) >= len(failed_symbols):
+            if not specs:
                 break
-            failed_symbols = new_failed
-        return {"symbols": len(symbols), "had_error": bool(first.get("had_error")), "attempts": attempts, "failed_after": len(failed_symbols), "failed_sample": failed_symbols[:20]}
+            scoped = _specs_symbols(specs)
+            self.ledger.append(
+                {
+                    "stage": "F1",
+                    "event": "ATTEMPT_START",
+                    "attempt": attempt,
+                    "batch_ids": [b for b, _s, _w0, _w1 in specs],
+                    "symbols": scoped,
+                    "symbol_hash": sha256_bytes(
+                        json.dumps(sorted(scoped), separators=(",", ":")).encode()
+                    ),
+                    "window_start": self.history_start.isoformat(),
+                    "window_end": self.daily_as_of.isoformat(),
+                    "adapter": "tdx",
+                    "status": "running",
+                }
+            )
+            result = fetch_daily_bars_parallel(
+                self.cfg, [], self.history_start, self.daily_as_of, run_id,
+                batch_specs=specs,
+            )
+            failed = set(result.get("failed_symbols") or [])
+            rows_written_last = int(result.get("rows_written") or 0)
+            self.ledger.append(
+                {
+                    "stage": "F1",
+                    "event": "ATTEMPT_END",
+                    "attempt": attempt,
+                    "adapter": "tdx",
+                    "status": "success" if not failed else "failed",
+                    "failed_symbols": sorted(failed)[:200],
+                    "failed_after": len(failed),
+                    "rows_written": rows_written_last,
+                }
+            )
+            if not failed:
+                break
+            if attempt > 1 and len(failed) >= len(prev_failed):
+                raise R3Error(
+                    "F1_STRICT_DECREASE",
+                    f"TDX failed-symbol set did not strictly decrease "
+                    f"(attempt {attempt}: {len(prev_failed)} -> {len(failed)}); fail-closed",
+                )
+            prev_failed = failed
+            if attempt >= 3:
+                break
+
+        if failed:
+            raise R3Error(
+                "F1_FAILED_AFTER",
+                f"TDX symbols still failed after retries: {sorted(failed)[:20]} "
+                "(compact is not reached)",
+            )
+        return {
+            "symbols": len(symbols),
+            "route": "tdx",
+            "attempts": attempt,
+            "failed_after": 0,
+            "rows_written_last": rows_written_last,
+        }
 
     def _em_primary_route(self, run_id: str, spans: dict[str, tuple[date, date]]) -> dict[str, Any]:
         """Stage F2 (V07.2): EastMoney primary for non-TDX (BJ) daily bars.

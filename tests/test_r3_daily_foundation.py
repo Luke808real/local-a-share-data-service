@@ -86,12 +86,39 @@ def test_stage_machine_progression(tmp_path):
         machine.enter("A_instruments")
 
 
-def test_stage_machine_refuses_rewind(tmp_path):
+def test_stage_machine_refuses_forward_skip(tmp_path):
     machine = StageMachine(tmp_path / "state.json")
-    machine.enter("C_merge")
-    machine.complete("C_merge", {})
-    with pytest.raises(R3Error, match="STAGE_ORDER"):
+    with pytest.raises(R3Error, match="STAGE_PREREQUISITE"):
         machine.enter("B_discovery")
+
+
+def test_stage_machine_strict_prefix_order(tmp_path):
+    order = [
+        "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+        "D_calendar", "E_delisted", "F_daily", "G_coverage",
+    ]
+    machine = StageMachine(tmp_path / "state2.json")
+    for stage in order:
+        machine.enter(stage)
+        machine.complete(stage, {})
+    state = machine.load()
+    assert state["completed"] == order
+    # trying any prior stage again is a prerequisite violation (already complete)
+    with pytest.raises(R3Error, match="STAGE_ALREADY_COMPLETE"):
+        machine.enter("C_merge")
+
+
+def test_stage_machine_missing_immediate_predecessor(tmp_path):
+    machine = StageMachine(tmp_path / "state3.json")
+    machine.enter("A_instruments")
+    machine.complete("A_instruments", {})
+    # A done but B missing: C skipped forward => blocked
+    with pytest.raises(R3Error, match="STAGE_PREREQUISITE"):
+        machine.enter("C_merge")
+    # exact prefix allows B
+    machine.enter("B_discovery")
+    machine.complete("B_discovery", {})
+    machine.enter("C_merge")
 
 
 def test_service_ledger_roundtrip(tmp_path):
@@ -277,6 +304,15 @@ class FakeManifest:
         return sum(
             1 for s in self.status_by_batch.values() if s in ("failed", "warning", "stale")
         )
+
+    def incomplete_batch_counts_by_dataset(self, run_id):
+        return {
+            "daily_bars": sum(
+                1
+                for s in self.status_by_batch.values()
+                if s in ("failed", "warning", "stale", "running")
+            )
+        }
 
 
 class FakeWriter:
@@ -1043,7 +1079,15 @@ def test_f2_zero_volume_only_unexplained(monkeypatch):
 def test_stage_daily_prepares_network_env(monkeypatch, tmp_path):
     runner = object.__new__(r3.R3Runner)
     runner.meta = tmp_path / "asl" / "r3"
-    runner.machine = r3.StageMachine(runner.meta / "execution-state.json")
+
+    class StubMachine:
+        def enter(self, stage):
+            return {}
+
+        def complete(self, stage, evidence):
+            return {}
+
+    runner.machine = StubMachine()
     prepared = []
     monkeypatch.setattr(r3.R3Runner, "_prepare_network_env",
                         lambda self: prepared.append(True))
@@ -1075,3 +1119,354 @@ def test_verifier_stale_tip_and_exchange_counts():
     )
     counts = exchange_counts_from(active)
     assert counts == {"SH": 2, "SZ": 1, "BJ": 1}
+
+
+def _stage_e_ctx(monkeypatch, tmp_path, *, fetch_impl, formal_map, instruments_df):
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = tmp_path / "asl" / "r3"
+    runner.meta.mkdir(parents=True)
+    (runner.meta / "r3-identity-receipt.json").write_text(
+        json.dumps({"shsz_formal_delisted": {k: v.isoformat() for k, v in formal_map.items()}})
+    )
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+    )
+    runner._new_run = lambda job: "erid"
+    runner._compact = lambda rid: {"status": "success"}
+
+    class LedgerE:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            self.calls.append(r)
+
+    ledger = LedgerE()
+    runner.ledger = ledger
+    manifest = FakeManifest([])
+    writer = FakeWriter([])
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: writer)
+    monkeypatch.setattr(r3, "load_delisted_catalog", lambda cfg: {})
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: instruments_df)
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.fetch_delisted_bars",
+        fetch_impl,
+    )
+    captured = {"fetch_calls": 0}
+    return runner, ledger, manifest, writer, captured
+
+
+def _instruments_with(formal_map):
+    rows = []
+    for sym, d in formal_map.items():
+        rows.append(
+            {
+                "symbol": sym, "name": "X", "exchange": sym.split(".")[1],
+                "asset_type": "stock", "list_date": date(2000, 1, 1),
+                "delist_date": d, "prev_symbol": None,
+                "source": "baostock", "data_version": "v1",
+                "fetched_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _bs_ok(rows_symbols, captured):
+    def impl(symbols, start, end, config=None):
+        captured["fetch_calls"] += 1
+        sym = symbols[0]
+        if sym not in rows_symbols:
+            return [], []
+        return [
+            {
+                "symbol": sym, "trade_date": date(2019, 12, 30),
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                "volume": 100, "amount": 1050.0,
+            }
+        ], []
+    return impl
+
+
+def test_stage_e_prefetch_manifest_ledger_before_fetch(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    calls = {"fetch": 0}
+
+    def fetch_fail(symbols, start, end, config=None):
+        calls["fetch"] += 1
+        raise RuntimeError("boom")
+
+    runner, ledger, manifest, _w, _ = _stage_e_ctx(
+        monkeypatch, tmp_path, fetch_impl=fetch_fail,
+        formal_map=formal, instruments_df=_instruments_with(formal),
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner._recover_delisted_daily()
+    start_events = [r for r in ledger.calls if r.get("event") == "ATTEMPT_START"]
+    assert start_events and start_events[0]["status"] == "running"
+    assert start_events[0]["adapter"] == "baostock"
+    assert start_events[0]["ownership"] == "RECOVERY_REQUIRED"
+    assert calls["fetch"] >= 3  # exact retries
+    assert manifest.calls and manifest.calls[0][0] == "start"
+
+
+def test_stage_e_fail_then_retry_success_lineage(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    seq = {"n": 0}
+
+    def fetch_flaky(symbols, start, end, config=None):
+        seq["n"] += 1
+        if seq["n"] == 1:
+            raise RuntimeError("boom1")
+        sym = symbols[0]
+        return [
+            {
+                "symbol": sym, "trade_date": date(2019, 12, 30),
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                "volume": 100, "amount": 1050.0,
+            }
+        ], []
+
+    runner, ledger, manifest, _w, _ = _stage_e_ctx(
+        monkeypatch, tmp_path, fetch_impl=fetch_flaky,
+        formal_map=formal, instruments_df=_instruments_with(formal),
+    )
+    runner._recover_delisted_daily()
+    assert manifest.superseded  # prior failed batch resolved
+    assert manifest.incomplete_blocking() == 0
+    assert any(r.get("event") == "ATTEMPT_SUPERSEDE" for r in ledger.calls)
+
+
+def test_stage_e_expected_no_data_terminal_evidence(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31), "600002.SH": date(2015, 6, 30)}
+    capped = {"fetch_calls": 0}
+    impl = _bs_ok({"600001.SH"}, capped)
+    runner, ledger, manifest, _w, _ = _stage_e_ctx(
+        monkeypatch, tmp_path, fetch_impl=impl,
+        formal_map=formal, instruments_df=_instruments_with(formal),
+    )
+    receipt = runner._recover_delisted_daily()
+    assert receipt["expected_no_data_before_window"] == 1
+    no_data_events = [r for r in ledger.calls if r.get("event") == "EXPECTED_NO_DATA_TERMINAL"]
+    assert {r["symbol"] for r in no_data_events} == {"600002.SH"}
+    assert capped["fetch_calls"] == 1  # no provider request for the no-data symbol
+
+
+def test_stage_e_complete_before_compact_guard(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    capped = {"fetch_calls": 0}
+    runner, ledger, manifest, _w, _ = _stage_e_ctx(
+        monkeypatch, tmp_path, fetch_impl=_bs_ok({"600001.SH"}, capped),
+        formal_map=formal, instruments_df=_instruments_with(formal),
+    )
+    result = runner._recover_delisted_daily()
+    assert result["unresolved"] == 0
+    assert manifest.incomplete_blocking() == 0
+
+
+def _f1_ctx(monkeypatch, impl):
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(batch_size=1, failover_enabled=False)
+    runner.history_start = R3_HISTORY_START
+    runner.daily_as_of = R3_DAILY_AS_OF
+
+    class LedgerF1:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            self.calls.append(r)
+
+    ledger = LedgerF1()
+    runner.ledger = ledger
+    calls = {"n": 0}
+
+    def wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return impl(calls["n"])
+
+    monkeypatch.setattr(
+        r3, "fetch_daily_bars_parallel", wrapped
+    )
+    return runner, ledger, calls
+
+
+def test_f1_ledger_per_attempt_and_retry_lineage(monkeypatch):
+    def impl(n):
+        if n == 1:
+            return {"failed_symbols": ["600000.SH"], "rows_written": 0}
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, ledger, _ = _f1_ctx(monkeypatch, impl)
+    result = runner._tdx_route(
+        "rid", {"600000.SH": (R3_HISTORY_START, R3_DAILY_AS_OF)}
+    )
+    assert result["failed_after"] == 0
+    starts = [r for r in ledger.calls if r.get("event") == "ATTEMPT_START"]
+    ends = [r for r in ledger.calls if r.get("event") == "ATTEMPT_END"]
+    assert [s["attempt"] for s in starts] == [1, 2]
+    assert ends[0]["failed_after"] == 1
+    assert ends[1]["failed_after"] == 0
+
+
+def test_f1_retry_failed_scope_only_strict_decrease(monkeypatch):
+    def impl(n):
+        return {"failed_symbols": ["600000.SH"], "rows_written": 0}
+
+    runner, ledger, _ = _f1_ctx(monkeypatch, impl)
+    with pytest.raises(R3Error, match="F1_STRICT_DECREASE"):
+        runner._tdx_route(
+            "rid", {"600000.SH": (R3_HISTORY_START, R3_DAILY_AS_OF)}
+        )
+
+
+def test_f1_failed_after_blocks_and_no_compact(monkeypatch):
+    def impl(n):
+        if n == 1:
+            return {"failed_symbols": ["600000.SH", "600001.SH", "600002.SH"], "rows_written": 0}
+        if n == 2:
+            return {"failed_symbols": ["600000.SH", "600001.SH"], "rows_written": 0}
+        return {"failed_symbols": ["600000.SH"], "rows_written": 0}
+
+    runner, ledger, _ = _f1_ctx(monkeypatch, impl)
+    with pytest.raises(R3Error, match="F1_FAILED_AFTER"):
+        runner._tdx_route(
+            "rid", {"600000.SH": (R3_HISTORY_START, R3_DAILY_AS_OF),
+                    "600001.SH": (R3_HISTORY_START, R3_DAILY_AS_OF),
+                    "600002.SH": (R3_HISTORY_START, R3_DAILY_AS_OF)}
+        )
+
+
+def test_cdr_roster_not_observable_not_blocking(monkeypatch, tmp_path):
+    # formal identity includes a 689xxx CDR; roster only sees common stocks
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    # replace basics with stock + CDR
+    basics = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "689001.SH"],
+            "name": ["A", "CDR-A"],
+            "exchange": ["SH", "SH"],
+            "asset_type": ["stock", "cdr"],
+            "list_date": [date(2000, 1, 1), date(2021, 1, 1)],
+            "delist_date": [None, None],
+            "prev_symbol": [None, None],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.instruments.fetch_instrument_basics",
+        lambda: basics,
+    )
+
+    def roster_sh(day):
+        return {"600000.SH"}
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        roster_sh,
+    )
+    monkeypatch.setattr(r3, "known_delisted_instruments", lambda cfg, asof: {})
+    receipt = runner._identity_completion_v072()
+    assert "689001.SH" in set(receipt["roster_not_observable_identity_sample"]) or \
+        "689001.SH" in set(receipt.get("formal_identity", []) or [])
+    assert receipt["formal_identity_n"] == 2
+    assert receipt["roster_expected_n"] == 1
+    assert receipt["shsz_closure"]["closed"] is True  # CDR not a false blocker
+
+
+def test_common_stock_missing_still_blocks(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    basics = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "600001.SH"],
+            "name": ["A", "B"],
+            "exchange": ["SH", "SH"],
+            "asset_type": ["stock", "stock"],
+            "list_date": [date(2000, 1, 1), date(2000, 1, 1)],
+            "delist_date": [None, None],
+            "prev_symbol": [None, None],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.instruments.fetch_instrument_basics",
+        lambda: basics,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        lambda day: {"600000.SH"},
+    )
+    monkeypatch.setattr(r3, "known_delisted_instruments", lambda cfg, asof: {})
+    with pytest.raises(R3Error, match="NOT_CLOSED"):
+        runner._identity_completion_v072()
+
+
+def test_c2_controller_terminal_only_after_postproof_failure(monkeypatch, tmp_path):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {
+                "bj_current_membership": [
+                    {"symbol": "920001.BJ", "name": "X", "exchange": "BJ",
+                     "asset_type": "stock", "list_date": "2025-01-01",
+                     "delist_date": None, "prev_symbol": None}
+                ]
+            },
+            default=str,
+        )
+    )
+    non_bj = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"], "name": ["A"], "exchange": ["SH"],
+            "asset_type": ["stock"], "list_date": [date(2000, 1, 1)],
+            "delist_date": [None], "prev_symbol": [None],
+            "source": ["tdx_protocol"], "data_version": ["v2"],
+            "fetched_at": [datetime(2026, 2, 1, tzinfo=timezone.utc)],
+        }
+    )
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+    )
+    runner._new_run = lambda job: "cid"
+    runner.ledger = type("Led", (), {
+        "calls": [],
+        "append": lambda self, r: self.calls.append(r),
+    })()
+    monkeypatch.setattr(r3.R3Runner, "_compact", lambda self, rid: {"status": "success"})
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest([]))
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter([]))
+    calls = {"n": 0}
+
+    def load_cur(cfg):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            stray = pl.DataFrame(
+                {
+                    "symbol": ["920999.BJ"], "name": ["Z"], "exchange": ["BJ"],
+                    "asset_type": ["stock"], "list_date": [date(2020, 1, 1)],
+                    "delist_date": [None], "prev_symbol": [None],
+                    "source": ["eastmoney"], "data_version": ["v1"],
+                    "fetched_at": [datetime(2026, 2, 1, tzinfo=timezone.utc)],
+                }
+            )
+            return pl.concat([non_bj, stray], how="diagonal_relaxed")
+        return non_bj
+
+    monkeypatch.setattr(r3, "load_curated_instruments", load_cur)
+    with pytest.raises(R3Error, match="C2_POSTCHECK"):
+        runner._enrich_bj_metadata()
+    completes = [r for r in runner.ledger.calls if r.get("event") == "CONTROLLER_COMPLETE"]
+    assert completes and completes[-1]["status"] == "failed"
