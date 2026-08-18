@@ -1,11 +1,11 @@
 # R3 DAILY FOUNDATION IMPLEMENTATION PLAN
 
-**TASK_CONTRACT:** `R3-DAILY-FOUNDATION-V01`  
-**SPEC_VERSION:** `V1.0 FROZEN`  
-**BASE_HEAD:** `0254122a99f0a365d2be12f29a2a59b951497fd3`  
-**PHASE:** `R3 — DAILY FOUNDATION`  
-**MODE:** `IMPLEMENTATION / DATA EXECUTION / VALIDATION`  
-**FULL_MARKET_AUTHORIZED:** `YES — only after this exact plan receives independent AUDIT_PASS`  
+**TASK_CONTRACT:** `R3-DAILY-FOUNDATION-V02`
+**SPEC_VERSION:** `V1.0 FROZEN`
+**BASE_HEAD:** `0254122a99f0a365d2be12f29a2a59b951497fd3`
+**PHASE:** `R3 — DAILY FOUNDATION`
+**MODE:** `IMPLEMENTATION / DATA EXECUTION / VALIDATION`
+**FULL_MARKET_AUTHORIZED:** `YES — only after this exact plan receives independent AUDIT_PASS`
 **SUPERPOWERS:** `NOT_USED — current user override`
 
 ## Goal
@@ -16,17 +16,40 @@ copying any R1 legacy row. Produce an explicit gap map and a fail-closed quality
 receipt. R3 exits only as `DAILY_READY`; it does not build R4 facts, R5 5m,
 R6 market/industry context, R7 publication, or R8 queries.
 
-## Frozen execution window
+## Frozen daily window and security-master observation
 
 - `R3_HISTORY_START = 2016-01-01`
-- `R3_AS_OF = 2026-08-17`
+- `R3_DAILY_AS_OF = 2026-08-17`
 - All date bounds are inclusive.
 - `2026-08-17` is deliberately a fully settled historical session relative to
-  the plan date. No run may silently substitute wall-clock today.
+  the plan date. No daily-bar or calendar run may silently substitute
+  wall-clock today; live security-master observation uses the separately named
+  receipt below.
 - Daily prices are RAW/unadjusted. `daily_bars.volume` is shares and
   `daily_bars.amount` is CNY when present, per the pinned `v2` schema.
 - Missing amount stays null with explicit source/coverage evidence; it is never
   rewritten as zero.
+
+`R3_DAILY_AS_OF` governs bars and calendar-based quality. It does not claim that
+the pinned live security-list and issued-code discovery APIs can reconstruct a
+historical security-master snapshot. Those APIs have no as-of parameter. R3
+therefore records a separate, immutable observation:
+
+```text
+R3_UNIVERSE_OBSERVED_AT = actual UTC completion timestamp of discovery
+R3_UNIVERSE_REFERENCE_DATE = pinned discovery reference date
+R3_UNIVERSE_CATALOG_SHA256 = complete issued-code catalog hash
+R3_UNIVERSE_METADATA_SHA256 = curated instruments hash after enrichment
+```
+
+The effective universe for daily coverage is reconstructed by verified
+`list_date <= R3_DAILY_AS_OF` and
+`delist_date is null or delist_date >= R3_DAILY_AS_OF`. Securities listed after
+the daily as-of may remain in the current authoritative security master, but
+they are excluded from R3 expected coverage and are never represented as known
+on 2026-08-17. Delayed execution changes the observation receipt, not the
+frozen daily window; exact catalog and metadata hashes make that difference
+auditable.
 
 The 2016 floor follows the pinned CNEquity supported daily backfill floor and
 provides more than ten years of daily history. Earlier history is not required
@@ -163,8 +186,14 @@ path. Initial RED must cover:
 - refusal on non-zero or drifted R2 baseline at first execution;
 - refusal if a legacy path appears in any argument/config/runtime log;
 - exact command allowlist and order;
+- separate frozen daily-as-of versus current universe-observation semantics;
 - resumable discovery progress parsing and no-progress blocking;
 - manifest/run receipt parsing;
+- BSE metadata enrichment completeness and provenance;
+- service-ledger/controller-batch coverage for direct/Sina staging and exact
+  failed-scope retry;
+- proof that Stage E never creates `derived/delisting_events`;
+- source-scoped Sina null-amount and independent volume cross-check gates;
 - duplicate PK, OHLC, negative volume/amount, provenance, schema, date-window,
   and unexpected-dataset failures;
 - SH/SZ/BJ active-universe presence and historical-delisting presence;
@@ -195,8 +224,10 @@ broader CLI is not part of R3. The runner must:
   pinned CNEquity adapters may use the explicitly authorized market endpoints;
 - assert the exact pinned signatures/source identities for `JobEngine.run_job`,
   `JobEngine._retry_run`, `JobEngine.run_step`, `discover_delisted`,
-  `backfill_delisted_bars`, and `delisted_coverage_report` before the first
-  writer call; unexpected upstream drift is `RUNTIME_CONTRACT_DRIFT`;
+  Baostock `fetch_delisted_bars`, Sina `fetch_daily_bars_sina`, EastMoney
+  `fetch_clist_pages`/`clist_rows_to_symbols`, `fetch_bars_via_sina`, and
+  `delisted_coverage_report` before the first writer call; unexpected upstream
+  drift is `RUNTIME_CONTRACT_DRIFT`;
 - stream logs and progress; never swallow or reinterpret a non-zero exit;
 - resume only the documented stage or exact failed run; never start the whole
   phase again merely because one batch failed;
@@ -207,6 +238,20 @@ broader CLI is not part of R3. The runner must:
 - call pinned `_retry_run(..., auto_finalize=False)` only for the exact failed
   run, then call only the `compact` step after all expected batches resolve.
   It must never enter the pinned generic finalize chain;
+- maintain a service-owned batch ledger for every direct or fallback scope.
+  Each record contains run ID, physical dataset, symbols hash and bounded
+  sample, window, adapter, attempt, staging relative path/hash, rows, and
+  status. A controller manifest batch with the same identity and
+  `blocks_compaction=True` must surround every scope not represented by an
+  upstream worker batch;
+- require both the upstream manifest and service ledger to have zero incomplete
+  scope before compact. The compact receipt records the complete input staging
+  inventory/hash, and a post-compact proof checks every input PK/provenance is
+  present in curated while staging content itself remains unchanged;
+- before `_retry_run`, require every retryable manifest dataset to be in the
+  R3 allowlist and require the service ledger to identify the exact failed
+  scope. Never call `run_job(..., retry_failed_only=True)`. Reject any orphan
+  reconciliation outside the exact current R3 run set;
 - stop before any later task if a gate fails.
 
 The runner must support `--preflight-only`, which is strictly read-only and
@@ -233,7 +278,11 @@ must not import or instantiate upstream writer helpers. Requirements:
 `docs/contracts/R3_DAILY_FOUNDATION_CONTRACT.md` must record:
 
 - exact date window, sources, schema, PK, units, provenance, raw-price rule;
-- full-universe and delisted evidence semantics;
+- separate current-universe observation and frozen daily-as-of semantics;
+- full-universe, active-BJ metadata, and delisted evidence semantics;
+- service batch ledger, controller manifest batch, compact input, and curated
+  post-proof lineage;
+- Sina null-amount acceptance boundary and independent volume-evidence gate;
 - expected/observed/explained/unexplained daily coverage categories;
 - the fact that status-based missing explanations remain pending R4;
 - data/gap/quality receipt schemas and hashes;
@@ -261,9 +310,10 @@ Run the new `--preflight-only` path. It must prove and record without mutation:
 - target volume free space;
 - configured sources enabled, `allow_mock=false`, workers=1;
 - no credential or proxy value is written to a report;
-- `R3_HISTORY_START` and `R3_AS_OF` are trading-window valid and the end session
+- `R3_HISTORY_START` and `R3_DAILY_AS_OF` are trading-window valid and the end session
   is final;
-- every exact CLI subcommand and pinned source path has been statically approved;
+- every exact internal callable, read-only CLI shape, signature/source identity,
+  network provider, and write path has been statically approved;
 - legacy paths appear only as denylist strings and are not accessed.
 
 Any mismatch stops R3 before data execution. Commit any test/contract correction
@@ -278,7 +328,7 @@ service-owned runner and never by ad hoc shell commands.
 ### Stage A — Formal security master seed
 
 Run a single pinned `JobEngine.run_job` containing only `instruments`, with
-`backfill=True`, `trade_date=R3_AS_OF`, and `finalize_run=False`; after all
+`backfill=True`, `trade_date=R3_DAILY_AS_OF`, and `finalize_run=False`; after all
 batches resolve, run only the pinned `compact` step and finish the manifest
 run. This is semantically the narrow part of:
 
@@ -299,11 +349,19 @@ equivalent CLI shape is:
 cne delisted discover --config config/cnequity.toml --limit 1000
 ```
 
-Repeat until returned `remaining = 0`. Each chunk is a full-market operation but
-bounded in time and checkpointed by upstream every 100 probes. A failed probe
-remains pending. Require monotonic progress; after three consecutive chunks
-with no decrease in remaining scope, stop `BLOCKED_SOURCE_DISCOVERY` with all
-evidence preserved. Never relabel a failed probe as never-issued.
+Repeat until returned `complete=true`, `failed=0`, and `remaining=0`. Each chunk
+is a full-market operation but bounded in time and checkpointed by upstream
+every 100 probes. A failed probe remains pending. Require monotonic progress;
+after three consecutive chunks with no decrease in remaining scope, stop
+`BLOCKED_SOURCE_DISCOVERY` with all evidence preserved. Never relabel a failed
+probe as never-issued.
+
+Discovery is a current observation because the pinned API has no as-of
+parameter. Capture its actual UTC completion time, the exact internal reference
+date, catalog hash, classified live/recent hash, and formal-delisted hash. Do
+not label this snapshot `as_of=2026-08-17`; use it only to build the current
+security master and then reconstruct the separate daily-as-of universe from
+verified identity dates.
 
 ### Stage C — Merge BSE/live-missing identities
 
@@ -318,10 +376,37 @@ step now merges recent Sina-discovered, non-TDX symbols such as `.BJ`. Require:
 
 Failure to establish BSE coverage is `BLOCKED_ALL_A_UNIVERSE`, not a warning.
 
+### Stage C2 — Active BSE metadata enrichment
+
+The pinned merge adds non-TDX symbols after its ordinary EastMoney date
+enrichment and leaves those rows with `name=None` and `list_date=None`.
+Therefore the service runner must perform one thin, source-pinned enrichment:
+
+1. Fetch the EastMoney clist once through the pinned client with fields
+   `f12,f13,f14,f26` (code, market, name, list date).
+2. Map rows only through pinned `clist_rows_to_symbols`; reject any noncanonical
+   or cross-market identity.
+3. Join only the active/recent `.BJ` set from the completed discovery receipt.
+4. Require every effective-as-of active BJ stock to have a nonblank name and a
+   valid `list_date <= R3_DAILY_AS_OF`; a symbol absent from or contradictory
+   across the two sources is `BLOCKED_ALL_A_METADATA`.
+5. Stage a complete instruments snapshot: existing non-BJ rows unchanged plus
+   enriched BJ rows with `source=eastmoney`, `data_version=v1`, fresh
+   `fetched_at`, and explicit enrichment receipt. Never stage a BJ-only partial
+   snapshot into `compact_instruments`.
+6. Wrap the staging file in matching service-ledger and manifest controller
+   batches, compact only after success, then prove no active BJ row has null
+   `name`/`list_date` or a fabricated `delist_date`.
+
+`code`, board, and security-type projections not physically present in the
+pinned schema are deterministic from canonical symbol/exchange/asset_type and
+are frozen for the R8 query projection; R3 does not fork the upstream Parquet
+schema merely to duplicate them.
+
 ### Stage D — Trading calendar foundation
 
 Run a single pinned `JobEngine.run_job` containing only `trading_calendar`,
-with `backfill=True`, `trade_date=R3_AS_OF`, and
+with `backfill=True`, `trade_date=R3_DAILY_AS_OF`, and
 `config._backfill_start=R3_HISTORY_START`; compact only that run after every
 batch resolves. The equivalent CLI shape is shown for review:
 
@@ -334,30 +419,48 @@ The pinned step intentionally ignores `_backfill_end` and extends calendar
 coverage to `trade_date + 365 days`; this forward horizon is expected and must
 be recorded rather than misreported as daily-bar scope drift. Require
 successful compact, unique dates, all required columns, and a non-empty
-trading-session set through `R3_AS_OF`.
+trading-session set through `R3_DAILY_AS_OF`.
 
 ### Stage E — Dedicated delisted daily recovery
 
-The public command has no `--end` option and would silently use wall-clock
-today. Therefore the runner must call pinned
-`backfill_delisted_bars(config, run_id, R3_HISTORY_START,
-end=R3_AS_OF)` directly, then run only the pinned `compact` step and finish the
-manifest run. The broader CLI shape below is documentation only and must not
-be executed in R3:
+Do not call pinned `backfill_delisted_bars`: that helper unconditionally writes
+`derived/delisting_events` when it recovers rows, crossing the R3 boundary.
+Instead implement a narrow, service-owned recovery adapter composed only from
+the pinned raw-bar adapters:
 
-```text
-cne delisted backfill --config config/cnequity.toml --since 2016-01-01
-```
+1. Build an immutable target set from complete Baostock formal-delisting
+   identity plus completed issued-code discovery. Classify every target as
+   `RECOVERY_REQUIRED`, `EXPECTED_NO_DATA_BEFORE_WINDOW`, or `UNRESOLVED` for
+   the exact daily window; hash the full set.
+2. Route SH/SZ targets through pinned Baostock `fetch_delisted_bars`, which
+   supplies RAW bars with volume in shares and amount in CNY. Route a BJ target
+   only through pinned Sina `fetch_daily_bars_sina`, with the explicit amount
+   limitation below. No target may silently change route.
+3. For every bounded symbol chunk, create matching service-ledger and blocking
+   manifest controller batches before fetching. Stage only `daily_bars` with
+   pinned schema/provenance. Do not compute or write ending patterns,
+   `delisting_events`, status, adjustment, or any other derived dataset.
+4. Any in-window BJ delisted target must already have nonblank name and valid
+   list/delist metadata from an approved identity source; otherwise stop
+   `BLOCKED_HISTORICAL_BJ_METADATA` rather than inventing a name/date.
+5. A transport failure or empty response for a target whose formal dates prove
+   overlap stays `UNRESOLVED`. Retry only that exact target chunk, at most three
+   unchanged attempts.
+6. Compact only when both ledgers show every target recovered or explicitly
+   expected-no-data. Produce an ASL-owned versioned coverage receipt containing
+   window, target-set hash, per-route symbol/row/span hashes, expected-no-data,
+   unresolved (required zero), compact run/batch IDs, and curated post-proof.
+7. Verify the read-only pinned `delisted_coverage_report` independently after
+   compact, but use the stricter ASL receipt as R3 completion authority.
 
-Require function success, successful compact, zero unresolved recovery targets,
-and a complete versioned coverage receipt spanning the R3 window. Retry the
-same checkpointed scope only. Do not run `delisted repair` or reconciliation
-with `--apply` in R3.
+This path is a thin orchestration of pinned source adapters, not a new market
+lake or a copy of the upstream delisting-event subsystem. Do not run public
+`cne delisted backfill`, `delisted repair`, or reconciliation with `--apply`.
 
 ### Stage F — Generic full-universe RAW daily backfill
 
 Run a single pinned `JobEngine.run_job` containing only `daily_bars`, with
-`backfill=True`, `trade_date=R3_AS_OF`, explicit `_backfill_start` and
+`backfill=True`, `trade_date=R3_DAILY_AS_OF`, explicit `_backfill_start` and
 `_backfill_end`, `workers=1`, and `finalize_run=False`. Run only `compact` after
 every batch resolves. The equivalent CLI shape is:
 
@@ -367,14 +470,18 @@ cne backfill daily_bars --config config/cnequity.toml \
 ```
 
 This includes SH/SZ through TDX and BSE/non-TDX symbols through the pinned Sina
-fallback. The dedicated receipt from Stage E must satisfy delegated delisted
-ownership. Require command status `success` and successful compact.
+fallback. Before calling the step, start a service-ledger entry and blocking
+manifest controller batch for the full non-TDX fallback symbol/window scope;
+finish it successfully only after the result proves zero failed fallback
+symbol. The generic universe must contain no Stage E delisted target; any
+delegated-delisted ownership here is a controller bug and blocks compact.
+Require step status `success`, both ledgers complete, and successful compact.
 
 If a manifest run has retryable failed/warning batches, the runner may invoke
 only the exact pinned internal recovery operation:
 
 ```text
-JobEngine._retry_run(<exact recorded run_id>, R3_AS_OF, auto_finalize=False)
+JobEngine._retry_run(<exact recorded run_id>, R3_DAILY_AS_OF, auto_finalize=False)
 ```
 
 After zero incomplete batches, the runner runs only `compact` and finishes the
@@ -383,10 +490,18 @@ runner must prove decreasing failed scope or stop. It must never launch a
 second broad daily backfill while an exact run remains recoverable, and it must
 prove that no adjustment/industry/audit batch was created.
 
+`_retry_run` is valid only for upstream manifest worker batches in the R3
+dataset allowlist. It cannot recover the Sina fallback because that pinned path
+does not create its own worker batch. Any failed non-TDX symbol must be retried
+deterministically through pinned `fetch_bars_via_sina` with the exact recorded
+symbol/window scope, a new service attempt, and the same blocking controller
+batch identity. Never accept `_retry_run`'s success as evidence for an
+unresolved service-ledger fallback scope.
+
 ### Stage G — Read-only delisted coverage gate
 
 After writers exit, call pinned
-`delisted_coverage_report(config, R3_HISTORY_START, R3_AS_OF, sample=20)`
+`delisted_coverage_report(config, R3_HISTORY_START, R3_DAILY_AS_OF, sample=20)`
 directly. The equivalent CLI shape is:
 
 ```text
@@ -405,12 +520,15 @@ produce all of the following exact evidence.
 ### L0 structural gate
 
 - only `instruments`, `trading_calendar`, and `daily_bars` contain R3 Parquet;
-- derived/raw contain no R3 payload. Staging files retained by upstream after a
+- `derived/delisting_events` and every other derived/raw dataset remain absent;
+  the R3-safe Stage E adapter is tested to make no such write. Staging files retained by upstream after a
   successful compact are permitted only when every file maps to a terminal
-  manifest run with a successful compact batch and its dataset is one of the
-  three R3 datasets. They remain non-authoritative, are inventoried and hashed,
-  and are not deleted. Orphan, incomplete, uncompactable, or non-R3 staging
-  blocks the gate;
+  manifest run, a complete service-ledger scope, the exact compact input
+  inventory/hash, a successful compact batch, and a curated PK/provenance
+  post-proof; its dataset must be one of the three R3 datasets. Staging remains
+  non-authoritative and content-unchanged, is inventoried and hashed, and is
+  not deleted. Orphan, incomplete, uncompactable, or non-R3 staging blocks the
+  gate;
 - registered schema and required columns match;
 - duplicate `instruments.symbol`, calendar date, and
   `(daily_bars.symbol, trade_date)` counts are zero;
@@ -430,12 +548,31 @@ produce all of the following exact evidence.
 - null amount coverage is grouped by source and date. Only a pinned, documented
   source limitation may be `EXPLAINED_MISSING`; any new source or semantic is
   `DATA_CONFLICT` and blocks the gate;
+- `amount IS NULL` is permitted only when `source=sina`. The receipt must split
+  it by exchange, active versus delisted ownership, date, rows, symbols, and
+  complete PK hash. Any null amount from a non-Sina source blocks
+  `DAILY_READY`. Sina null is recorded as
+  `EXPLAINED_MISSING_SOURCE_FIELD`; it is never described as a verified CNY
+  value or filled from another row;
+- Sina volume is a separate evidence class: the pinned adapter/source contract
+  says it emits shares, but the amount-ratio identity cannot validate those
+  rows. R3 must independently cross-check a bounded, deterministic sample
+  against pinned EastMoney historical kline for at least 20 BJ symbols and 20
+  overlapping traded dates per available symbol. Require identical PK, close
+  within 1 bp, and volume ratio within `[0.99, 1.01]`; source disagreement or an
+  insufficient sample blocks with `BLOCKED_SINA_UNIT_EVIDENCE`. Cross-check
+  rows are evidence only and are not written into canonical daily bars;
 - source and row counts, min/max dates, null counts, and per-source unit results
   are hashed into the receipt.
 
 ### Universe and survivorship gate
 
-- active stock/CDR universe as of `R3_AS_OF` has non-zero SH, SZ, and BJ counts;
+- the security-master observation receipt is explicit and is not mislabeled as
+  a historical as-of snapshot;
+- effective active stock/CDR universe as of `R3_DAILY_AS_OF`, reconstructed
+  from verified list/delist dates, has non-zero SH, SZ, and BJ counts;
+- every effective active BJ instrument has nonblank `name` and non-null
+  `list_date`, with the Stage C2 provenance receipt;
 - every active instrument has at least one daily row on or after its effective
   in-window list date;
 - formal historical delisted instruments are non-zero and the dedicated
@@ -447,7 +584,7 @@ produce all of the following exact evidence.
 ### Coverage and gap map
 
 For each stock and each exchange session inside its effective
-`[max(list_date, history_start), min(delist_date, as_of)]` span, classify:
+`[max(list_date, history_start), min(delist_date, R3_DAILY_AS_OF)]` span, classify:
 
 ```text
 EXPECTED
@@ -472,6 +609,9 @@ symbol, month, and source, plus a hash of the complete machine-readable set.
 6. no unexplained source/provider conflict;
 7. no non-R3 dataset, fact, adjusted series, or publication state;
 8. `LATEST_GOOD_AS_OF` remains `NOT_PUBLISHED`.
+9. Sina null-amount scope and separate volume-evidence limitation are explicit
+   in the contract, machine receipt, gap summary, state carry-forward, and
+   author report.
 
 `PENDING_R4_STATUS_EXPLANATION` is permitted only as explicit carry-forward and
 cannot be counted as `EXPLAINED_MISSING` until R4 proves it. The report must not
@@ -520,14 +660,21 @@ PLAN_AUDIT_SHA
 RUNTIME_PIN
 DATA_ROOT
 R3_WINDOW
+UNIVERSE_OBSERVED_AT
+UNIVERSE_REFERENCE_DATE
+UNIVERSE_CATALOG_AND_METADATA_HASHES
 FULL_MARKET_AUTHORIZED
 LEGACY_ROWS_MIGRATED
 COMMAND_RECEIPTS
+SERVICE_BATCH_LEDGER
+COMPACT_INPUT_AND_CURATED_POST_PROOF
 INSTRUMENT_COUNTS_BY_EXCHANGE
+BSE_METADATA_STATUS
 DELISTED_COVERAGE
 DAILY_ROWS_AND_DATES
 PK_AND_VALUE_QUALITY
 UNIT_EVIDENCE
+SINA_AMOUNT_AND_VOLUME_LIMITATION
 GAP_CLASSIFICATION
 NON_R3_DATASETS
 LATEST_GOOD_AS_OF
@@ -577,8 +724,13 @@ An independent reviewer of the exact pushed commit must verify:
 - command receipts and manifest lineage;
 - target-root inventory and no legacy access evidence;
 - full SH/SZ/BJ plus delisted universe evidence;
+- current universe-observation versus frozen daily-as-of separation;
+- complete active-BJ name/list-date metadata and its provenance;
 - bounded full daily scans for schema, PK, OHLC, units, provenance, dates, and
   coverage classifications;
+- service-ledger/manifest/compact input-to-curated lineage for every direct and
+  fallback staging file;
+- exact Sina null-amount scope and independent volume evidence;
 - no R4+ dataset, fact, publish state, query path, or strategy semantics;
 - targeted tests and independent read-only verifier run;
 - local/remote exact SHA equality.
@@ -595,14 +747,16 @@ R3 exits only when all are true:
    execution.
 2. No legacy root was accessed and zero legacy rows were migrated.
 3. The pinned runtime alone built the authorized R3 datasets in the clean root.
-4. SH/SZ/BJ current identities and historical delisted identities are present.
-5. Multi-year RAW daily bars cover the frozen window through `R3_AS_OF`.
+4. SH/SZ/BJ current identities and historical delisted identities are present;
+   active BJ name/list-date metadata is complete and source-traceable.
+5. Multi-year RAW daily bars cover the frozen window through `R3_DAILY_AS_OF`.
 6. Schema, PK, OHLC, volume/amount, source, data-version, and fetched-at gates
-   pass with explicit missing semantics.
+   pass with explicit Sina amount/volume limitations.
 7. Delisted recovery is receipt-complete and verified.
 8. Every daily gap is explicit; R4-dependent status explanations remain
    pending rather than invented.
-9. No later-phase dataset/fact/query/publish/strategy work occurred.
+9. No `delisting_events` or other later-phase dataset/fact/query/publish/
+   strategy work occurred.
 10. `DAILY_READY` is recorded as author-only, exact review SHA is pushed, and
     independent audit subsequently returns `AUDIT_PASS`.
 
