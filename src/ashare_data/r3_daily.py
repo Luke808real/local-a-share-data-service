@@ -531,12 +531,14 @@ class R3Runner:
         attempts = 0
         last_remaining: int | None = None
         stalled = 0
+        total_failed = 0
         while True:
             attempts += 1
             if attempts > 400:
                 raise R3Error("BLOCKED_SOURCE_DISCOVERY", "discovery attempt budget exhausted")
             result = discover_delisted(self.cfg, limit=1000)
             remaining = result.remaining
+            total_failed += len(result.failed)
             self.ledger.append(
                 {
                     "stage": "B_discovery",
@@ -549,17 +551,22 @@ class R3Runner:
                     "complete": result.complete,
                 }
             )
-            if result.failed:
-                raise R3Error(
-                    "BLOCKED_SOURCE_DISCOVERY", f"{len(result.failed)} probes failed this chunk"
-                )
             if remaining == 0:
                 break
             if last_remaining is not None and remaining >= last_remaining:
                 stalled += 1
+                logger.warning(
+                    "discovery no progress attempt %s: remaining unchanged at %s "
+                    "(%s failed this chunk)",
+                    attempts,
+                    remaining,
+                    len(result.failed),
+                )
                 if stalled >= 3:
                     raise R3Error(
-                        "BLOCKED_SOURCE_DISCOVERY", "no discovery progress across 3 chunks"
+                        "BLOCKED_SOURCE_DISCOVERY",
+                        f"no discovery progress across 3 chunks; remaining={remaining}, "
+                        f"cumulative_failed={total_failed}",
                     )
             else:
                 stalled = 0
@@ -567,6 +574,7 @@ class R3Runner:
         receipt = {
             "attempts": attempts,
             "complete": True,
+            "cumulative_failed_probes": total_failed,
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
         self.machine.complete("B_discovery", receipt)
