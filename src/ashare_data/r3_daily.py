@@ -256,6 +256,13 @@ class R3Error(RuntimeError):
         self.code = code
 
 
+class _EmptyRosterError(RuntimeError):
+    """An empty roster on a required trading day is a retryable SOURCE_ERROR,
+    never a success (frozen closure semantics: a trading-day empty roster can
+    not count as observed). Raised inside the date attempt loop so the sweep
+    force-closes, relogins, backs off and retries the SAME date."""
+
+
 # --- Git / runtime helpers --------------------------------------------------
 
 
@@ -1411,9 +1418,23 @@ class R3Runner:
             "bj_historical_resolved": False,
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
-        atomic_write_json(self.meta / "r3-identity-receipt.json", receipt)
-        # persist BEFORE raising so failed runs leave an auditable receipt
+        # Fail-closed final gate (Sol review): the final identity receipt is
+        # written ONLY after closure.closed AND zero formal drift. On failure
+        # the roster checkpoint carries a bounded terminal=blocked summary,
+        # r3-identity-receipt.json MUST NOT exist, and B stays current/running
+        # (no machine.complete).
         if not closure["closed"]:
+            self._update_roster_checkpoint_terminal(
+                {
+                    "terminal_status": "blocked",
+                    "closure_summary": {
+                        "closed": closure["closed"],
+                        "unresolved_n": closure["unresolved_n"],
+                        "identity_not_in_roster_n": closure["identity_not_in_roster_n"],
+                        "roster_not_in_identity_n": closure["roster_not_in_identity_n"],
+                    },
+                }
+            )
             raise R3Error(
                 "NOT_CLOSED",
                 f"roster not closed: {closure['unresolved_n']} unresolved "
@@ -1422,24 +1443,31 @@ class R3Runner:
                 f"roster_not_in_identity={closure['roster_not_in_identity_n']})",
             )
         if drift_missing or drift_extra or drift_date_mismatch:
+            self._update_roster_checkpoint_terminal(
+                {
+                    "terminal_status": "blocked",
+                    "formal_drift_summary": {
+                        "missing_n": len(drift_missing),
+                        "extra_n": len(drift_extra),
+                        "date_mismatch_n": len(drift_date_mismatch),
+                    },
+                }
+            )
             raise R3Error(
                 "FORMAL_IDENTITY_DRIFT",
                 f"Stage-B fresh formal map != Stage-A formal evidence: "
                 f"missing={len(drift_missing)}, extra={len(drift_extra)}, "
                 f"date_mismatch={len(drift_date_mismatch)}",
             )
-        # V07.3: the closure is closed and identity drift is empty, so the
-        # checkpoint may record a terminal success (never deleted; it stays as
-        # lineage evidence that B completed).
+        # Both gates pass: only now persist the final identity receipt and mark
+        # the checkpoint terminal=success with the ACTUAL receipt file SHA.
+        identity_path = self.meta / "r3-identity-receipt.json"
+        atomic_write_json(identity_path, receipt)
         ckpt_path = self.meta / ROSTER_CHECKPOINT_FILENAME
         if ckpt_path.exists():
             ck = json.loads(ckpt_path.read_text(encoding="utf-8"))
             ck["terminal_status"] = "success"
-            ck["final_identity_receipt_sha"] = sha256_bytes(
-                json.dumps(
-                    receipt, sort_keys=True, separators=(",", ":"), default=str
-                ).encode()
-            )
+            ck["final_identity_receipt_sha"] = sha256_file(identity_path)
             self._write_roster_checkpoint(ck)
         self.ledger.append({"stage": "B_discovery", "v07_2_identity": True, "receipt": receipt})
         return receipt
@@ -1453,6 +1481,21 @@ class R3Runner:
 
     def _write_roster_checkpoint(self, payload: dict[str, Any]) -> None:
         atomic_write_json(self.meta / ROSTER_CHECKPOINT_FILENAME, payload)
+
+    def _update_roster_checkpoint_terminal(self, summary: dict[str, Any]) -> None:
+        """Atomically merge a bounded terminal summary into the roster
+        checkpoint (fail-closed failure evidence). Never deletes the progress
+        checkpoint or the union data; adds terminal_status + summary fields."""
+        ckpt_path = self.meta / ROSTER_CHECKPOINT_FILENAME
+        ck: dict[str, Any] = {}
+        if ckpt_path.exists():
+            try:
+                ck = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - never make failure evidence depend
+                ck = {}
+        ck.update(summary)
+        ck.setdefault("updated_at_utc", datetime.now(timezone.utc).isoformat())
+        self._write_roster_checkpoint(ck)
 
     def _resumable_roster_sweep(
         self,
@@ -1543,6 +1586,33 @@ class R3Runner:
                 )
             success_dates_n = int(ckpt.get("success_dates_n", -1))
             last_completed_date = ckpt.get("last_completed_date")
+            # Checkpoint self-consistency (lineage): a checkpoint can only be
+            # resumed if its counters and terminal-date marker agree.
+            if success_dates_n != next_index:
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"checkpoint success_dates_n {success_dates_n} "
+                    f"!= next_index {next_index}",
+                )
+            if int(ckpt.get("union_symbol_n", -1)) != len(union):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"checkpoint union_symbol_n {ckpt.get('union_symbol_n')} "
+                    f"!= len(union_symbols) {len(union)}",
+                )
+            if next_index == 0 and ckpt.get("last_completed_date") is not None:
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    "next_index 0 must have last_completed_date null",
+                )
+            if next_index > 0 and (
+                ckpt.get("last_completed_date") != days[next_index - 1].isoformat()
+            ):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"last_completed_date {ckpt.get('last_completed_date')!r} "
+                    f"!= days[{next_index - 1}] {days[next_index - 1].isoformat()}",
+                )
             resume_count = int(ckpt.get("resume_count", 0)) + 1
             episode = int(ckpt.get("execution_episode", 0)) + 1
         else:
@@ -1618,6 +1688,11 @@ class R3Runner:
                         rate_limit("baostock")
                     try:
                         roster = roster_on(day, bs=bs, login=False)
+                        if not roster:
+                            # empty roster on a trading day = retryable
+                            # SOURCE_ERROR (never success); force-close, relogin,
+                            # back off and retry the SAME date.
+                            raise _EmptyRosterError(day.isoformat())
                         ok = True
                         break
                     except KeyboardInterrupt:
@@ -1626,7 +1701,11 @@ class R3Runner:
                         # the service lock. The next run resumes from next_index.
                         raise
                     except Exception as exc:  # noqa: BLE001 - network/parse errors
-                        last_err = f"{type(exc).__name__}: {exc}"
+                        last_err = (
+                            "EMPTY_ROSTER"
+                            if isinstance(exc, _EmptyRosterError)
+                            else f"{type(exc).__name__}: {exc}"
+                        )
                         episode_retry_n += 1
                         _force_close_baostock_socket()
                         if attempt < ROSTER_SWEEP_MAX_ATTEMPTS:

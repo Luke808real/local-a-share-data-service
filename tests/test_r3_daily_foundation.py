@@ -819,7 +819,7 @@ def _stage_b_runner(tmp_path, monkeypatch, *, close=True) -> "object":
     return runner
 
 
-def test_stage_b_not_closed_persists_receipt(monkeypatch, tmp_path):
+def test_stage_b_not_closed_no_final_receipt(monkeypatch, tmp_path):
     runner = _stage_b_runner(tmp_path, monkeypatch, close=False)
     monkeypatch.setattr(
         r3, "known_delisted_instruments",
@@ -828,16 +828,16 @@ def test_stage_b_not_closed_persists_receipt(monkeypatch, tmp_path):
     with pytest.raises(R3Error, match="NOT_CLOSED"):
         runner._identity_completion_v072()
     receipt_path = runner.meta / "r3-identity-receipt.json"
-    assert receipt_path.exists()  # persisted even on NOT_CLOSED
-    payload = json.loads(receipt_path.read_text())
-    closure = payload["shsz_closure"]
-    assert closure["closed"] is False
-    assert closure["roster_not_in_identity_n"] == 0
-    assert closure["identity_not_in_roster_n"] in (0, 1)
-    assert "identity_not_in_roster_hash" in closure
+    # Sol review gate: closure not closed => final identity receipt MUST NOT exist.
+    assert not receipt_path.exists()
+    ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["terminal_status"] == "blocked"
+    assert ckpt["closure_summary"]["closed"] is False
+    assert ckpt["closure_summary"]["identity_not_in_roster_n"] == 1
+    assert ckpt["closure_summary"]["roster_not_in_identity_n"] == 0
 
 
-def test_stage_b_formal_identity_drift_persists(monkeypatch, tmp_path):
+def test_stage_b_formal_identity_drift_no_final_receipt(monkeypatch, tmp_path):
     runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
     # Stage-A evidence disagrees with the fresh stock_basic map
     monkeypatch.setattr(
@@ -846,10 +846,12 @@ def test_stage_b_formal_identity_drift_persists(monkeypatch, tmp_path):
     )
     with pytest.raises(R3Error, match="FORMAL_IDENTITY_DRIFT"):
         runner._identity_completion_v072()
-    payload = json.loads((runner.meta / "r3-identity-receipt.json").read_text())
-    drift = payload["formal_drift"]
+    # Sol review gate: formal drift != 0 => final identity receipt MUST NOT exist.
+    assert not (runner.meta / "r3-identity-receipt.json").exists()
+    ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["terminal_status"] == "blocked"
+    drift = ckpt["formal_drift_summary"]
     assert drift["extra_n"] >= 1 or drift["missing_n"] >= 1
-    assert "shsz_formal_delisted_hash" in payload
 
 
 def test_stage_e_uses_persisted_formal_map(monkeypatch, tmp_path):
@@ -2369,10 +2371,11 @@ def test_v073_checkpoint_provenance_mismatch_blocks(monkeypatch, tmp_path):
             "next_index": 1,
             "success_dates_n": 1,
             "union_symbols": ["600000.SH"],
+            "union_symbol_n": 1,
             "union_symbol_hash": r3.sha256_bytes(
                 json.dumps(["600000.SH"], separators=(",", ":")).encode()
             ),
-            "last_completed_date": None,
+            "last_completed_date": days[0].isoformat(),
             "execution_episode": 1,
             "resume_count": 0,
         }
@@ -2402,8 +2405,9 @@ def test_v073_checkpoint_union_corrupt_blocks(monkeypatch, tmp_path):
             "next_index": 1,
             "success_dates_n": 1,
             "union_symbols": ["600000.SH"],
+            "union_symbol_n": 1,
             "union_symbol_hash": "0" * 64,  # inconsistent with union_symbols
-            "last_completed_date": None,
+            "last_completed_date": days[0].isoformat(),
             "execution_episode": 1,
             "resume_count": 0,
         }
@@ -2451,6 +2455,7 @@ def test_v073_checkpoint_resume_exact_next_index(monkeypatch, tmp_path):
             "next_index": 2,
             "success_dates_n": 2,
             "union_symbols": ["600000.SH", "600001.SH"],
+            "union_symbol_n": 2,
             "union_symbol_hash": r3.sha256_bytes(
                 json.dumps(["600000.SH", "600001.SH"], separators=(",", ":")).encode()
             ),
@@ -2563,6 +2568,7 @@ def test_v073_partial_checkpoint_forbids_final_receipt(monkeypatch, tmp_path):
             "next_index": 2,
             "success_dates_n": 2,
             "union_symbols": ["600000.SH", "600001.SH"],
+            "union_symbol_n": 2,
             "union_symbol_hash": r3.sha256_bytes(
                 json.dumps(["600000.SH", "600001.SH"], separators=(",", ":")).encode()
             ),
@@ -2667,7 +2673,9 @@ def test_v073_b_happy_path_writes_receipt_and_terminal_checkpoint(monkeypatch, t
     )
     ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
     assert ckpt["terminal_status"] == "success"
-    assert len(ckpt["final_identity_receipt_sha"]) == 64
+    receipt_path = runner.meta / "r3-identity-receipt.json"
+    # the checkpoint must carry the ACTUAL file SHA (not a re-serialization hash)
+    assert ckpt["final_identity_receipt_sha"] == r3.sha256_file(receipt_path)
 
 
 def test_v073_no_sina_tdx_in_sweep_source():
@@ -2694,3 +2702,150 @@ def test_v073_approved_callables_extended():
     contract = r3.approved_callable_contract()
     assert contract["verified"] is True
     assert contract["count"] == 15
+
+
+# ============================================================================
+# V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
+# ============================================================================
+
+
+def test_v073_empty_roster_once_retry_then_success(monkeypatch, tmp_path):
+    days = _v073_days(3)
+    state = {"hits": 0}
+
+    def flaky(day, *, bs=None, login=False):
+        if day == days[1]:
+            state["hits"] += 1
+            if state["hits"] == 1:
+                return set()  # empty on a trading day = SOURCE_ERROR, never success
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, roster_impl=flaky
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    day1_calls = [c for c in ctrl["calls"] if c["day"] == days[1]]
+    assert len(day1_calls) == 2  # empty attempt -> relogin -> retried same date
+    assert ctrl["seen"]["relogin"] == 1
+    assert ctrl["sleeps"] == [1.0]
+    assert out["closure"]["closed"] is True
+    assert out["closure"]["success_dates_n"] == 3
+    ckpt = json.loads((ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["next_index"] == 3
+    assert ckpt["last_completed_date"] == days[2].isoformat()
+
+
+def test_v073_empty_roster_three_times_exhausts(monkeypatch, tmp_path):
+    days = _v073_days(5)
+
+    def empty(day, *, bs=None, login=False):
+        if day >= days[2]:
+            return set()  # always empty -> 3 retryable failures
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, roster_impl=empty
+    )
+    with pytest.raises(R3Error, match="ROSTER_DATE_RETRY_EXHAUSTED"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=ctrl["expected_set"],
+            formal_identity_hash=formal,
+            roster_expected_hash=expected,
+            sleep=sleep,
+        )
+    blocked_calls = [c for c in ctrl["calls"] if c["day"] == days[2]]
+    assert len(blocked_calls) == 3  # empty is retried like a transport failure
+    assert all(c["day"] < days[3] for c in ctrl["calls"])  # later dates untouched
+    assert ctrl["sleeps"] == [1.0, 3.0]
+    ckpt = json.loads((ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["blocked_date"] == days[2].isoformat()
+    assert ckpt["next_index"] == 2  # unchanged: days 0..1 only
+    assert ckpt["last_completed_date"] == days[1].isoformat()
+    assert ckpt["last_error_summary"] == "EMPTY_ROSTER"
+    assert not (ctrl["meta"] / "r3-identity-receipt.json").exists()
+
+
+def _v073_valid_ckpt_days2(days, form, exp):
+    prov = _v073_checkpoint_provenance(days, form, exp)
+    prov.update(
+        {
+            "next_index": 2,
+            "success_dates_n": 2,
+            "union_symbols": ["600000.SH", "600001.SH"],
+            "union_symbol_n": 2,
+            "union_symbol_hash": r3.sha256_bytes(
+                json.dumps(["600000.SH", "600001.SH"], separators=(",", ":")).encode()
+            ),
+            "last_completed_date": days[1].isoformat(),
+            "execution_episode": 1,
+            "resume_count": 0,
+        }
+    )
+    return prov
+
+
+def test_v073_ckpt_success_dates_mismatch_corrupt(monkeypatch, tmp_path):
+    days = _v073_days(4)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_valid_ckpt_days2(days, form, exp)
+    prov["success_dates_n"] = 3  # != next_index 2
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov
+    )
+    with pytest.raises(R3Error, match="ROSTER_CHECKPOINT_CORRUPT"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=exp,
+            formal_identity_hash=prov["formal_identity_hash"],
+            roster_expected_hash=prov["roster_expected_hash"],
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
+
+
+def test_v073_ckpt_union_n_mismatch_corrupt(monkeypatch, tmp_path):
+    days = _v073_days(4)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_valid_ckpt_days2(days, form, exp)
+    prov["union_symbol_n"] = 9  # != len(union_symbols) 2
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov
+    )
+    with pytest.raises(R3Error, match="ROSTER_CHECKPOINT_CORRUPT"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=exp,
+            formal_identity_hash=prov["formal_identity_hash"],
+            roster_expected_hash=prov["roster_expected_hash"],
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
+
+
+def test_v073_ckpt_last_completed_mismatch_corrupt(monkeypatch, tmp_path):
+    days = _v073_days(4)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_valid_ckpt_days2(days, form, exp)
+    prov["last_completed_date"] = days[0].isoformat()  # != days[1]
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov
+    )
+    with pytest.raises(R3Error, match="ROSTER_CHECKPOINT_CORRUPT"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=exp,
+            formal_identity_hash=prov["formal_identity_hash"],
+            roster_expected_hash=prov["roster_expected_hash"],
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
