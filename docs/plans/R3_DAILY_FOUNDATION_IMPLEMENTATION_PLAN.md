@@ -345,6 +345,29 @@ provenance, and formal identity evidence before continuing.
 
 ### Stage B — Identity authority + quarterly roster audit (V07.4)
 
+**CURRENT R3 MVP SCOPE (V08, user/architect decision): SH/SZ.**
+BJ is `DEFERRED_EXTENSION`: not deleted, not faked, not claimed complete.
+Rationale: the current engineering goal is to provide reliable LOCAL stock data
+to ChatGPT Web (涨停回调 / B1/B2) without temporary web search; SH/SZ historical
+identity + quarterly audit already have complete successful evidence; EastMoney
+BJ current (clist) has failed twice consecutively at provider level; and we are
+not adding a separate akshare dependency just for BJ current. BJ will be added
+later as an independent extension. **FULL ALL-A DAILY_READY remains FALSE** —
+this MVP only forms the intermediate fact `R3_SHSZ_SCOPE = ACTIVE`.
+
+Stage B under SH/SZ MVP:
+- Runs under V07.4 with Baostock `query_stock_basic` as the SH/SZ historical
+  identity authority and the quarterly last-trading-day roster audit, with all
+  existing SH/SZ hard gates (roster extra/span, formal drift, V07.3 evidence
+  crosscheck) preserved.
+- Identity receipt records `scope = SH_SZ_MVP`,
+  `shsz_identity_authority = Baostock_stock_basic`,
+  `shsz_identity_complete = true` only when all SH/SZ hard gates pass, and
+  `bj_scope = DEFERRED_EXTENSION`, `bj_current_status = NOT_EVALUATED`,
+  `bj_historical_status = UNKNOWN_CARRIED`. It does NOT call EastMoney clist and
+  never fabricates `bj_current_symbols / bj_current_hash / bj_current_membership`
+  as 0 / empty-universe / PASS.
+
 **OLD (superseded):** full daily roster closure — scan every trading date in
 `2016-01-01 .. 2026-08-17` (~2,580 dates) with `roster_on(day)` and require the
 union to close against `stock_basic` (`failed_dates_n == 0`,
@@ -392,50 +415,24 @@ longer claims a 2,580-date closure. BJ policy is unchanged.
 
 ### Stage C — Merge BSE/live-missing identities
 
-Run the same exact one-step instruments operation a second time. The pinned
-step now merges recent Sina-discovered, non-TDX symbols such as `.BJ`. Require:
-
-- non-zero current stock counts for SH, SZ, and BJ;
-- unique canonical symbols;
-- no live BSE symbol carrying a fabricated delist date;
-- non-zero formal historical delisted count;
-- no strategy eligibility filtering.
-
-Failure to establish BSE coverage is `BLOCKED_ALL_A_UNIVERSE`, not a warning.
+Under `R3_CURRENT_MVP_SCOPE = SH_SZ` this is a bounded DEFERRED stage (BJ is
+`DEFERRED_EXTENSION`). Execution makes NO network/provider call, does not re-run
+instruments, does not compact, and writes no market dataset. It only emits
+minimal evidence (`scope = SH_SZ_MVP`, `status = DEFERRED`,
+`reason = BJ_EXTENSION_OUTSIDE_CURRENT_MVP`) and then
+`machine.complete("C_merge")` so the frozen stage order (A, B, C, C2, D, ...)
+stays intact and `D_calendar` can proceed later. No new stage and no new BJ
+subsystem are created. The prior All-A merge design is retained only as future
+documentation for when BJ is extended.
 
 ### Stage C2 — Active BSE metadata enrichment
 
-The pinned merge adds non-TDX symbols after its ordinary EastMoney date
-enrichment and leaves those rows with `name=None` and `list_date=None`.
-Therefore the service runner must perform one thin, source-pinned enrichment:
-
-1. Fetch the EastMoney clist once through the pinned client with fields
-   `f12,f13,f14,f26` (code, market, name, list date).
-2. Map rows only through pinned `clist_rows_to_symbols`; reject any noncanonical
-   or cross-market identity.
-3. Join only the active/recent `.BJ` set from the completed discovery receipt.
-4. Require every effective-as-of active BJ stock to have a nonblank name and a
-   valid `list_date <= R3_DAILY_AS_OF`; a symbol absent from or contradictory
-   across the two sources is `BLOCKED_ALL_A_METADATA`.
-5. Stage a complete instruments snapshot: existing non-BJ rows unchanged plus
-   enriched BJ rows with `source=eastmoney`, `data_version=v1`, fresh
-   `fetched_at`, and explicit enrichment receipt. Never stage a BJ-only partial
-   snapshot into `compact_instruments`.
-6. Wrap the staging file in matching service-ledger and manifest controller
-   batches, compact only after success, then prove no active BJ row has null
-   `name`/`list_date` or a fabricated `delist_date`.
-
-`code`, board, and security-type projections not physically present in the
-pinned schema are deterministic from canonical symbol/exchange/asset_type and
-are frozen for the R8 query projection; R3 does not fork the upstream Parquet
-schema merely to duplicate them.
-
-Membership semantics after C2: a discovery `live_missing` symbol that receives
-a verified instrument row here is an ACTIVE current-universe member with a
-proven TDX-less route, not a delisted target. It belongs to the Stage F2 daily
-fetch set whenever its verified identity dates are effective in the frozen
-daily window. Stage E never includes this class; only formal delisted identity
-and discovery classified-delisted terminals are delisted targets.
+Under `R3_CURRENT_MVP_SCOPE = SH_SZ` this is also a bounded DEFERRED stage: NO
+provider call (no EastMoney clist), no instruments mutation, no compact, no
+market dataset write. It emits the same minimal deferred evidence and
+`machine.complete("C2_enrich")` to keep the stage order intact. The prior
+EastMoney-based BJ enrichment design is retained only as future documentation
+for the BJ extension; no `_enrich_bj_metadata` system call runs in the MVP.
 
 ### Stage D — Trading calendar foundation
 

@@ -1296,11 +1296,14 @@ class R3Runner:
         closure is superseded by the approved contract revision, recorded in
         r3-b-v074-transition-receipt.json (the V07.3 checkpoint is preserved,
         never reused as V07.4 progress).
+
+        R3_CURRENT_MVP_SCOPE = SH_SZ (user/architect decision): BJ is a
+        DEFERRED extension. This method records scope=SH_SZ_MVP and does NOT
+        call EastMoney clist or evaluate BJ current membership; BJ fields are
+        semantically DEFERRED/NOT_EVALUATED — never 0, empty-universe, or PASS.
         """
         self._prepare_network_env()
         from cnequity.adapters.baostock.instruments import fetch_instrument_basics
-        from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
-        from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
         basic_df = fetch_instrument_basics()
         if basic_df.height:
@@ -1407,38 +1410,8 @@ class R3Runner:
             s for s in fresh_scope if s in existing_iso and existing_iso[s] != fresh_iso[s]
         )
 
-        # BJ current identity: EM clist -> complete active BJ membership
-        client = EastMoneyClient(config=self.cfg)
-        try:
-            clist = fetch_clist_pages(client, fields="f12,f13,f14,f26")
-        finally:
-            client.close()
-        bj_membership: list[dict[str, Any]] = []
-        for sym, item in clist_rows_to_symbols(clist):
-            if not sym.endswith(".BJ"):
-                continue
-            list_date = parse_clist_date(item.get("f26"))
-            name = (item.get("f14") or "").strip() or None
-            if not name or list_date is None or list_date > self.daily_as_of:
-                raise R3Error(
-                    "BLOCKED_ALL_A_METADATA",
-                    f"active BJ {sym} lacks verified name/list_date in EM clist",
-                )
-            bj_membership.append(
-                {
-                    "symbol": sym,
-                    "name": name,
-                    "exchange": "BJ",
-                    "asset_type": "stock",
-                    "list_date": list_date,
-                    "delist_date": None,
-                    "prev_symbol": None,
-                }
-            )
-        bj_current = sorted(m["symbol"] for m in bj_membership)
-        bj_current_hash = sha256_bytes(
-            json.dumps(bj_current, separators=(",", ":")).encode()
-        )
+        # BJ current identity is DEFERRED under R3_CURRENT_MVP_SCOPE = SH_SZ:
+        # no EastMoney clist call, no BJ membership/hash fabrication.
 
         sample_dates_n = len(sample_dates)
         successful_sample_n = int(audit["successful_sample_n"])
@@ -1453,6 +1426,10 @@ class R3Runner:
             and failed_sample_n == 0
             and roster_extra_vs_formal_n == 0
             and roster_span_conflict_n == 0
+        )
+        shsz_identity_complete = bool(
+            audit_ok
+            and not (drift_missing or drift_extra or drift_date_mismatch)
         )
         shsz_closure = {
             "closed": audit_ok,
@@ -1469,11 +1446,13 @@ class R3Runner:
 
         receipt = {
             "route": V074_ROUTE,
+            "scope": "SH_SZ_MVP",
             "identity_authority": V074_IDENTITY_AUTHORITY,
             "identity_authority_scope": V074_IDENTITY_AUTHORITY_SCOPE,
             "historical_identity_start": V074_HISTORICAL_IDENTITY_START,
             "identity_authority_verify": "stock_basic_fresh_query_succeeded",
             "shsz_identity_authority": "Baostock_stock_basic",
+            "shsz_identity_complete": shsz_identity_complete,
             "shsz_identity_symbols": len(formal_identity_symbols),
             "shsz_identity_hash": identity_hash,
             "formal_identity_scope": ["SH", "SZ", "stock", "cdr"],
@@ -1519,10 +1498,9 @@ class R3Runner:
             "shsz_closure": shsz_closure,
             "prior_v073_checkpoint_sha": transition.get("prior_checkpoint_sha"),
             "prior_v073_next_index": transition.get("prior_next_index"),
-            "bj_current_authority": "EastMoney_clist",
-            "bj_current_symbols": len(bj_current),
-            "bj_current_hash": bj_current_hash,
-            "bj_current_membership": bj_membership,
+            "bj_scope": "DEFERRED_EXTENSION",
+            "bj_current_status": "NOT_EVALUATED",
+            "bj_historical_status": HISTORICAL_DELISTED_BJ_LABEL,
             "bj_historical_authority": BJ_HISTORICAL_AUTHORITY_VERDICT,
             "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
             "bj_historical_resolved": False,
@@ -2276,17 +2254,34 @@ class R3Runner:
         return {"closure": closure, "checkpoint": ckpt, "union": union}
 
     def stage_merge(self) -> dict[str, Any]:
-        self._prepare_network_env()
+        """SH/SZ MVP: C_merge is a bounded DEFERRED stage.
+
+        BJ is DEFERRED_EXTENSION under R3_CURRENT_MVP_SCOPE = SH_SZ, so C_merge
+        makes no network/provider call, does not re-run instruments, does not
+        compact, and writes no market dataset. It only emits a minimal evidence
+        record and completes so the stage-machine order (A, B, C, C2, D, ...)
+        stays intact and D_calendar can proceed later.
+        """
         self.machine.enter("C_merge")
-        run = self._run_single_step_terminal(["instruments"])
-        self.machine.complete("C_merge", {"job": run["job"], "compact": run["compact"]})
-        return {"job": run["job"], "compact": run["compact"]}
+        evidence = {
+            "scope": "SH_SZ_MVP",
+            "status": "DEFERRED",
+            "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+        }
+        self.machine.complete("C_merge", evidence)
+        return evidence
 
     def stage_enrich(self) -> dict[str, Any]:
+        """SH/SZ MVP: C2_enrich is a bounded DEFERRED stage (same rationale as
+        C_merge): no providers, no instruments mutation, no compact."""
         self.machine.enter("C2_enrich")
-        receipt = self._enrich_bj_metadata()
-        self.machine.complete("C2_enrich", receipt)
-        return receipt
+        evidence = {
+            "scope": "SH_SZ_MVP",
+            "status": "DEFERRED",
+            "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+        }
+        self.machine.complete("C2_enrich", evidence)
+        return evidence
 
     def _enrich_bj_metadata(self) -> dict[str, Any]:
         """C2: build the complete instruments snapshot from the Stage-B receipt.

@@ -34,8 +34,13 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
 
 ## Universe
 
-- Active SH/SZ/BJ stock+CDR must all be present; BJ requires verified nonblank
-  `name` and `list_date` (`BLOCKED_ALL_A_METADATA` otherwise).
+- **CURRENT R3 MVP SCOPE (V08, user/architect decision): SH/SZ.** BJ is
+  `DEFERRED_EXTENSION` — not deleted, not fabricated, not claimed complete.
+  Rationale: quick reliable local data for ChatGPT Web; SH/SZ identity +
+  quarterly audit already have complete successful evidence; EastMoney BJ
+  current (clist) failed twice consecutively at provider level; no new akshare
+  dependency for BJ. **FULL ALL-A DAILY_READY remains FALSE**; the MVP only
+  forms the intermediate fact `R3_SHSZ_SCOPE = ACTIVE`.
 - Stage B is V07.4 upstream-aligned identity completion — NO Sina issued-code
   sweep, and NO 2,580-date full daily roster closure.
   - SH/SZ formal historical identity authority: Baostock `query_stock_basic`
@@ -56,9 +61,19 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
     the V07.3 closure checkpoint is preserved as superseded-execution evidence
     (bytes never modified, never reused as V07.4 progress) and the transition is
     recorded in `r3-b-v074-transition-receipt.json`.
-  - BJ current: EastMoney clist (f12/f13/f14/f26).
-  - BJ historical: `BJ_HISTORICAL_AUTHORITY = UNPROVABLE_BOUNDED_RESEARCH`;
-    `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED`.
+  - `shsz_identity_complete = true` only when all SH/SZ hard gates pass; receipt
+    records `scope = SH_SZ_MVP`, `shsz_identity_authority =
+    Baostock_stock_basic`, `bj_scope = DEFERRED_EXTENSION`, `bj_current_status =
+    NOT_EVALUATED`, `bj_historical_status = UNKNOWN_CARRIED`. Stage B does NOT
+    call EastMoney clist and never fabricates BJ current membership/hash as 0,
+    empty-universe, or PASS.
+- Stage C (C_merge) and Stage C2 (C2_enrich) under SH/SZ MVP are bounded
+  DEFERRED stages: NO network/provider call, no instruments re-run/mutation, no
+  compact, no market dataset write; each emits minimal evidence
+  (`scope = SH_SZ_MVP`, `status = DEFERRED`,
+  `reason = BJ_EXTENSION_OUTSIDE_CURRENT_MVP`) and completes so the frozen stage
+  order (A, B, C, C2, D, ...) stays intact and `D_calendar` can proceed later.
+  No new stage or BJ subsystem.
 - Delisted recovery targets: SH/SZ = Baostock formal + roster-closed delisted;
   BJ = any authority-proven target only (none today). `live_missing`/current
   active names are excluded. `never_issued` classification is not a completion

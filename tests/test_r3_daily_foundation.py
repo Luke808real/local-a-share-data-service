@@ -3216,11 +3216,19 @@ def test_v074_receipt_fields_and_no_2580_claim(monkeypatch, tmp_path):
     assert "expected_dates_n" not in receipt
     assert receipt["sample_dates_n"] == 1
     assert receipt["shsz_closure"]["closed"] is True
-    # BJ policy unchanged and still blocking DAILY_READY
+    assert receipt["scope"] == "SH_SZ_MVP"
+    assert receipt["shsz_identity_complete"] is True
+    # BJ is DEFERRED_EXTENSION (not 0 / empty-universe / PASS / not evaluated)
+    assert receipt["bj_scope"] == "DEFERRED_EXTENSION"
+    assert receipt["bj_current_status"] == "NOT_EVALUATED"
+    assert receipt["bj_historical_status"] == HISTORICAL_DELISTED_BJ_LABEL
+    assert "bj_current_symbols" not in receipt
+    assert "bj_current_membership" not in receipt
+    assert "bj_current_hash" not in receipt
+    # frozen BJ historical verdict still blocks DAILY_READY
     assert receipt["bj_historical_authority"] == BJ_HISTORICAL_AUTHORITY_VERDICT
     assert receipt["bj_historical_delisted"] == HISTORICAL_DELISTED_BJ_LABEL
     assert receipt["bj_historical_resolved"] is False
-    assert receipt["bj_current_authority"] == "EastMoney_clist"
 
 
 def test_v074_formal_not_seen_is_observation_only(monkeypatch, tmp_path):
@@ -3274,6 +3282,194 @@ def test_v074_final_receipt_only_after_all_gates(monkeypatch, tmp_path):
     )
     assert qckpt["terminal_status"] == "blocked"
     assert qckpt["formal_drift_summary"]["extra_n"] >= 1
+
+
+# ============================================================================
+# V08 SH/SZ MVP scope (Stage B EM-independent; C/C2 deferred; BJ extension)
+# ============================================================================
+
+
+def test_v08_stage_b_passes_without_eastmoney(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+
+    def em_down(*a, **k):
+        raise RuntimeError("EastMoney clist all hosts failed")
+
+    # Even if EastMoney were WOMENT, Stage B under SH/SZ MVP must NOT call it.
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.clist.fetch_clist_pages", em_down
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.clist.clist_rows_to_symbols", em_down
+    )
+    receipt = runner._identity_completion_v072()
+    assert (runner.meta / "r3-identity-receipt.json").exists()
+    assert receipt["scope"] == "SH_SZ_MVP"
+    assert receipt["shsz_identity_complete"] is True
+    assert receipt["shsz_closure"]["closed"] is True
+    assert receipt["bj_scope"] == "DEFERRED_EXTENSION"
+    qckpt = json.loads(
+        (runner.meta / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text()
+    )
+    assert qckpt["terminal_status"] == "success"
+
+
+def test_v08_receipt_bj_deferred_not_fabricated(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+    receipt = runner._identity_completion_v072()
+    # BJ deferred must never be written as 0 symbols / empty universe / PASS
+    assert receipt["bj_scope"] == "DEFERRED_EXTENSION"
+    assert receipt["bj_current_status"] == "NOT_EVALUATED"
+    assert receipt["bj_historical_status"] == HISTORICAL_DELISTED_BJ_LABEL
+    assert "bj_current_symbols" not in receipt
+    assert "bj_current_hash" not in receipt
+    assert "bj_current_membership" not in receipt
+
+
+def test_v08_stage_b_span_conflict_still_fails(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    basics = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "600001.SH"],
+            "name": ["A", "B"],
+            "exchange": ["SH", "SH"],
+            "asset_type": ["stock", "stock"],
+            "list_date": [date(2000, 1, 1), date(2020, 1, 1)],  # after 2016 sample
+            "delist_date": [None, None],
+            "prev_symbol": [None, None],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.instruments.fetch_instrument_basics",
+        lambda: basics,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        lambda day, **kw: {"600000.SH", "600001.SH"},
+    )
+    monkeypatch.setattr(r3, "known_delisted_instruments", lambda cfg, asof: {})
+    with pytest.raises(R3Error, match="ROSTER_SPAN_CONFLICT"):
+        runner._identity_completion_v072()
+    assert not (runner.meta / "r3-identity-receipt.json").exists()
+
+
+def _v08_deferred_stage_runner(tmp_path, completed):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save(
+        {
+            "status": "pending",
+            "current": None,
+            "completed": completed,
+        }
+    )
+    return runner
+
+
+def test_v08_c_merge_deferred_no_provider(monkeypatch, tmp_path):
+    runner = _v08_deferred_stage_runner(
+        tmp_path, ["A_instruments", "B_discovery"]
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("provider/network must not run under SH/SZ MVP")
+
+    monkeypatch.setattr(r3.R3Runner, "_prepare_network_env", boom)
+    monkeypatch.setattr(r3.R3Runner, "_run_single_step_terminal", boom)
+    monkeypatch.setattr(r3.R3Runner, "_compact", boom)
+    evidence = runner.stage_merge()
+    assert evidence == {
+        "scope": "SH_SZ_MVP",
+        "status": "DEFERRED",
+        "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+    }
+    state = runner.machine.load()
+    assert state["completed"] == [
+        "A_instruments", "B_discovery", "C_merge",
+    ]
+    assert state["current"] is None
+
+
+def test_v08_c2_enrich_deferred_no_provider(monkeypatch, tmp_path):
+    runner = _v08_deferred_stage_runner(
+        tmp_path, ["A_instruments", "B_discovery", "C_merge"]
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("C2 must not call enrichment providers under MVP")
+
+    monkeypatch.setattr(r3.R3Runner, "_enrich_bj_metadata", boom)
+    evidence = runner.stage_enrich()
+    assert evidence == {
+        "scope": "SH_SZ_MVP",
+        "status": "DEFERRED",
+        "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+    }
+    state = runner.machine.load()
+    assert state["completed"] == [
+        "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+    ]
+
+
+def test_v08_after_abcc2_d_calendar_prerequisite_accepted(tmp_path):
+    machine = StageMachine(tmp_path / "state.json")
+    for stage in (
+        "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+    ):
+        machine.enter(stage)
+        machine.complete(stage, {"scope": "SH_SZ_MVP", "status": "DEFERRED"})
+    # exact prefix satisfied: D_calendar enter is allowed (prerequisite gate)
+    machine.enter("D_calendar")
+    stage = machine.load()
+    assert stage["current"] == "D_calendar"
+    assert stage["completed"] == [
+        "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+    ]
+
+
+def test_v08_daily_ready_not_set_by_patch():
+    # The MVP patch must never introduce DAILY_READY=true anywhere.
+    src = inspect.getsource(r3.R3Runner._identity_completion_v072)
+    src += inspect.getsource(r3.R3Runner.stage_merge)
+    src += inspect.getsource(r3.R3Runner.stage_enrich)
+    assert "DAILY_READY" not in src
+
+
+def test_v08_no_eastmoney_or_provider_in_mvp_paths_source():
+    b_src = inspect.getsource(r3.R3Runner._identity_completion_v072)
+    c_src = inspect.getsource(r3.R3Runner.stage_merge)
+    c2_src = inspect.getsource(r3.R3Runner.stage_enrich)
+    # Stage B no longer calls EastMoney clist for BJ current
+    for forbidden in ("fetch_clist_pages", "clist_rows_to_symbols", "EastMoneyClient"):
+        assert forbidden not in b_src
+    # Stage B still keeps its SH/SZ authority + audit
+    assert "fetch_instrument_basics" in b_src
+    assert "V074_IDENTITY_AUTHORITY" in b_src
+    # C/C2 under MVP make no provider call and no instruments re-run
+    for forbidden in (
+        "fetch_clist_pages",
+        "clist_rows_to_symbols",
+        "EastMoneyClient",
+        "fetch_instrument_basics",
+        "fetch_daily_bars_parallel",
+        "_run_single_step_terminal",
+        "_prepare_network_env",
+        "fetch_daily_bars",
+    ):
+        assert forbidden not in (c_src + c2_src)
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================
