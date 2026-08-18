@@ -320,7 +320,11 @@ def roster_closure_receipt(
     """Baostock roster closure evidence receipt (V07.2).
 
     stock_basic is the SH/SZ formal historical identity authority; roster_on is
-    closure/reconciliation evidence ONLY. failed_dates_n > 0 => NOT CLOSED.
+    closure/reconciliation evidence ONLY. Bidirectional fail-closed:
+    A = stock_basic_expected - roster_union, B = roster_union - stock_basic.
+    closed iff failed_dates_n==0 and len(A)==0 and len(B)==0.
+    This helper ALWAYS returns the receipt (never raises), so the caller can
+    atomically persist it and then raise NOT_CLOSED when closed == False.
     """
     success_dates: list[date] = []
     failed_dates: list[date] = []
@@ -338,18 +342,14 @@ def roster_closure_receipt(
         success_dates.append(day)
         union |= roster
 
-    residual: set[str] = set()
-    diff: dict[str, Any] | None = None
+    missing_from_roster: set[str] = set()
+    extra_in_roster: set[str] = set()
     if stock_basic_symbols is not None:
-        residual = stock_basic_symbols - union
-        not_in_identity = sorted(union - stock_basic_symbols)
-        diff = {
-            "identity_not_in_roster": sorted(residual)[:200],
-            "roster_not_in_identity": not_in_identity[:200],
-            "n_identity_not_in_roster": len(residual),
-            "n_roster_not_in_identity": len(not_in_identity),
-        }
-    unresolved_n = len(failed_dates) + len(residual)
+        missing_from_roster = stock_basic_symbols - union  # A
+        extra_in_roster = union - stock_basic_symbols  # B
+    unresolved_n = (
+        len(failed_dates) + len(missing_from_roster) + len(extra_in_roster)
+    )
     closed = unresolved_n == 0
     receipt = {
         "expected_dates_n": len(days),
@@ -362,38 +362,47 @@ def roster_closure_receipt(
         ),
         "closed": closed,
         "unresolved_n": unresolved_n,
-        "unresolved_identity_residual_n": len(residual),
-        "unresolved_residual_hash": sha256_bytes(
-            json.dumps(sorted(residual), separators=(",", ":")).encode()
+        "identity_not_in_roster_n": len(missing_from_roster),
+        "identity_not_in_roster_hash": (
+            sha256_bytes(
+                json.dumps(sorted(missing_from_roster), separators=(",", ":")).encode()
+            )
+            if missing_from_roster
+            else "0" * 64
         ),
-        "unresolved_residual_sample": sorted(residual)[:200],
+        "identity_not_in_roster_sample": sorted(missing_from_roster)[:200],
+        "roster_not_in_identity_n": len(extra_in_roster),
+        "roster_not_in_identity_hash": (
+            sha256_bytes(
+                json.dumps(sorted(extra_in_roster), separators=(",", ":")).encode()
+            )
+            if extra_in_roster
+            else "0" * 64
+        ),
+        "roster_not_in_identity_sample": sorted(extra_in_roster)[:200],
     }
-    if diff is not None:
-        receipt["stock_basic_vs_roster_diff"] = diff
-    if not closed:
-        raise R3Error(
-            "NOT_CLOSED",
-            f"roster not closed: {len(failed_dates)} failed date(s) and "
-            f"{len(residual)} unresolved identity residual(s) "
-            f"(unresolved_n={unresolved_n} > 0 => NOT CLOSED)",
-        )
     return receipt
 
 
 def v072_exit_verdict(bj_authority: str, unresolved_n: int | None) -> dict[str, Any]:
     """Frozen BJ historical gate (V07.2). NECESSARY, never sufficient.
 
-    DAILY_READY still requires the final read-only verifier to pass every R3
-    quality gate AND this gate == PASS. UNKNOWN/null unresolved is never 0.
+    Returns ONLY the BJ_HISTORICAL_GATE and its inputs; it never produces
+    DAILY_READY or R3_EXIT by itself. DAILY_READY is derived solely by
+    tools/verify_r3_daily_foundation.py after every R3 quality gate AND this
+    gate == PASS. UNKNOWN/null unresolved is never 0.
     """
     gate = "PASS" if (bj_authority == "PROVEN" and unresolved_n == 0) else "BLOCKED"
     return {
         "BJ_HISTORICAL_GATE": gate,
-        "DAILY_READY": gate == "PASS",
-        "R3_EXIT": None if gate == "PASS" else "BLOCKED_BJ_HISTORICAL_IDENTITY",
-        "R4_EXECUTION": "FORBIDDEN",
         "bj_historical_authority": bj_authority,
         "bj_historical_unresolved_n": unresolved_n,
+        "blocker": (
+            None
+            if gate == "PASS"
+            else "HISTORICAL_DELISTED_BJ_UNKNOWN_CARRIED"
+        ),
+        "R4_EXECUTION": "FORBIDDEN",
     }
 
 
@@ -721,6 +730,7 @@ class R3Runner:
     # --- stages ------------------------------------------------------------
 
     def stage_instruments(self) -> dict[str, Any]:
+        self._prepare_network_env()
         state = self.machine.enter("A_instruments")
         out = self._run_single_step_runjob(["instruments"])
         compact = self._compact(out["run_id"])
@@ -772,6 +782,41 @@ class R3Runner:
             dates, roster_on, stock_basic_symbols=identity_symbols
         )
 
+        # SH/SZ formal delisted map (Baostock stock_basic, in-window scope)
+        shsz_formal_delisted: dict[str, str] = {}
+        if basic_df.height:
+            delisted_df = basic_df.filter(
+                (pl.col("exchange").is_in(["SH", "SZ"]))
+                & (pl.col("asset_type").is_in(["stock", "cdr"]))
+                & pl.col("delist_date").is_not_null()
+                & (pl.col("delist_date") >= self.history_start)
+            )
+            for row in delisted_df.select("symbol", "delist_date").iter_rows(named=True):
+                shsz_formal_delisted[row["symbol"]] = row["delist_date"].isoformat()
+        shsz_formal_delisted_hash = sha256_bytes(
+            json.dumps(
+                sorted(shsz_formal_delisted.items()),
+                separators=(",", ":"),
+            ).encode()
+        )
+
+        # Excerpt of the Stage-A formal evidence for drift comparison (same source)
+        stage_a_formal = known_delisted_instruments(self.cfg, self.daily_as_of)
+        fresh_scope = set(shsz_formal_delisted)
+        existing_windows = {
+            s: stage_a_formal[s]
+            for s in stage_a_formal
+            if s in fresh_scope or (s.endswith((".SH", ".SZ")) and stage_a_formal[s] >= self.history_start)
+        }
+        fresh_iso = {s: shsz_formal_delisted[s] for s in fresh_scope}
+        existing_iso_map = {s: d.isoformat() for s, d in existing_windows.items()}
+        existing_iso = {s: v for s, v in existing_iso_map.items() if s in fresh_scope}
+        drift_missing = sorted(fresh_scope - set(existing_iso))
+        drift_extra = sorted(set(existing_iso_map) - fresh_scope)
+        drift_date_mismatch = sorted(
+            s for s in fresh_scope if s in existing_iso and existing_iso[s] != fresh_iso[s]
+        )
+
         # BJ current identity: EM clist -> complete active BJ membership
         client = EastMoneyClient(config=self.cfg)
         try:
@@ -810,6 +855,23 @@ class R3Runner:
             "shsz_identity_authority": "Baostock_stock_basic",
             "shsz_identity_symbols": len(identity_symbols),
             "shsz_identity_hash": identity_hash,
+            "shsz_formal_delisted": shsz_formal_delisted,
+            "shsz_formal_delisted_n": len(shsz_formal_delisted),
+            "shsz_formal_delisted_hash": shsz_formal_delisted_hash,
+            "stage_a_formal_hash": sha256_bytes(
+                json.dumps(
+                    sorted(existing_iso_map.items()),
+                    separators=(",", ":"),
+                ).encode()
+            ),
+            "formal_drift": {
+                "missing": drift_missing[:200],
+                "extra": drift_extra[:200],
+                "date_mismatch": drift_date_mismatch[:200],
+                "missing_n": len(drift_missing),
+                "extra_n": len(drift_extra),
+                "date_mismatch_n": len(drift_date_mismatch),
+            },
             "shsz_closure": closure,
             "bj_current_authority": "EastMoney_clist",
             "bj_current_symbols": len(bj_current),
@@ -821,10 +883,27 @@ class R3Runner:
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
         atomic_write_json(self.meta / "r3-identity-receipt.json", receipt)
+        # persist BEFORE raising so failed runs leave an auditable receipt
+        if not closure["closed"]:
+            raise R3Error(
+                "NOT_CLOSED",
+                f"roster not closed: {closure['unresolved_n']} unresolved "
+                f"(failed_dates={closure['failed_dates_n']}, "
+                f"identity_not_in_roster={closure['identity_not_in_roster_n']}, "
+                f"roster_not_in_identity={closure['roster_not_in_identity_n']})",
+            )
+        if drift_missing or drift_extra or drift_date_mismatch:
+            raise R3Error(
+                "FORMAL_IDENTITY_DRIFT",
+                f"Stage-B fresh formal map != Stage-A formal evidence: "
+                f"missing={len(drift_missing)}, extra={len(drift_extra)}, "
+                f"date_mismatch={len(drift_date_mismatch)}",
+            )
         self.ledger.append({"stage": "B_discovery", "v07_2_identity": True, "receipt": receipt})
         return receipt
 
     def stage_merge(self) -> dict[str, Any]:
+        self._prepare_network_env()
         self.machine.enter("C_merge")
         out = self._run_single_step_runjob(["instruments"])
         compact = self._compact(out["run_id"])
@@ -860,22 +939,55 @@ class R3Runner:
 
         instruments = load_curated_instruments(self.cfg)
         if instruments is None or instruments.is_empty():
-            non_bj = pl.DataFrame()
-        else:
-            non_bj = instruments.filter(~pl.col("symbol").str.ends_with(".BJ"))
+            raise R3Error(
+                "BLOCKED_ALL_A_UNIVERSE",
+                "no existing curated instruments; cannot build a complete snapshot "
+                "(rejecting a BJ-only snapshot)",
+            )
+        non_bj = instruments.filter(~pl.col("symbol").str.ends_with(".BJ"))
+        sh_sz_foundation = non_bj.filter(
+            (pl.col("exchange").is_in(["SH", "SZ"]))
+            & (pl.col("asset_type").is_in(["stock", "cdr"]))
+        )
+        if sh_sz_foundation.is_empty():
+            raise R3Error(
+                "BLOCKED_ALL_A_UNIVERSE",
+                "no valid SH/SZ non-BJ foundation; rejecting a BJ-only snapshot",
+            )
+
+        # provenance applied ONLY to the Stage-B BJ membership dataframe;
+        # non-BJ rows stay field-for-field unchanged; no with_provenance on merged
         bj_df = pl.DataFrame(
             sorted(
                 membership,
                 key=lambda m: m["symbol"],
             )
         )
+        bj_df = with_provenance(
+            pl.DataFrame(
+                [
+                    {k: m[k] for k in ("symbol", "name", "exchange", "asset_type", "list_date", "delist_date", "prev_symbol")}
+                    for m in sorted(membership, key=lambda mm: mm["symbol"])
+                ]
+            ),
+            source="eastmoney",
+            data_version="v1",
+        )
         merged = pl.concat([non_bj, bj_df], how="diagonal_relaxed")
-        merged = with_provenance(merged, source="eastmoney", data_version="v1")
         merged = merged.sort("symbol").unique(subset=["symbol"], keep="last")
 
         run_id = self._new_run("r3_c2_enrich")
         manifest = Manifest(self.cfg.manifest_path)
         batch_id = "c2-enrich-bj"
+        self.ledger.append(
+            {
+                "stage": "C2",
+                "event": "ATTEMPT_START",
+                "symbols": sorted(merged["symbol"].to_list()),
+                "batch_id": batch_id,
+                "status": "running",
+            }
+        )
         manifest.start_batch(
             run_id,
             batch_id,
@@ -892,6 +1004,16 @@ class R3Runner:
         manifest.finish_batch(
             run_id, batch_id, "success", rows_read=merged.height, rows_written=merged.height
         )
+        self.ledger.append(
+            {
+                "stage": "C2",
+                "event": "ATTEMPT_END",
+                "symbols": sorted(merged["symbol"].to_list()),
+                "batch_id": batch_id,
+                "status": "success",
+                "rows": merged.height,
+            }
+        )
         compact = self._compact(run_id)
         post = load_curated_instruments(self.cfg)
         bad = (
@@ -906,6 +1028,20 @@ class R3Runner:
             raise R3Error(
                 "C2_POSTCHECK",
                 f"BJ membership mismatch: staged {bj_count}, receipt {len(membership)}",
+            )
+        # post-compact BJ set/hash must equal Stage-B bj_current set/hash
+        expected_bj = {m["symbol"] for m in membership}
+        actual_bj = set(
+            post.filter(pl.col("symbol").str.ends_with(".BJ"))["symbol"].to_list()
+        )
+        extra_bj = sorted(actual_bj - expected_bj)
+        missing_bj = sorted(expected_bj - actual_bj)
+        if extra_bj or missing_bj:
+            raise R3Error(
+                "C2_POSTCHECK",
+                f"post-compact BJ set mismatch: extra={len(extra_bj)} "
+                f"missing={len(missing_bj)}; fail-closed, "
+                "not auto-deleting preserved rows",
             )
         return {
             "bj_rows": bj_count,
@@ -960,7 +1096,7 @@ class R3Runner:
         self._prepare_network_env()
         from cnequity.adapters.baostock.delisted_bars import fetch_delisted_bars
 
-        formal = known_delisted_instruments(self.cfg, self.daily_as_of)
+        formal = self._load_shsz_formal_map()
         catalog = load_delisted_catalog(self.cfg)
         instruments = load_curated_instruments(self.cfg)
         partition = stage_e_target_partition(
@@ -1115,7 +1251,22 @@ class R3Runner:
         atomic_write_json(self.meta / "r3-delisted-recovery.json", receipt)
         return receipt
 
+    def _load_shsz_formal_map(self) -> dict[str, date]:
+        """Stage-E formal membership authority = Stage-B persisted formal map."""
+        receipt_path = self.meta / "r3-identity-receipt.json"
+        if not receipt_path.exists():
+            raise R3Error(
+                "FORMAL_IDENTITY_RECEIPT_MISSING",
+                f"Stage-B identity receipt missing: {receipt_path}",
+            )
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        raw = payload.get("shsz_formal_delisted") or {}
+        return {
+            symbol: date.fromisoformat(value) for symbol, value in raw.items()
+        }
+
     def stage_daily(self) -> dict[str, Any]:
+        self._prepare_network_env()
         self.machine.enter("F_daily")
         receipt = self._fetch_daily_bars_per_route()
         self.machine.complete("F_daily", receipt)
@@ -1228,6 +1379,7 @@ class R3Runner:
                 reason: str | None = None
                 out_rows = 0
                 batch_id: str | None = None
+                prior_failed: list[str] = []
                 while attempt < 3:
                     attempt += 1
                     batch_id = (
@@ -1275,40 +1427,66 @@ class R3Runner:
                             reason = "OUT_OF_SPAN_EMPTY"
                             out_rows = 0
                         else:
-                            out = out.unique(subset=["symbol", "trade_date"], keep="last")
-                            out = with_provenance(
-                                out,
-                                source="eastmoney",
-                                data_version=data_version_for("daily_bars"),
-                            )
-                            writer.write_batch("daily_bars", run_id, batch_id, out)
-                            manifest.finish_batch(
-                                run_id, batch_id, "success",
-                                rows_read=out.height, rows_written=out.height,
-                            )
-                            out_rows = out.height
-                            self.ledger.append(
-                                {
-                                    "stage": "F2",
-                                    "event": "ATTEMPT_END",
-                                    "attempt": attempt,
-                                    "symbol": symbol,
-                                    "window_start": start.isoformat(),
-                                    "window_end": end.isoformat(),
-                                    "adapter": "eastmoney",
-                                    "batch_id": batch_id,
-                                    "state": "EXISTS",
-                                    "reason": reason,
-                                    "rows": out_rows,
-                                    "status": "success",
-                                }
-                            )
-                            break
+                            pos = out.filter(pl.col("volume") > 0)
+                            if pos.is_empty():
+                                # zero-volume-only => NOT a success completion
+                                state = "SOURCE_ERROR"
+                                reason = "ZERO_VOLUME_ONLY"
+                                out_rows = 0
+                            else:
+                                out = out.unique(subset=["symbol", "trade_date"], keep="last")
+                                out = with_provenance(
+                                    out,
+                                    source="eastmoney",
+                                    data_version=data_version_for("daily_bars"),
+                                )
+                                writer.write_batch("daily_bars", run_id, batch_id, out)
+                                manifest.finish_batch(
+                                    run_id, batch_id, "success",
+                                    rows_read=out.height, rows_written=out.height,
+                                )
+                                out_rows = out.height
+                                if prior_failed:
+                                    manifest.supersede_batches(
+                                        run_id,
+                                        prior_failed,
+                                        superseded_by=batch_id,
+                                    )
+                                    self.ledger.append(
+                                        {
+                                            "stage": "F2",
+                                            "event": "ATTEMPT_SUPERSEDE",
+                                            "symbol": symbol,
+                                            "successful_batch_id": batch_id,
+                                            "superseded_batch_ids": list(prior_failed),
+                                            "superseded_n": len(prior_failed),
+                                        }
+                                    )
+                                    prior_failed.clear()
+                                self.ledger.append(
+                                    {
+                                        "stage": "F2",
+                                        "event": "ATTEMPT_END",
+                                        "attempt": attempt,
+                                        "symbol": symbol,
+                                        "window_start": start.isoformat(),
+                                        "window_end": end.isoformat(),
+                                        "adapter": "eastmoney",
+                                        "batch_id": batch_id,
+                                        "state": "EXISTS",
+                                        "reason": reason,
+                                        "rows": out_rows,
+                                        "status": "success",
+                                    }
+                                )
+                                break
 
                     manifest.finish_batch(
                         run_id, batch_id, "failed",
                         error_message=f"{state}:{reason}",
                     )
+                    if batch_id is not None:
+                        prior_failed.append(batch_id)
                     self.ledger.append(
                         {
                             "stage": "F2",

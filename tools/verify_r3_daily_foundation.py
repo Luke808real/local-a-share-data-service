@@ -47,6 +47,30 @@ class VerifyError(RuntimeError):
     pass
 
 
+def daily_tip_verdict(newest_daily_date: date | None) -> dict:
+    ok = newest_daily_date == R3_DAILY_AS_OF
+    return {
+        "ok": bool(ok),
+        "newest_daily_date": newest_daily_date,
+        "expected": R3_DAILY_AS_OF,
+        "DAILY_TIP_STALE": not ok,
+    }
+
+
+def exchange_counts_from(active: pl.DataFrame) -> dict[str, int]:
+    counts = (
+        active.with_columns(
+            pl.col("symbol").str.split(".").list.get(-1).alias("_ex")
+        )
+        .group_by("_ex")
+        .agg(pl.len().alias("n"))
+    )
+    out = {"SH": 0, "SZ": 0, "BJ": 0}
+    for row in counts.iter_rows(named=True):
+        out[str(row["_ex"])] = int(row["n"])
+    return out
+
+
 def _fail(code: str, message: str):
     raise VerifyError(f"[{code}] {message}")
 
@@ -155,6 +179,7 @@ def structural_checks(curated: Path) -> dict:
             "date_bound_violations": 0,
             "value_violations": 0,
             "data_versions": sorted(versions),
+            "newest_daily_date": daily.select(pl.col("trade_date").max()).collect()[0, 0],
         }
     )
     return out
@@ -209,7 +234,7 @@ def universe_checks(curated: Path, calendar_dates: set[date]) -> dict:
         & (pl.col("delist_date").is_null() | (pl.col("delist_date") >= ref))
         & (pl.col("list_date").is_null() | (pl.col("list_date") <= ref))
     )
-    exchange_counts = dict(sorted(active["symbol"].str.split(".").list.get(-1).value_counts().to_dicts()[0].items()))
+    exchange_counts = exchange_counts_from(active)
     for exchange in ("SH", "SZ", "BJ"):
         if exchange not in exchange_counts or exchange_counts[exchange] <= 0:
             _fail("UNIVERSE_MISSING", f"active {exchange} count is zero")
@@ -332,6 +357,15 @@ def main() -> int:
         and structural["value_violations"] == 0
         and gaps["unexplained_symbols"] == 0
     )
+    # A. newest daily date must equal R3_DAILY_AS_OF (market tip not stale)
+    newest_daily_date = structural.get("newest_daily_date")
+    tip = daily_tip_verdict(newest_daily_date)
+    if not tip["ok"]:
+        _fail(
+            "DAILY_TIP_STALE",
+            f"newest daily date {newest_daily_date} != R3_DAILY_AS_OF "
+            f"{R3_DAILY_AS_OF} (not a PENDING_R4 explanation)",
+        )
     # BJ historical gate — read receipts read-only; necessary condition only
     identity_receipt = root / "meta" / "asl" / "r3" / "r3-identity-receipt.json"
     delisted_receipt = root / "meta" / "asl" / "r3" / "r3-delisted-recovery.json"

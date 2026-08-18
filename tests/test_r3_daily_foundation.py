@@ -249,12 +249,34 @@ def test_unexplained_missing_only_after_retries_via_classifier(monkeypatch):
 class FakeManifest:
     def __init__(self, calls):
         self.calls = calls
+        self.status_by_batch = {}
+        self.superseded = []
 
     def start_batch(self, *args, **kwargs):
+        batch_id = kwargs.get("batch_id") or (args[1] if len(args) > 1 else None)
+        if batch_id:
+            self.status_by_batch[batch_id] = "running"
         self.calls.append(("start", args, kwargs))
 
     def finish_batch(self, *args, **kwargs):
+        if args and len(args) >= 3:
+            batch_id, status = args[1], args[2]
+            self.status_by_batch[batch_id] = status
         self.calls.append(("finish", args, kwargs))
+
+    def supersede_batches(self, run_id, batch_ids, *, superseded_by):
+        count = 0
+        for bid in batch_ids:
+            if self.status_by_batch.get(bid) in ("failed", "warning", "stale"):
+                self.status_by_batch[bid] = "superseded"
+                count += 1
+        self.superseded.append({"by": superseded_by, "ids": list(batch_ids)})
+        return count
+
+    def incomplete_blocking(self):
+        return sum(
+            1 for s in self.status_by_batch.values() if s in ("failed", "warning", "stale")
+        )
 
 
 class FakeWriter:
@@ -262,7 +284,7 @@ class FakeWriter:
         self.calls = calls
 
     def write_batch(self, dataset, run_id, batch_id, frame):
-        self.calls.append((batch_id, frame.height))
+        self.calls.append((batch_id, frame))
 
 
 def test_stage_b_never_calls_sina_discovery(monkeypatch):
@@ -283,8 +305,10 @@ def test_failed_roster_dates_means_not_closed():
             raise RuntimeError("roster failed")
         return {f"{i:06d}.SH" for i in range(2)}
 
-    with pytest.raises(R3Error, match="NOT_CLOSED"):
-        roster_closure_receipt(days, broken_roster, stock_basic_symbols=set())
+    receipt = roster_closure_receipt(days, broken_roster, stock_basic_symbols=set())
+    assert receipt["closed"] is False
+    assert receipt["failed_dates_n"] == 1
+    assert receipt["unresolved_n"] == 3  # 1 failed date + 2 roster-only symbols
 
 
 def test_roster_closure_receipt_splits_authority():
@@ -300,8 +324,8 @@ def test_roster_closure_receipt_splits_authority():
     assert receipt["success_dates_n"] == 1
     assert receipt["failed_dates_n"] == 0
     assert "union_symbol_hash" in receipt
-    diff = receipt["stock_basic_vs_roster_diff"]
-    assert diff["n_identity_not_in_roster"] == 0
+    assert receipt["identity_not_in_roster_n"] == 0
+    assert receipt["roster_not_in_identity_n"] == 0
     assert receipt["unresolved_n"] == 0
 
 
@@ -311,8 +335,9 @@ def test_roster_empty_day_not_closed():
     def empty_roster(day):
         return set()
 
-    with pytest.raises(R3Error, match="NOT_CLOSED"):
-        roster_closure_receipt(days, empty_roster, stock_basic_symbols=set())
+    receipt = roster_closure_receipt(days, empty_roster, stock_basic_symbols=set())
+    assert receipt["closed"] is False
+    assert receipt["failed_dates_n"] == 2
 
 
 def test_roster_unresolved_identity_residual_not_closed():
@@ -321,10 +346,14 @@ def test_roster_unresolved_identity_residual_not_closed():
     def roster(day):
         return {"600000.SH"}
 
-    with pytest.raises(R3Error, match="NOT_CLOSED"):
-        roster_closure_receipt(
-            days, roster, stock_basic_symbols={"600000.SH", "000001.SZ"}
-        )
+    receipt = roster_closure_receipt(
+        days, roster, stock_basic_symbols={"600000.SH", "000001.SZ"}
+    )
+    assert receipt["closed"] is False
+    assert receipt["identity_not_in_roster_n"] == 1
+    assert receipt["roster_not_in_identity_n"] == 0
+    assert receipt["identity_not_in_roster_sample"] == ["000001.SZ"]
+    assert receipt["identity_not_in_roster_hash"] != "0" * 64
 
 
 def test_roster_exact_reconciled_closed():
@@ -337,6 +366,18 @@ def test_roster_exact_reconciled_closed():
     receipt = roster_closure_receipt(days, roster, stock_basic_symbols=identity)
     assert receipt["closed"] is True
     assert receipt["unresolved_n"] == 0
+
+
+def test_roster_union_unknown_not_closed():
+    days = [R3_HISTORY_START]
+
+    def roster(day):
+        return {"UNKNOWN.SH"}
+
+    receipt = roster_closure_receipt(days, roster, stock_basic_symbols={"600000.SH"})
+    assert receipt["closed"] is False
+    assert receipt["roster_not_in_identity_n"] == 1
+    assert "UNKNOWN.SH" in receipt["roster_not_in_identity_sample"]
 
 
 def test_stage_e_never_calls_fetch_daily_bars_sina():
@@ -388,30 +429,34 @@ def test_f2_primary_is_eastmoney_wrapper(monkeypatch):
 
 def test_unknown_carried_means_daily_ready_false():
     verdict = v072_exit_verdict(BJ_HISTORICAL_AUTHORITY_VERDICT, None)
-    assert verdict["DAILY_READY"] is False
-    assert verdict["R3_EXIT"] == "BLOCKED_BJ_HISTORICAL_IDENTITY"
+    assert verdict["BJ_HISTORICAL_GATE"] == "BLOCKED"
+    assert verdict["blocker"] == "HISTORICAL_DELISTED_BJ_UNKNOWN_CARRIED"
     assert verdict["R4_EXECUTION"] == "FORBIDDEN"
     assert HISTORICAL_DELISTED_BJ_LABEL == "UNKNOWN_CARRIED"
 
 
 def test_unknown_carried_blocks_exit():
     verdict = v072_exit_verdict(BJ_HISTORICAL_AUTHORITY_VERDICT, 3)
-    assert verdict["DAILY_READY"] is False
-    assert verdict["R3_EXIT"] == "BLOCKED_BJ_HISTORICAL_IDENTITY"
+    assert verdict["BJ_HISTORICAL_GATE"] == "BLOCKED"
+    assert verdict["bj_historical_unresolved_n"] == 3
+    assert "DAILY_READY" not in verdict
+    assert "R3_EXIT" not in verdict
 
 
 def test_exit_requires_zero_unresolved():
     # unresolved=None (null) must not count as 0
-    assert v072_exit_verdict("PROVEN", None)["DAILY_READY"] is False
-    assert v072_exit_verdict("PROVEN", 0)["DAILY_READY"] is True
+    assert v072_exit_verdict("PROVEN", None)["BJ_HISTORICAL_GATE"] == "BLOCKED"
+    assert v072_exit_verdict("PROVEN", 0)["BJ_HISTORICAL_GATE"] == "PASS"
 
 
 def test_exit_gate_exposes_bj_historical_gate():
     blocked = v072_exit_verdict(BJ_HISTORICAL_AUTHORITY_VERDICT, None)
     assert blocked["BJ_HISTORICAL_GATE"] == "BLOCKED"
-    assert blocked["R3_EXIT"] == "BLOCKED_BJ_HISTORICAL_IDENTITY"
+    assert "DAILY_READY" not in blocked
     passed = v072_exit_verdict("PROVEN", 0)
     assert passed["BJ_HISTORICAL_GATE"] == "PASS"
+    assert "DAILY_READY" not in passed
+    assert passed["blocker"] is None
 
 
 def test_stage_e_formal_delisted_present_in_instruments_is_target():
@@ -482,9 +527,30 @@ def test_c2_builds_bj_from_stage_b_receipt(monkeypatch, tmp_path):
     runner.history_start = R3_HISTORY_START
     runner._new_run = lambda job: "c2rid"  # type: ignore[attr-defined]
 
+    class LedgerC2:
+        def append(self, rec):
+            return None
+
+    runner.ledger = LedgerC2()
+
     manifest_calls: list = []
     writer_calls: list = []
-    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: non_bj)
+    membership_df = pl.DataFrame(
+        [
+            {
+                "symbol": m["symbol"], "name": m["name"], "exchange": "BJ",
+                "asset_type": "stock", "list_date": m["list_date"],
+                "delist_date": None, "prev_symbol": None,
+                "source": "eastmoney", "data_version": "v1",
+                "fetched_at": datetime(2026, 2, 1, tzinfo=timezone.utc),
+            }
+            for m in membership
+        ]
+    )
+    monkeypatch.setattr(
+        r3, "load_curated_instruments",
+        lambda cfg: pl.concat([non_bj, membership_df], how="diagonal_relaxed"),
+    )
     monkeypatch.setattr(
         r3, "Manifest", lambda *a, **k: FakeManifest(manifest_calls)
     )
@@ -608,3 +674,404 @@ def test_preflight_readonly_filesystem_and_env(monkeypatch, tmp_path):
     for k, v in proxies_before.items():
         assert os.environ.get(k) == v  # proxy env unchanged
     assert receipt["plan_sha"] == PLAN_SHA
+
+
+def _stage_b_runner(tmp_path, monkeypatch, *, close=True) -> "object":
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = tmp_path / "asl" / "r3"
+    runner.meta.mkdir(parents=True)
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.cfg = types.SimpleNamespace()
+
+    class LedgerX:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, rec):
+            self.calls.append(rec)
+
+    runner.ledger = LedgerX()
+    monkeypatch.setattr(r3.R3Runner, "_prepare_network_env", lambda self: None)
+    monkeypatch.setattr(r3, "list_trading_dates", lambda cfg, s, e: [R3_HISTORY_START])
+
+    def fake_basics():
+        return pl.DataFrame(
+            {
+                "symbol": ["600000.SH", "600001.SH"],
+                "name": ["A", "B"],
+                "exchange": ["SH", "SH"],
+                "asset_type": ["stock", "stock"],
+                "list_date": [date(2000, 1, 1), date(2000, 1, 1)],
+                "delist_date": [None, date(2019, 12, 31)] if not close else [None, date(2019, 12, 31)],
+                "prev_symbol": [None, None],
+            }
+        )
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.instruments.fetch_instrument_basics",
+        fake_basics,
+    )
+
+    def fake_roster(day):
+        return {"600000.SH", "600001.SH"} if close else {"600000.SH"}
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        fake_roster,
+    )
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.em_auth.EastMoneyClient",
+        lambda config=None: FakeClient(),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.clist.fetch_clist_pages",
+        lambda client, fields: [{"f12": "920001", "f13": 2, "f14": "BJ ONE", "f26": "20240101"}],
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.clist.clist_rows_to_symbols",
+        lambda rows: [("920001.BJ", rows[0])],
+    )
+    return runner
+
+
+def test_stage_b_not_closed_persists_receipt(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=False)
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+    with pytest.raises(R3Error, match="NOT_CLOSED"):
+        runner._identity_completion_v072()
+    receipt_path = runner.meta / "r3-identity-receipt.json"
+    assert receipt_path.exists()  # persisted even on NOT_CLOSED
+    payload = json.loads(receipt_path.read_text())
+    closure = payload["shsz_closure"]
+    assert closure["closed"] is False
+    assert closure["roster_not_in_identity_n"] == 0
+    assert closure["identity_not_in_roster_n"] in (0, 1)
+    assert "identity_not_in_roster_hash" in closure
+
+
+def test_stage_b_formal_identity_drift_persists(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    # Stage-A evidence disagrees with the fresh stock_basic map
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600002.SH": date(2020, 6, 30)},
+    )
+    with pytest.raises(R3Error, match="FORMAL_IDENTITY_DRIFT"):
+        runner._identity_completion_v072()
+    payload = json.loads((runner.meta / "r3-identity-receipt.json").read_text())
+    drift = payload["formal_drift"]
+    assert drift["extra_n"] >= 1 or drift["missing_n"] >= 1
+    assert "shsz_formal_delisted_hash" in payload
+
+
+def test_stage_e_uses_persisted_formal_map(monkeypatch, tmp_path):
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = tmp_path / "asl" / "r3"
+    runner.meta.mkdir(parents=True)
+    (runner.meta / "r3-identity-receipt.json").write_text(
+        json.dumps({"shsz_formal_delisted": {"600001.SH": "2019-12-31"}})
+    )
+    formal_map = runner._load_shsz_formal_map()
+    assert formal_map == {"600001.SH": date(2019, 12, 31)}
+    src = inspect.getsource(r3.R3Runner._recover_delisted_daily)
+    assert "self._load_shsz_formal_map()" in src
+
+
+def test_c2_no_nonbj_foundation_blocked(monkeypatch, tmp_path):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {
+                "bj_current_membership": [
+                    {"symbol": "920001.BJ", "name": "X", "exchange": "BJ",
+                     "asset_type": "stock", "list_date": "2025-01-01", "delist_date": None}
+                ]
+            },
+            default=str,
+        )
+    )
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.cfg = types.SimpleNamespace()
+    # curated instruments contain ONLY BJ (no SH/SZ foundation)
+    bj_only = pl.DataFrame(
+        {
+            "symbol": ["920999.BJ"],
+            "name": ["Y"],
+            "exchange": ["BJ"],
+            "asset_type": ["stock"],
+            "list_date": [date(2020, 1, 1)],
+            "delist_date": [None],
+            "prev_symbol": [None],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": [datetime(2026, 1, 1, tzinfo=timezone.utc)],
+        }
+    )
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: bj_only)
+    with pytest.raises(R3Error, match="BLOCKED_ALL_A_UNIVERSE"):
+        runner._enrich_bj_metadata()
+
+
+def test_c2_nonbj_provenance_unchanged(monkeypatch, tmp_path):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {
+                "bj_current_membership": [
+                    {"symbol": "920001.BJ", "name": "X", "exchange": "BJ",
+                     "asset_type": "stock", "list_date": "2025-01-01",
+                     "delist_date": None, "prev_symbol": None}
+                ]
+            },
+            default=str,
+        )
+    )
+    non_bj = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "name": ["A"],
+            "exchange": ["SH"],
+            "asset_type": ["stock"],
+            "list_date": [date(2000, 1, 1)],
+            "delist_date": [None],
+            "prev_symbol": [None],
+            "source": ["tdx_protocol"],
+            "data_version": ["v2"],
+            "fetched_at": [datetime(2026, 2, 1, tzinfo=timezone.utc)],
+        }
+    )
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+    )
+    runner._new_run = lambda job: "cid"
+    manifest_calls = []
+    writer_calls = []
+    bj_member_df = pl.DataFrame(
+        [
+            {
+                "symbol": "920001.BJ", "name": "X", "exchange": "BJ",
+                "asset_type": "stock", "list_date": date(2025, 1, 1),
+                "delist_date": None, "prev_symbol": None,
+                "source": "eastmoney", "data_version": "v1",
+                "fetched_at": datetime(2026, 2, 1, tzinfo=timezone.utc),
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        r3, "load_curated_instruments",
+        lambda cfg: pl.concat([non_bj, bj_member_df], how="diagonal_relaxed"),
+    )
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest(manifest_calls))
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter(writer_calls))
+    monkeypatch.setattr(r3.R3Runner, "_compact", lambda self, rid: {"status": "success"})
+    runner.ledger = type("Led", (), {"append": lambda self, r: None})()
+    runner._enrich_bj_metadata()
+    assert writer_calls and writer_calls[-1][0] == "c2-enrich-bj"
+    staged = writer_calls[-1][1]
+    non_bj_staged = staged.filter(pl.col("symbol").eq("600000.SH"))
+    for col in ("symbol", "name", "exchange", "asset_type", "list_date",
+                "delist_date", "prev_symbol", "source", "data_version", "fetched_at"):
+        assert non_bj_staged[col].to_list() == non_bj[col].to_list()  # field-for-field
+
+
+def test_c2_extra_bj_post_fail_closed(monkeypatch, tmp_path):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {
+                "bj_current_membership": [
+                    {"symbol": "920001.BJ", "name": "X", "exchange": "BJ",
+                     "asset_type": "stock", "list_date": "2025-01-01",
+                     "delist_date": None, "prev_symbol": None}
+                ]
+            },
+            default=str,
+        )
+    )
+    non_bj = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"], "name": ["A"], "exchange": ["SH"],
+            "asset_type": ["stock"], "list_date": [date(2000, 1, 1)],
+            "delist_date": [None], "prev_symbol": [None],
+            "source": ["tdx_protocol"], "data_version": ["v2"],
+            "fetched_at": [datetime(2026, 2, 1, tzinfo=timezone.utc)],
+        }
+    )
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+    )
+    runner._new_run = lambda job: "cid"
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest([]))
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter([]))
+    monkeypatch.setattr(r3.R3Runner, "_compact", lambda self, rid: {"status": "success"})
+    runner.ledger = type("Led", (), {"append": lambda self, r: None})()
+
+    def post_with_extra(cfg):
+        extra = non_bj.clone()
+        return extra
+
+    # first call (pre) returns non_bj; second call (post) returns non_bj + stray BJ
+    calls = {"n": 0}
+
+    def load_cur(cfg):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            stray = pl.DataFrame(
+                {
+                    "symbol": ["920999.BJ"], "name": ["Z"], "exchange": ["BJ"],
+                    "asset_type": ["stock"], "list_date": [date(2020, 1, 1)],
+                    "delist_date": [None], "prev_symbol": [None],
+                    "source": ["eastmoney"], "data_version": ["v1"],
+                    "fetched_at": [datetime(2026, 2, 1, tzinfo=timezone.utc)],
+                }
+            )
+            return pl.concat([non_bj, stray], how="diagonal_relaxed")
+        return non_bj
+
+    monkeypatch.setattr(r3, "load_curated_instruments", load_cur)
+    with pytest.raises(R3Error, match="C2_POSTCHECK"):
+        runner._enrich_bj_metadata()
+
+
+def test_f2_fail_then_success_supersedes_prior_failed(monkeypatch):
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = type(
+        "CfgStub",
+        (),
+        {
+            "manifest_path": Path("/nonexistent/manifest.db"),
+            "staging_root": Path("/nonexistent/staging"),
+        },
+    )()
+
+    class LedgerF2:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            self.calls.append(r)
+
+    ledger = LedgerF2()
+    runner.ledger = ledger
+    manifest = FakeManifest([])
+    writer_calls: list = []
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter(writer_calls))
+    calls = {"n": 0}
+
+    def flaky(symbol, start, end, config=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"state": "SOURCE_ERROR", "reason": "EMPTY_KNOWN_SYMBOL",
+                    "symbol": symbol, "frame": None}
+        return {"state": "EXISTS", "reason": "valid_bars", "symbol": symbol,
+                "frame": _bars_frame(symbol)}
+
+    monkeypatch.setattr(r3, "em_daily_tristate", flaky)
+    result = runner._em_primary_route("rid", {"920001.BJ": (R3_HISTORY_START, R3_DAILY_AS_OF)})
+    assert result["unexplained_after"] == 0
+    assert manifest.superseded  # prior failed batch superseded
+    assert manifest.incomplete_blocking() == 0
+    assert any(r.get("event") == "ATTEMPT_SUPERSEDE" for r in ledger.calls)
+
+
+def test_f2_zero_volume_only_unexplained(monkeypatch):
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = type(
+        "CfgStub",
+        (),
+        {
+            "manifest_path": Path("/nonexistent/manifest.db"),
+            "staging_root": Path("/nonexistent/staging"),
+        },
+    )()
+
+    class LedgerZ:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            self.calls.append(r)
+
+    runner.ledger = LedgerZ()
+    writer_calls: list = []
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest([]))
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter(writer_calls))
+    zero = _bars_frame().with_columns(pl.lit(0).alias("volume"))
+
+    def zero_fetcher(symbol, start, end, config=None):
+        return {"state": "EXISTS", "reason": "valid_bars", "symbol": symbol, "frame": zero}
+
+    monkeypatch.setattr(r3, "em_daily_tristate", zero_fetcher)
+    with pytest.raises(R3Error, match="UNEXPLAINED_MISSING"):
+        runner._em_primary_route("rid", {"920001.BJ": (R3_HISTORY_START, R3_DAILY_AS_OF)})
+    assert not writer_calls
+
+
+def test_stage_daily_prepares_network_env(monkeypatch, tmp_path):
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = tmp_path / "asl" / "r3"
+    runner.machine = r3.StageMachine(runner.meta / "execution-state.json")
+    prepared = []
+    monkeypatch.setattr(r3.R3Runner, "_prepare_network_env",
+                        lambda self: prepared.append(True))
+    seen = {}
+    monkeypatch.setattr(r3.R3Runner, "_fetch_daily_bars_per_route",
+                        lambda self: seen.setdefault("called", True))
+    runner.stage_daily()
+    assert prepared  # network prep happened before the route
+    assert seen.get("called") is True
+
+
+def test_verifier_stale_tip_and_exchange_counts():
+    from tools.verify_r3_daily_foundation import daily_tip_verdict, exchange_counts_from
+
+    assert daily_tip_verdict(date(2026, 8, 17))["ok"] is True
+    stale = daily_tip_verdict(date(2026, 8, 14))
+    assert stale["ok"] is False
+    assert stale["DAILY_TIP_STALE"] is True
+
+    active = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "601398.SH", "000001.SZ", "920001.BJ"],
+            "name": ["a", "b", "c", "d"],
+            "exchange": ["SH", "SH", "SZ", "BJ"],
+            "asset_type": ["stock"] * 4,
+            "list_date": [date(2000, 1, 1)] * 4,
+            "delist_date": [None] * 4,
+        }
+    )
+    counts = exchange_counts_from(active)
+    assert counts == {"SH": 2, "SZ": 1, "BJ": 1}
