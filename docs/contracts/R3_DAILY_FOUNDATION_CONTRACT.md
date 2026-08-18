@@ -1,8 +1,8 @@
 # R3 DAILY FOUNDATION CONTRACT
 
 **SPEC_VERSION:** `V1.0 FROZEN`
-**PLAN:** `docs/plans/R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN.md`
-**PLAN_SHA (audited):** `d13e2ecefbb66250b73aca4312dc8706a4d2b7a3`
+**PLAN:** `docs/plans/R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN_V07.md` (V07.2)
+**PLAN_SHA (audited):** `3ab1f184edeea1d0e408c45df4a706248b6558d0`
 **STATUS:** frozen contract for the R3 DAILY FOUNDATION phase
 
 ## Window and provenance
@@ -36,11 +36,20 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
 
 - Active SH/SZ/BJ stock+CDR must all be present; BJ requires verified nonblank
   `name` and `list_date` (`BLOCKED_ALL_A_METADATA` otherwise).
-- Discovery (`discover_delisted`) must finish with `complete=true/failed=0/
-  remaining=0`.
-- Delisted recovery targets = Baostock formal delisted ∪ discovery
-  classified-delisted; `live_missing`/`never_issued`/active names are excluded.
-  Post-C2 `live_missing` BJ rows are ACTIVE members in the daily fetch set.
+- Stage B is V07.2 identity completion — NO Sina issued-code sweep.
+  - SH/SZ formal historical identity authority: Baostock `stock_basic`.
+  - SH/SZ closure evidence: Baostock `roster_on` with a receipt
+    (`expected/success/failed_dates_n`, `union_symbol_n/hash`,
+    `stock_basic_vs_roster_diff`, `unresolved_n`); `failed_dates_n > 0 =>
+    NOT CLOSED` -> stage fails closed.
+  - BJ current: EastMoney clist (f12/f13/f14/f26).
+  - BJ historical: `BJ_HISTORICAL_AUTHORITY = UNPROVABLE_BOUNDED_RESEARCH`;
+    `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED`.
+- Delisted recovery targets: SH/SZ = Baostock formal + roster-closed delisted;
+  BJ = any authority-proven target only (none today). `live_missing`/current
+  active names are excluded. `never_issued` classification is not a completion
+  gate (MASTER_SPEC requires delisted presence/resolvability, not enumeration
+  of non-existent codes).
 - No symbol is dropped by board, ST, liquidity, or strategy use.
 
 ## Daily fetch
@@ -51,12 +60,41 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   end=R3_DAILY_AS_OF, run_id, batch_specs=deterministic chunks)`, controller-owned
   retries with strictly decreasing failed scope.
 - Non-TDX (BJ): partitioned by identical effective span
-  `[max(list_date, start), min(delist_date, as_of)]`; `fetch_bars_via_sina` per
-  span with unique deterministic `batch_prefix` per span+attempt; per-symbol
-  EastMoney `fetch_daily_bars` fallback for date gaps only (never co-existing
-  same PK with Sina rows), with unique controller batch id.
+  `[max(list_date, start), min(delist_date, as_of)]`; EastMoney is PRIMARY
+  through the service-owned tri-state wrapper with unique controller batch ids
+  and exact retry lineage. Sina is OPTIONAL crosscheck only and never a
+  completion/retry/DAILY_READY gate.
 - Coverage requires at least one positive-volume in-window row. Zero-volume
   placeholder rows are not coverage evidence.
+
+## Provider vs coverage enum separation
+
+```text
+provider wrapper (EastMoney BJ):
+  EXISTS / NOT_EXISTS / SOURCE_ERROR
+  known BJ empty     -> SOURCE_ERROR (EMPTY_KNOWN_SYMBOL)
+  known BJ invalid   -> SOURCE_ERROR (INVALID_KNOWN_SYMBOL_RESPONSE)
+  known BJ NEVER     -> NOT_EXISTS
+
+coverage classifier (after exact retries/fallback/reconciliation only):
+  OBSERVED / EXPLAINED_MISSING / UNEXPLAINED_MISSING /
+  PENDING_R4_STATUS_EXPLANATION
+```
+
+The two enums are never mixed; `UNEXPLAINED_MISSING` is produced only by the
+classifier.
+
+## Daily-close gate (V07.2)
+
+```text
+if BJ_HISTORICAL_AUTHORITY != PROVEN or BJ_HISTORICAL_UNRESOLVED_N != 0:
+    DAILY_READY = FALSE
+    R3_EXIT      = BLOCKED_BJ_HISTORICAL_IDENTITY
+    R4_EXECUTION = FORBIDDEN
+```
+
+`UNKNOWN_CARRIED` / null unresolved is never treated as 0. Author DAILY_READY is
+not written solely because SH/SZ + current BJ daily are complete.
 
 ## Quality classification
 

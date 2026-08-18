@@ -1,6 +1,6 @@
 """R3 DAILY FOUNDATION control plane.
 
-This module implements the R3-DAILY-FOUNDATION-V04 plan (Sol AUDIT_PASS at
+This module implements the R3-DAILY-FOUNDATION-V07.2 plan (Sol AUDIT_PASS at
 ``PLAN_SHA``). It is the only authorized R3 data-execution surface: a thin
 service-owned orchestrator on top of the pinned CNEquity raw adapters. It
 deliberately does not call the generic ``step_daily_bars``/``cne init``/``cne
@@ -13,6 +13,11 @@ Fail-closed invariants enforced here:
 * effective list/delist span bounding for every staged daily row;
 * positive-volume required as coverage evidence (zero-volume rows are not);
 * PENDING_R4_STATUS_EXPLANATION is never treated as EXPLAINED_MISSING;
+* provider tri-state (EXISTS/NOT_EXISTS/SOURCE_ERROR) is separated from the
+  coverage classifier enums; the EastMoney wrapper never emits
+  UNEXPLAINED_MISSING and never maps a known BJ symbol to NOT_EXISTS;
+* `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED` keeps DAILY_READY=FALSE until
+  BJ_HISTORICAL_AUTHORITY=PROVEN and BJ_HISTORICAL_UNRESOLVED_N=0;
 * `LATEST_GOOD_AS_OF` is never written.
 
 See docs/plans/R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN.md and
@@ -25,11 +30,9 @@ import hashlib
 import json
 import logging
 import os
-import stat
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -43,12 +46,9 @@ from cnequity.domain.schemas import data_version_for, with_provenance
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.worker_pool import _symbol_batch_id, fetch_daily_bars_parallel
-from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
-from cnequity.steps.bars import fetch_bars_via_sina
 from cnequity.steps.common import list_trading_dates, load_curated_instruments
 from cnequity.steps.delisted import (
     delisted_coverage_report,
-    discover_delisted,
     known_delisted_instruments,
     load_delisted_catalog,
 )
@@ -61,10 +61,11 @@ logger = logging.getLogger(__name__)
 
 R3_HISTORY_START = date(2016, 1, 1)
 R3_DAILY_AS_OF = date(2026, 8, 17)
-SINA_RUNTIME_MIN_INTERVAL_BASE = 0.6
-SINA_RUNTIME_MIN_INTERVAL_MAX = 3.5
-PLAN_SHA = "d13e2ecefbb66250b73aca4312dc8706a4d2b7a3"
+PLAN_SHA = "3ab1f184edeea1d0e408c45df4a706248b6558d0"
 BASE_HEAD = "0254122a99f0a365d2be12f29a2a59b951497fd3"
+
+BJ_HISTORICAL_AUTHORITY_VERDICT = "UNPROVABLE_BOUNDED_RESEARCH"
+HISTORICAL_DELISTED_BJ_LABEL = "UNKNOWN_CARRIED"
 
 R2_ZERO_DATA_TREE_SHA = "ddcf9dc509b6bfb0cea8bd27511360ba6d1b4151b4a745f3e0fcb230ecd43dd5"
 PINNED_CNEQUITY_SHA = "a18ee0484dfb0801650175471724def3228b8a17"
@@ -230,6 +231,140 @@ def group_by_span(spans: dict[str, tuple[date, date]]) -> list[tuple[tuple[date,
     for symbol, span in spans.items():
         buckets.setdefault(span, []).append(symbol)
     return [(span, sorted(symbols)) for span, symbols in sorted(buckets.items())]
+
+
+# --- V07.2 provider tri-state / closure / exit-gate helpers ----------------
+
+EM_KNOWN_SYMBOL_COLS = ("symbol", "trade_date", "open", "high", "low", "close", "volume")
+
+
+def em_daily_tristate(
+    symbol: str,
+    start: date,
+    end: date,
+    *,
+    fetcher: Any | None = None,
+    config: Any = None,
+) -> dict[str, Any]:
+    """Thin service-owned EastMoney tri-state wrapper (V07.2).
+
+    Returns EXACTLY one of EXISTS / NOT_EXISTS / SOURCE_ERROR. For a symbol
+    already confirmed in the security master it NEVER returns NOT_EXISTS and
+    NEVER emits UNEXPLAINED_MISSING.
+    """
+    if fetcher is None:
+        from cnequity.adapters.eastmoney.bars import fetch_daily_bars
+
+        fetcher = fetch_daily_bars
+    try:
+        frame = fetcher([symbol], start, end, config=config)
+    except Exception as exc:
+        return {
+            "state": "SOURCE_ERROR",
+            "reason": f"transport_or_parse: {type(exc).__name__}",
+            "symbol": symbol,
+            "frame": None,
+        }
+    if frame is None:
+        return {
+            "state": "SOURCE_ERROR",
+            "reason": "INVALID_KNOWN_SYMBOL_RESPONSE",
+            "symbol": symbol,
+            "frame": None,
+        }
+    if frame.is_empty():
+        return {
+            "state": "SOURCE_ERROR",
+            "reason": "EMPTY_KNOWN_SYMBOL",
+            "symbol": symbol,
+            "frame": frame,
+        }
+    missing = [c for c in EM_KNOWN_SYMBOL_COLS if c not in frame.columns]
+    if missing:
+        return {
+            "state": "SOURCE_ERROR",
+            "reason": "INVALID_KNOWN_SYMBOL_RESPONSE",
+            "symbol": symbol,
+            "frame": frame,
+        }
+    rows = frame.filter(pl.col("symbol").eq(symbol)).height
+    if rows == 0:
+        return {
+            "state": "SOURCE_ERROR",
+            "reason": "INVALID_KNOWN_SYMBOL_RESPONSE",
+            "symbol": symbol,
+            "frame": frame,
+        }
+    return {"state": "EXISTS", "reason": "valid_bars", "symbol": symbol, "frame": frame}
+
+
+def roster_closure_receipt(
+    days: list[date],
+    roster_fn: Any,
+    *,
+    stock_basic_symbols: set[str] | None = None,
+) -> dict[str, Any]:
+    """Baostock roster closure evidence receipt (V07.2).
+
+    stock_basic is the SH/SZ formal historical identity authority; roster_on is
+    closure/reconciliation evidence ONLY. failed_dates_n > 0 => NOT CLOSED.
+    """
+    success_dates: list[date] = []
+    failed_dates: list[date] = []
+    union: set[str] = set()
+    for day in days:
+        try:
+            roster = set(roster_fn(day))
+        except Exception as exc:
+            failed_dates.append(day)
+            continue
+        success_dates.append(day)
+        union |= roster
+    receipt = {
+        "expected_dates_n": len(days),
+        "success_dates_n": len(success_dates),
+        "failed_dates_n": len(failed_dates),
+        "failed_dates_sample": [d.isoformat() for d in failed_dates[:10]],
+        "union_symbol_n": len(union),
+        "union_symbol_hash": sha256_bytes(
+            json.dumps(sorted(union), separators=(",", ":")).encode()
+        ),
+        "closed": len(failed_dates) == 0,
+    }
+    if stock_basic_symbols is not None:
+        receipt["stock_basic_vs_roster_diff"] = {
+            "identity_not_in_roster": sorted(stock_basic_symbols - union)[:200],
+            "roster_not_in_identity": sorted(union - stock_basic_symbols)[:200],
+            "n_identity_not_in_roster": len(stock_basic_symbols - union),
+            "n_roster_not_in_identity": len(union - stock_basic_symbols),
+        }
+    receipt["unresolved_n"] = len(failed_dates)
+    if receipt["closed"] is False:
+        receipt["closed"] = "NOT_CLOSED"
+        raise R3Error(
+            "NOT_CLOSED",
+            f"{len(failed_dates)}/{len(days)} roster dates failed (failed_dates_n>0 => NOT CLOSED)",
+        )
+    return receipt
+
+
+def v072_exit_verdict(bj_authority: str, unresolved_n: int | None) -> dict[str, Any]:
+    """Frozen R3 exit gate (V07.2). UNKNOWN/null unresolved is never 0."""
+    if bj_authority != "PROVEN" or unresolved_n != 0:
+        return {
+            "DAILY_READY": False,
+            "R3_EXIT": "BLOCKED_BJ_HISTORICAL_IDENTITY",
+            "R4_EXECUTION": "FORBIDDEN",
+            "bj_historical_authority": bj_authority,
+            "bj_historical_unresolved_n": unresolved_n,
+        }
+    return {
+        "DAILY_READY": True,
+        "R3_EXIT": None,
+        "R4_EXECUTION": "FORBIDDEN",
+        "bj_historical_authority": bj_authority,
+        "bj_historical_unresolved_n": unresolved_n,
+    }
 
 
 # --- Service ledger / state machine ----------------------------------------
@@ -529,108 +664,63 @@ class R3Runner:
         return receipt
 
     def stage_discovery(self) -> dict[str, Any]:
+        """V07.2 identity completion (stage key kept `B_discovery` for compat).
+
+        No Sina issued-code sweep: SH/SZ identity/closure come from Baostock;
+        BJ current identity from EastMoney clist; BJ historical is
+        UNPROVABLE_BOUNDED_RESEARCH -> HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED.
+        """
         self.machine.enter("B_discovery")
-        self._apply_discovery_pacing()
-        attempts = 0
-        last_remaining: int | None = None
-        stalled = 0
-        total_failed = 0
-        interval = SINA_RUNTIME_MIN_INTERVAL_BASE
-        while True:
-            attempts += 1
-            if attempts > 400:
-                raise R3Error("BLOCKED_SOURCE_DISCOVERY", "discovery attempt budget exhausted")
-            result = discover_delisted(self.cfg, limit=1000)
-            remaining = result.remaining
-            total_failed += len(result.failed)
-            if result.failed:
-                interval = min(interval * 1.6, SINA_RUNTIME_MIN_INTERVAL_MAX)
-            else:
-                interval = max(interval * 0.9, SINA_RUNTIME_MIN_INTERVAL_BASE)
-            self._set_sina_interval(interval)
-            self.ledger.append(
-                {
-                    "stage": "B_discovery",
-                    "attempt": attempts,
-                    "probed": result.probed,
-                    "delisted": result.delisted,
-                    "never_issued": result.never_issued,
-                    "failed": len(result.failed),
-                    "remaining": remaining,
-                    "complete": result.complete,
-                    "sina_interval": round(interval, 3),
-                }
-            )
-            if remaining == 0:
-                break
-            if result.failed:
-                # Sina's WAF throttles at a per-window count; pause between
-                # chunks to let counters decay (bounded operational backoff).
-                logger.warning(
-                    "discovery %s had %s failed probe(s); backing off 30s",
-                    attempts,
-                    len(result.failed),
-                )
-                time.sleep(30)
-            if last_remaining is not None and remaining >= last_remaining:
-                stalled += 1
-                logger.warning(
-                    "discovery no progress attempt %s: remaining unchanged at %s "
-                    "(%s failed this chunk)",
-                    attempts,
-                    remaining,
-                    len(result.failed),
-                )
-                if stalled >= 3:
-                    raise R3Error(
-                        "BLOCKED_SOURCE_DISCOVERY",
-                        f"no discovery progress across 3 chunks; remaining={remaining}, "
-                        f"cumulative_failed={total_failed}",
-                    )
-            else:
-                stalled = 0
-            last_remaining = remaining
-        receipt = {
-            "attempts": attempts,
-            "complete": True,
-            "cumulative_failed_probes": total_failed,
-            "observed_at_utc": datetime.now(timezone.utc).isoformat(),
-        }
+        receipt = self._identity_completion_v072()
         self.machine.complete("B_discovery", receipt)
         return receipt
 
-    def _apply_discovery_pacing(self) -> None:
-        """Runtime-only Sina pacing override for the probe sweep.
+    def _identity_completion_v072(self) -> dict[str, Any]:
+        from cnequity.adapters.baostock.delisted_bars import roster_on
+        from cnequity.adapters.baostock.instruments import fetch_instrument_basics
+        from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
+        from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
-        The committed config sets [sources.sina].min_interval_seconds=0.3,
-        which Sina's WAF rate-limits with HTTP 456 after a short request
-        window. Overriding the in-memory limiter interval for discovery-only
-        does not touch the config file (CONFIG_SHA is unchanged) and does not
-        change schema/units/PK/semantics/provenance. Recorded as evidence.
-        """
-        previous = dict(getattr(self.cfg, "source_intervals", {}) or {}).get("sina")
-        self._set_sina_interval(SINA_RUNTIME_MIN_INTERVAL_BASE)
-        record = {
-            "source": "sina",
-            "committed_min_interval_seconds": previous,
-            "runtime_base_interval_seconds": SINA_RUNTIME_MIN_INTERVAL_BASE,
-            "adaptive_domain": f"[{SINA_RUNTIME_MIN_INTERVAL_BASE}, {SINA_RUNTIME_MIN_INTERVAL_MAX}]s",
-            "scope": "B_discovery probe sweep only",
-            "reason": "Sina WAF returns HTTP 456 after a short request window "
-            "at the committed 0.3s pace; adaptive pacing converges to a "
-            "sustainable rate and backs off after any 456-heavy chunk",
-            "config_file_unchanged": True,
-            "applied_at": datetime.now(timezone.utc).isoformat(),
+        basic_df = fetch_instrument_basics()
+        identity_symbols = set(basic_df["symbol"].to_list()) if basic_df.height else set()
+        identity_hash = sha256_bytes(
+            json.dumps(sorted(identity_symbols), separators=(",", ":")).encode()
+        )
+
+        dates = list_trading_dates(self.cfg, self.history_start, self.daily_as_of)
+        closure = roster_closure_receipt(
+            dates, roster_on, stock_basic_symbols=identity_symbols
+        )
+
+        # BJ current identity via EastMoney clist (existing C2 machinery reused)
+        client = EastMoneyClient(config=self.cfg)
+        try:
+            clist = fetch_clist_pages(client, fields="f12,f13,f14,f26")
+        finally:
+            client.close()
+        bj_current = sorted(
+            {sym for sym, _item in clist_rows_to_symbols(clist) if sym.endswith(".BJ")}
+        )
+        bj_current_hash = sha256_bytes(
+            json.dumps(bj_current, separators=(",", ":")).encode()
+        )
+
+        receipt = {
+            "route": "V07.2_identity_completion",
+            "shsz_identity_authority": "Baostock_stock_basic",
+            "shsz_identity_symbols": len(identity_symbols),
+            "shsz_identity_hash": identity_hash,
+            "shsz_closure": closure,
+            "bj_current_authority": "EastMoney_clist",
+            "bj_current_symbols": len(bj_current),
+            "bj_current_hash": bj_current_hash,
+            "bj_historical_authority": BJ_HISTORICAL_AUTHORITY_VERDICT,
+            "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
+            "bj_historical_resolved": False,
+            "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
-        atomic_write_json(self.meta / "r3-discovery-pacing.json", record)
-        self.ledger.append({"stage": "B_discovery", "pacing": record})
-
-    def _set_sina_interval(self, interval: float) -> None:
-        """Runtime-only per-source interval override (config file untouched)."""
-        intervals = dict(getattr(self.cfg, "source_intervals", {}) or {})
-        intervals["sina"] = float(interval)
-        self.cfg.source_intervals = intervals
-        self.cfg._rate_limiters = None  # type: ignore[attr-defined]
+        self.ledger.append({"stage": "B_discovery", "v07_2_identity": True, "receipt": receipt})
+        return receipt
 
     def stage_merge(self) -> dict[str, Any]:
         self.machine.enter("C_merge")
@@ -765,7 +855,6 @@ class R3Runner:
     def _recover_delisted_daily(self) -> dict[str, Any]:
         """R3-safe delisted recovery; never touches backfill_delisted_bars."""
         from cnequity.adapters.baostock.delisted_bars import fetch_delisted_bars
-        from cnequity.adapters.sina.bars import fetch_daily_bars_sina
 
         formal = known_delisted_instruments(self.cfg, self.daily_as_of)
         catalog = load_delisted_catalog(self.cfg)
@@ -777,7 +866,6 @@ class R3Runner:
             json.dumps(sorted(targets), separators=(",", ":")).encode()
         ).hexdigest()
 
-        spans = {}
         no_data: list[str] = []
         recover: list[str] = []
         for symbol in targets:
@@ -801,24 +889,21 @@ class R3Runner:
         bj = sorted(s for s in recover if s.endswith(".BJ"))
 
         rows_dict: dict[str, list[dict[str, Any]]] = {}
-        combined = sh_sz + bj
         attempts = 0
-        pending = list(combined)
+        pending = list(sh_sz)
         while pending and attempts < 3:
             attempts += 1
             self.ledger.append({"stage": "E", "attempt": attempts, "pending": len(pending)})
             still: list[str] = []
             for symbol in pending:
                 try:
-                    if symbol.endswith(".BJ"):
-                        frame = fetch_daily_bars_sina(symbol, start=self.history_start, end=self.daily_as_of)
-                        source = "sina"
-                    else:
-                        frame_rows, _failed = fetch_delisted_bars([symbol], self.history_start, self.daily_as_of, config=self.cfg)
-                        if _failed:
-                            raise RuntimeError(f"baostock failed for {symbol}: {_failed}")
-                        frame = pl.DataFrame(frame_rows)
-                        source = "baostock"
+                    frame_rows, _failed = fetch_delisted_bars(
+                        [symbol], self.history_start, self.daily_as_of, config=self.cfg
+                    )
+                    if _failed:
+                        raise RuntimeError(f"baostock failed for {symbol}: {_failed}")
+                    frame = pl.DataFrame(frame_rows)
+                    source = "baostock"
                 except Exception as exc:
                     self.ledger.append({"stage": "E", "symbol": symbol, "error": str(exc)})
                     still.append(symbol)
@@ -836,12 +921,46 @@ class R3Runner:
                         traded["trade_date"].min(),
                         traded["trade_date"].max(),
                     )
-            pending = list(dict.fromkeys(still))
-            if pending:
-                for symbol in list(pending):
-                    # one exact retry per symbol per attempt is satisfied by the loop
-                    pass
+            pending = sorted(set(still))
         unresolved = pending
+
+        # BJ historical delisted targets: only resolvable when authority is PROVEN
+        bj_unknown_carried: list[str] = []
+        if bj:
+            if BJ_HISTORICAL_AUTHORITY_VERDICT == "PROVEN":
+                # Route through §5a EastMoney tri-state wrapper only.
+                for symbol in bj:
+                    attempt = 0
+                    state = None
+                    reason = None
+                    frame = None
+                    while attempt < 3:
+                        attempt += 1
+                        result = em_daily_tristate(
+                            symbol, self.history_start, self.daily_as_of, config=self.cfg
+                        )
+                        state, reason, frame = result["state"], result["reason"], result["frame"]
+                        if state == "EXISTS":
+                            break
+                    if state == "EXISTS" and frame is not None and not frame.is_empty():
+                        rows_dict[symbol] = frame.to_dicts()
+                        traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
+                        if not traded.is_empty():
+                            recovered_spans[symbol] = (traded["trade_date"].min(), traded["trade_date"].max())
+                    else:
+                        unresolved.append(symbol)
+            else:
+                # Authority unproven: never pretend the BJ historical universe is
+                # complete; carry as UNKNOWN_CARRIED and never set unresolved_n=0.
+                bj_unknown_carried = list(bj)
+                self.ledger.append(
+                    {
+                        "stage": "E",
+                        "bj_historical_authority": BJ_HISTORICAL_AUTHORITY_VERDICT,
+                        "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
+                        "targets": bj,
+                    }
+                )
 
         if unresolved:
             raise R3Error(
@@ -855,7 +974,7 @@ class R3Runner:
             if frame.is_empty():
                 continue
             frame = with_provenance(
-                frame, source=str(frame["source"][0]) if "source" in frame.columns else "sina",
+                frame, source=str(frame["source"][0]) if "source" in frame.columns else "baostock",
                 data_version=data_version_for("daily_bars"),
             )
             frame = frame.unique(subset=["symbol", "trade_date"], keep="last")
@@ -871,6 +990,11 @@ class R3Runner:
             chunk_no += 1
 
         compact = self._compact(run_id)
+        bj_authority = BJ_HISTORICAL_AUTHORITY_VERDICT
+        exit_verdict = v072_exit_verdict(
+            bj_authority,
+            len(bj_unknown_carried) if bj_unknown_carried else None,
+        )
         receipt = {
             "run_id": run_id,
             "target_set_sha": target_set_sha,
@@ -880,6 +1004,13 @@ class R3Runner:
             "recovered": len(recovered_spans),
             "rows_written": total_rows,
             "unresolved": len(unresolved),
+            "bj_historical_targets": len(bj),
+            "bj_historical_authority": bj_authority,
+            "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
+            "bj_historical_unresolved_n": (
+                len(bj_unknown_carried) if bj_unknown_carried else None
+            ),
+            "exit": exit_verdict,
             "compact": compact,
         }
         atomic_write_json(self.meta / "r3-delisted-recovery.json", receipt)
@@ -909,8 +1040,6 @@ class R3Runner:
         return df
 
     def _fetch_daily_bars_per_route(self) -> dict[str, Any]:
-        from cnequity.adapters.eastmoney.bars import fetch_daily_bars as em_fetch_daily_bars
-
         spans_shsz: dict[str, tuple[date, date]] = {}
         spans_bj: dict[str, tuple[date, date]] = {}
         expect_no_data: list[str] = []
@@ -926,7 +1055,7 @@ class R3Runner:
 
         run_id = self._new_run("r3_daily_bars")
         f1 = self._tdx_route(run_id, spans_shsz)
-        f2 = self._sina_route(run_id, spans_bj, em_fetch_daily_bars)
+        f2 = self._em_primary_route(run_id, spans_bj)
         compact = self._compact(run_id)
         return {
             "run_id": run_id,
@@ -934,7 +1063,7 @@ class R3Runner:
             "bj_symbols": len(spans_bj),
             "expected_no_data": len(expect_no_data),
             "f1_tdx": f1,
-            "f2_sina": f2,
+            "f2_em_primary": f2,
             "compact": compact,
         }
 
@@ -970,106 +1099,91 @@ class R3Runner:
             failed_symbols = new_failed
         return {"symbols": len(symbols), "had_error": bool(first.get("had_error")), "attempts": attempts, "failed_after": len(failed_symbols), "failed_sample": failed_symbols[:20]}
 
-    def _sina_route(self, run_id: str, spans: dict[str, tuple[date, date]], em_fetch: Any) -> dict[str, Any]:
+    def _em_primary_route(self, run_id: str, spans: dict[str, tuple[date, date]]) -> dict[str, Any]:
+        """Stage F2 (V07.2): EastMoney primary for non-TDX (BJ) daily bars.
+
+        Sina is never called here. Every fetch goes through the §5a tri-state
+        wrapper; exact retries (<=3) per symbol; EXISTS rows are staged with a
+        unique controller-managed batch id and provenance; symbols still without
+        valid bars after retries become UNEXPLAINED_MISSING in the coverage
+        classifier layer and fail the gate.
+        """
         if not spans:
             return {"symbols": 0}
         manifest = Manifest(self.cfg.manifest_path)
-        run_staging = self.cfg.staging_root / "daily_bars" / f"run_id={run_id}"
-
-        def staged_sina_keys() -> dict[str, set[date]]:
-            files = sorted(Path(run_staging).rglob("*.parquet")) if Path(run_staging).exists() else []
-            if not files:
-                return {}
-            frame = pl.concat([pl.read_parquet(f).select("symbol", "trade_date") for f in files])
-            out: dict[str, set[date]] = {}
-            for row in frame.iter_rows(named=True):
-                out.setdefault(row["symbol"], set()).add(row["trade_date"])
-            return out
-
-        sina_already = staged_sina_keys()
+        writer = StagingWriter(self.cfg.staging_root)
         groups = group_by_span(spans)
-        failed: list[str] = []
         outcomes: list[dict[str, Any]] = []
-        symbol_span = {symbol: span for symbol, span in spans.items()}
+        unexplained: list[str] = []
 
-        for group_index, (span, symbols) in enumerate(groups):
-            (start, end) = span
-            status = "not_done"
-            scope_symbols = list(symbols)
-            attempt = 0
-            while scope_symbols and attempt < 3:
-                attempt += 1
-                group_id = f"{hashlib.sha256(f'{start.isoformat()}|{end.isoformat()}|{group_index}|{attempt}'.encode()).hexdigest()[:12]}"
-                batch_id = f"sina-{group_id}-a{attempt}"
-                manifest.start_batch(
-                    run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
-                    symbols=scope_symbols, window_start=start.isoformat(),
-                    window_end=end.isoformat(), blocks_compaction=True,
-                )
-                try:
-                    out = fetch_bars_via_sina(
-                        self.cfg, scope_symbols, start, end, run_id, batch_prefix=batch_id
+        for _group_index, (span, symbols) in enumerate(groups):
+            start, end = span
+            for symbol in symbols:
+                attempt = 0
+                state: str | None = None
+                reason: str | None = None
+                frame = None
+                while attempt < 3:
+                    attempt += 1
+                    result = em_daily_tristate(
+                        symbol, start, end, config=self.cfg
                     )
-                except Exception as exc:
-                    manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
-                    failed.extend(scope_symbols)
-                    scope_symbols = []
-                    outcomes.append({"group": group_index, "attempt": attempt, "status": "failed", "error": str(exc)})
-                    continue
-                step_failed = set(out.get("failed_symbol_names") or [])
-                batch_status = "success" if not step_failed else "warning"
-                manifest.finish_batch(
-                    run_id, batch_id, batch_status,
-                    error_message=None if not step_failed else f"{len(step_failed)} fallback failures",
-                )
-                if step_failed:
-                    scope_symbols = [s for s in scope_symbols if s in step_failed]
+                    state = result["state"]
+                    reason = result["reason"]
+                    frame = result["frame"]
+                    if state == "EXISTS":
+                        break
+                    self.ledger.append(
+                        {"stage": "F2", "symbol": symbol, "attempt": attempt, "state": state, "reason": reason}
+                    )
+                if state == "EXISTS" and frame is not None and not frame.is_empty():
+                    out = frame.filter(
+                        (pl.col("trade_date") >= start) & (pl.col("trade_date") <= end)
+                    )
+                    out = out.unique(subset=["symbol", "trade_date"], keep="last")
+                    out = with_provenance(
+                        out, source="eastmoney", data_version=data_version_for("daily_bars")
+                    )
+                    batch_id = (
+                        "em-"
+                        + hashlib.sha256(
+                            f"{symbol}|{start.isoformat()}|{end.isoformat()}|a{attempt}".encode()
+                        ).hexdigest()[:12]
+                    )
+                    manifest.start_batch(
+                        run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
+                        symbols=[symbol], window_start=start.isoformat(),
+                        window_end=end.isoformat(), blocks_compaction=True,
+                    )
+                    writer.write_batch("daily_bars", run_id, batch_id, out)
+                    manifest.finish_batch(
+                        run_id, batch_id, "success",
+                        rows_read=out.height, rows_written=out.height,
+                    )
+                    outcomes.append(
+                        {"symbol": symbol, "state": "EXISTS", "attempt": attempt, "rows": out.height}
+                    )
                 else:
-                    scope_symbols = []
-                outcomes.append({"group": group_index, "attempt": attempt, "status": batch_status, "failed": len(step_failed)})
+                    unexplained.append(symbol)
+                    outcomes.append(
+                        {"symbol": symbol, "state": state or "SOURCE_ERROR", "reason": reason}
+                    )
 
-            for symbol in scope_symbols:
-                failed.append(symbol)
-
-        # per-symbol EastMoney fallback for anything still missing
-        remaining = list(dict.fromkeys(failed))
-        em_failed: list[str] = []
-        if remaining:
-            for symbol in remaining:
-                start, end = symbol_span[symbol]
-                try:
-                    frame = em_fetch([symbol], start, end, config=self.cfg)
-                except Exception as exc:
-                    em_failed.append(symbol)
-                    continue
-                if frame.is_empty():
-                    em_failed.append(symbol)
-                    continue
-                frame = frame.unique(subset=["symbol", "trade_date"], keep="last")
-                handled = sina_already.get(symbol, set())
-                frame = frame.filter(~pl.col("trade_date").is_in(list(handled)))
-                frame = frame.filter(
-                    (pl.col("trade_date") >= start) & (pl.col("trade_date") <= end)
-                )
-                frame = with_provenance(frame, source="eastmoney", data_version=data_version_for("daily_bars"))
-                frame = frame.filter(
-                    (pl.col("trade_date") >= start) & (pl.col("trade_date") <= end)
-                )
-                batch_id = f"em-{hashlib.sha256(f'{symbol}|{start}|{end}'.encode()).hexdigest()[:12]}"
-                manifest.start_batch(
-                    run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
-                    symbols=[symbol], window_start=start.isoformat(),
-                    window_end=end.isoformat(), blocks_compaction=True,
-                )
-                StagingWriter(self.cfg.staging_root).write_batch("daily_bars", run_id, batch_id, frame)
-                manifest.finish_batch(run_id, batch_id, "success", rows_read=frame.height, rows_written=frame.height)
-                outcomes.append({"symbol": symbol, "route": "eastmoney", "status": "success", "rows": frame.height})
-            if em_failed:
-                raise R3Error(
-                    "UNEXPLAINED_MISSING",
-                    f"{len(em_failed)} non-TDX symbols failed every route: {em_failed[:20]}",
-                )
-        return {"symbols": len(spans), "groups": len(groups), "outcomes": outcomes, "eastmoney_fallback": len(remaining)}
+        if unexplained:
+            # coverage classifier output: after exact retries exhausted, still no
+            # valid bars -> UNEXPLAINED_MISSING (blocks the gate)
+            raise R3Error(
+                "UNEXPLAINED_MISSING",
+                f"{len(unexplained)} BJ symbols have no valid bars after retries: "
+                f"{unexplained[:20]}",
+            )
+        return {
+            "symbols": len(spans),
+            "route": "eastmoney_primary",
+            "groups": len(groups),
+            "outcomes": outcomes,
+            "unexplained_after": 0,
+        }
 
     def stage_coverage(self) -> dict[str, Any]:
         self.machine.enter("G_coverage")
