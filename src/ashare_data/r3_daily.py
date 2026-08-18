@@ -35,12 +35,13 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import fcntl
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import polars as pl
 
@@ -78,6 +79,21 @@ APPROVED_CALLABLES: tuple[tuple[str, str, str, str, str], ...] = (
     ("roster_on", "cnequity.adapters.baostock.delisted_bars", "roster_on",
      "cnequity.adapters.baostock.delisted_bars",
      "(day: 'date', *, bs=None, login: 'bool' = True) -> 'set[str]'"),
+    ("import_baostock", "cnequity.adapters.baostock._session", "import_baostock",
+     "cnequity.adapters.baostock._session",
+     "()"),
+    ("_login", "cnequity.adapters.baostock._session", "_login",
+     "cnequity.adapters.baostock._session",
+     "(bs, *, sleep=<built-in function sleep>) -> 'None'"),
+    ("_relogin", "cnequity.adapters.baostock._session", "_relogin",
+     "cnequity.adapters.baostock._session",
+     "(bs, *, sleep=<built-in function sleep>) -> 'None'"),
+    ("_ensure_socket_timeout", "cnequity.adapters.baostock._session", "_ensure_socket_timeout",
+     "cnequity.adapters.baostock._session",
+     "(timeout: 'float' = 30.0) -> 'None'"),
+    ("_force_close_baostock_socket", "cnequity.adapters.baostock._session", "_force_close_baostock_socket",
+     "cnequity.adapters.baostock._session",
+     "() -> 'None'"),
     ("fetch_delisted_bars", "cnequity.adapters.baostock.delisted_bars", "fetch_delisted_bars",
      "cnequity.adapters.baostock.delisted_bars",
      "(symbols: 'list[str]', start: 'date', end: 'date', *, config=None, bs=None) -> 'tuple[list[dict], list[str]]'"),
@@ -219,6 +235,17 @@ DERIVED_DENY = (
     "derived/industry_index",
     "derived/sentiment_scores",
 )
+
+# V07.3 resumable SH/SZ roster closure: single shared Baostock session,
+# bounded per-date retry/relogin, atomic progress checkpoint, and exact
+# same-stage resume. These numbers mirror the pinned CNEquity session policy
+# (3 attempts, 1s/3s/8s backoff, relogin every 300 dates).
+ROSTER_CHECKPOINT_FILENAME = "r3-roster-closure-progress-v073.json"
+ROSTER_CHECKPOINT_SCHEMA_VERSION = 1
+ROSTER_SWEEP_MAX_ATTEMPTS = 3
+ROSTER_SWEEP_BACKOFF = (1.0, 3.0, 8.0)  # seconds; injectable/skipped in tests
+ROSTER_PROACTIVE_RELOGIN_EVERY = 300
+ROSTER_PROGRESS_LOG_EVERY = 25
 
 
 class R3Error(RuntimeError):
@@ -641,6 +668,53 @@ class StageMachine:
         state["current"] = None
         state["status"] = "pending"
         state.setdefault("evidence", {})[stage] = evidence
+        self.save(state)
+        return state
+
+    def resume_current(
+        self,
+        stage: str,
+        *,
+        route: str,
+        checkpoint_present: bool,
+        resume_from_index: int,
+        resume_count: int,
+    ) -> dict[str, Any]:
+        """Append-only same-stage resume of an interrupted running stage (V07.3).
+
+        Required: current == stage, status == running, completed == the exact
+        legal prefix of stage (fresh entry also satisfies this because
+        ``enter`` persisted current=running before the orchestration runs).
+        Adds an append-only ``resumes[]`` lineage record. Never clears current,
+        never adds the stage to completed, never deletes evidence.
+        """
+        state = self.load()
+        if state.get("current") != stage or state.get("status") != "running":
+            raise R3Error(
+                "RECOVERY_STATE_MISMATCH",
+                f"expected current={stage} running; got current="
+                f"{state.get('current')} status={state.get('status')}",
+            )
+        if stage not in ENTRY_ORDER:
+            raise R3Error("STAGE_UNKNOWN", f"cannot resume unknown stage {stage}")
+        index = ENTRY_ORDER.index(stage)
+        expected_prefix = list(ENTRY_ORDER[:index])
+        if state["completed"] != expected_prefix:
+            raise R3Error(
+                "RECOVERY_STATE_MISMATCH",
+                f"resume {stage} requires completed == {expected_prefix}; "
+                f"got {state['completed']}",
+            )
+        state.setdefault("resumes", []).append(
+            {
+                "stage": stage,
+                "resumed_at": datetime.now(timezone.utc).isoformat(),
+                "route": route,
+                "checkpoint_present": checkpoint_present,
+                "resume_from_index": resume_from_index,
+                "resume_count": resume_count,
+            }
+        )
         self.save(state)
         return state
 
@@ -1154,20 +1228,28 @@ class R3Runner:
         return receipt
 
     def stage_discovery(self) -> dict[str, Any]:
-        """V07.2 identity completion (stage key kept `B_discovery` for compat).
+        """V07.2 identity completion + V07.3 resumable roster closure.
 
-        No Sina issued-code sweep: SH/SZ identity/closure come from Baostock;
-        BJ current identity from EastMoney clist; BJ historical is
-        UNPROVABLE_BOUNDED_RESEARCH -> HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED.
+        No Sina issued-code sweep: SH/SZ identity/closure come from Baostock via
+        a single shared session with an atomic progress checkpoint; BJ current
+        identity from EastMoney clist; BJ historical is UNPROVABLE_BOUNDED_RESEARCH
+        -> HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED.
+
+        Re-entry is same-stage resume: when the interrupted V07.2/V07.3 run
+        already left current=B_discovery running on the exact A prefix, we do not
+        call StageMachine.enter again (it would raise STAGE_IN_PROGRESS); the
+        orchestration records the resume lineage and continues from the
+        checkpoint (or boots from zero for the legacy no-checkpoint incident).
         """
-        self.machine.enter("B_discovery")
+        state = self.machine.load()
+        if state.get("current") != "B_discovery":
+            self.machine.enter("B_discovery")
         receipt = self._identity_completion_v072()
         self.machine.complete("B_discovery", receipt)
         return receipt
 
     def _identity_completion_v072(self) -> dict[str, Any]:
         self._prepare_network_env()
-        from cnequity.adapters.baostock.delisted_bars import roster_on
         from cnequity.adapters.baostock.instruments import fetch_instrument_basics
         from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
         from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
@@ -1212,9 +1294,13 @@ class R3Runner:
         dates = list_trading_dates(self.cfg, self.history_start, self.daily_as_of)
         if not dates:
             raise R3Error("NO_TRADING_DATES", "no trading dates in R3 window")
-        closure = roster_closure_receipt(
-            dates, roster_on, stock_basic_symbols=roster_closure_symbols
+        sweep = self._resumable_roster_sweep(
+            dates,
+            roster_closure_symbols=roster_closure_symbols,
+            formal_identity_hash=identity_hash,
+            roster_expected_hash=roster_expected_hash,
         )
+        closure = sweep["closure"]
 
         # SH/SZ formal delisted map (Baostock stock_basic, in-window scope)
         shsz_formal_delisted: dict[str, str] = {}
@@ -1342,8 +1428,293 @@ class R3Runner:
                 f"missing={len(drift_missing)}, extra={len(drift_extra)}, "
                 f"date_mismatch={len(drift_date_mismatch)}",
             )
+        # V07.3: the closure is closed and identity drift is empty, so the
+        # checkpoint may record a terminal success (never deleted; it stays as
+        # lineage evidence that B completed).
+        ckpt_path = self.meta / ROSTER_CHECKPOINT_FILENAME
+        if ckpt_path.exists():
+            ck = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            ck["terminal_status"] = "success"
+            ck["final_identity_receipt_sha"] = sha256_bytes(
+                json.dumps(
+                    receipt, sort_keys=True, separators=(",", ":"), default=str
+                ).encode()
+            )
+            self._write_roster_checkpoint(ck)
         self.ledger.append({"stage": "B_discovery", "v07_2_identity": True, "receipt": receipt})
         return receipt
+
+    # --- V07.3 resumable roster closure ------------------------------------
+
+    def _roster_union_hash(self, union: set[str]) -> str:
+        return sha256_bytes(
+            json.dumps(sorted(union), separators=(",", ":")).encode()
+        )
+
+    def _write_roster_checkpoint(self, payload: dict[str, Any]) -> None:
+        atomic_write_json(self.meta / ROSTER_CHECKPOINT_FILENAME, payload)
+
+    def _resumable_roster_sweep(
+        self,
+        days: list[date],
+        *,
+        roster_closure_symbols: set[str],
+        formal_identity_hash: str,
+        roster_expected_hash: str,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> dict[str, Any]:
+        """V07.3 resumable SH/SZ roster closure over a single shared session.
+
+        Reuses the pinned CNEquity Baostock session lifecycle (``import_baostock``,
+        ``_login``, ``_relogin``, ``_ensure_socket_timeout``,
+        ``_force_close_baostock_socket``). One login per episode with bounded
+        proactive relogin every ``ROSTER_PROACTIVE_RELOGIN_EVERY`` successful
+        dates (never per date). Each date is attempted up to
+        ``ROSTER_SWEEP_MAX_ATTEMPTS`` times with ``ROSTER_SWEEP_BACKOFF``
+        between attempts (injectable, so tests never sleep); a date that is
+        still failing after the bound is persisted to the checkpoint as
+        ``blocked_date`` and raises ``ROSTER_DATE_RETRY_EXHAUSTED`` — the sweep
+        fail-fasts and never scans past it.
+
+        Progress checkpoint (``r3-roster-closure-progress-v073.json``) is written
+        atomically after EVERY successful date so a crash/SIGINT costs at most
+        one re-fetch. Resume requires the checkpoint provenance hashes to match
+        the freshly computed authority (``ROSTER_CHECKPOINT_PROVENANCE_MISMATCH``)
+        and a self-consistent union hash (``ROSTER_CHECKPOINT_CORRUPT``). The
+        legacy V07.2 interruption (current=B_discovery, no checkpoint, no final
+        identity receipt) boots from zero under
+        ``V07.3_BOOTSTRAP_RESUME_FROM_ZERO``.
+
+        Returns ``{"closure": <standard closure receipt>, "checkpoint": ...}``.
+        """
+        from cnequity.adapters.baostock._session import (
+            _ensure_socket_timeout,
+            _force_close_baostock_socket,
+            _login,
+            _relogin,
+            import_baostock,
+        )
+        from cnequity.adapters.baostock.delisted_bars import roster_on
+
+        checkpoint_path = self.meta / ROSTER_CHECKPOINT_FILENAME
+        expected_iso = sorted(d.isoformat() for d in days)
+        expected_dates_hash = sha256_bytes(
+            json.dumps(expected_iso, separators=(",", ":")).encode()
+        )
+        expected_dates_n = len(days)
+
+        # A final r3-identity-receipt.json forbids any same-stage resume.
+        if (self.meta / "r3-identity-receipt.json").exists():
+            raise R3Error(
+                "B_RESUME_FINAL_RECEIPT_PRESENT",
+                "r3-identity-receipt.json already exists; same-stage resume is "
+                "forbidden and a fresh sweep must not run.",
+            )
+
+        ckpt_present = checkpoint_path.exists()
+        if ckpt_present:
+            ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            expect = {
+                "plan_sha": self.plan_sha,
+                "history_start": self.history_start.isoformat(),
+                "daily_as_of": self.daily_as_of.isoformat(),
+                "formal_identity_hash": formal_identity_hash,
+                "roster_expected_hash": roster_expected_hash,
+                "expected_dates_n": expected_dates_n,
+                "expected_dates_hash": expected_dates_hash,
+            }
+            for key, val in expect.items():
+                if ckpt.get(key) != val:
+                    raise R3Error(
+                        "ROSTER_CHECKPOINT_PROVENANCE_MISMATCH",
+                        f"checkpoint {key} changed: {ckpt.get(key)!r} != {val!r}",
+                    )
+            next_index = int(ckpt.get("next_index", -1))
+            if not (0 <= next_index <= expected_dates_n):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"next_index {next_index} out of range [0, {expected_dates_n}]",
+                )
+            union = set(ckpt.get("union_symbols") or [])
+            if self._roster_union_hash(union) != ckpt.get("union_symbol_hash"):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    "checkpoint union_symbol_hash inconsistent with union_symbols",
+                )
+            success_dates_n = int(ckpt.get("success_dates_n", -1))
+            last_completed_date = ckpt.get("last_completed_date")
+            resume_count = int(ckpt.get("resume_count", 0)) + 1
+            episode = int(ckpt.get("execution_episode", 0)) + 1
+        else:
+            # Legacy V07.2 interruption / fresh first run: no checkpoint.
+            next_index = 0
+            success_dates_n = 0
+            union = set()
+            last_completed_date = None
+            resume_count = 0
+            episode = 1
+
+        # Append-only same-stage resume lineage (fresh entry also persisted
+        # current=B_discovery via StageMachine.enter, so this is satisfied).
+        self.machine.resume_current(
+            "B_discovery",
+            route="V07.3_resumable_roster_closure",
+            checkpoint_present=ckpt_present,
+            resume_from_index=next_index,
+            resume_count=resume_count,
+        )
+
+        def _write_ckpt() -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "schema_version": ROSTER_CHECKPOINT_SCHEMA_VERSION,
+                "route": "V07.3_resumable_roster_closure",
+                "plan_sha": self.plan_sha,
+                "history_start": self.history_start.isoformat(),
+                "daily_as_of": self.daily_as_of.isoformat(),
+                "formal_identity_hash": formal_identity_hash,
+                "roster_expected_hash": roster_expected_hash,
+                "expected_dates_n": expected_dates_n,
+                "expected_dates_hash": expected_dates_hash,
+                "next_index": next_index,
+                "last_completed_date": last_completed_date,
+                "success_dates_n": success_dates_n,
+                "union_symbol_n": len(union),
+                "union_symbol_hash": self._roster_union_hash(union),
+                "union_symbols": sorted(union),
+                "blocked_date": blocked_date,
+                "last_error_summary": last_error_summary,
+                "execution_episode": episode,
+                "resume_count": resume_count,
+                "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            self._write_roster_checkpoint(payload)
+            return payload
+
+        blocked_date: str | None = None
+        last_error_summary: str | None = None
+        bs = None
+        rate_limit = getattr(self.cfg, "rate_limit", None)
+        episode_retry_n = 0
+        logger.info(
+            "roster closure %s: %d/%d dates done, union=%d, resume_count=%d",
+            "resume-from-checkpoint" if ckpt_present else "bootstrap-from-zero",
+            next_index,
+            expected_dates_n,
+            len(union),
+            resume_count,
+        )
+        try:
+            i = next_index
+            while i < expected_dates_n:
+                day = days[i]
+                last_err: str | None = None
+                ok = False
+                for attempt in range(1, ROSTER_SWEEP_MAX_ATTEMPTS + 1):
+                    if bs is None:
+                        bs = import_baostock()
+                        _login(bs)
+                        _ensure_socket_timeout()
+                    if rate_limit is not None:
+                        rate_limit("baostock")
+                    try:
+                        roster = roster_on(day, bs=bs, login=False)
+                        ok = True
+                        break
+                    except KeyboardInterrupt:
+                        # Never retry on SIGINT; checkpoint already holds the
+                        # last completed prefix and the outer finally releases
+                        # the service lock. The next run resumes from next_index.
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - network/parse errors
+                        last_err = f"{type(exc).__name__}: {exc}"
+                        episode_retry_n += 1
+                        _force_close_baostock_socket()
+                        if attempt < ROSTER_SWEEP_MAX_ATTEMPTS:
+                            _relogin(bs)
+                            sleep(ROSTER_SWEEP_BACKOFF[min(attempt - 1, len(ROSTER_SWEEP_BACKOFF) - 1)])
+                if not ok:
+                    # fail-fast: persist progress + blocked_date, then STOP.
+                    blocked_date = day.isoformat()
+                    last_error_summary = last_err
+                    _write_ckpt()
+                    raise R3Error(
+                        "ROSTER_DATE_RETRY_EXHAUSTED",
+                        f"blocked_date={day.isoformat()} "
+                        f"attempts={ROSTER_SWEEP_MAX_ATTEMPTS} "
+                        f"last_error={last_err}",
+                    )
+                # success: atomically persist progress before the next date.
+                union |= set(roster)
+                last_completed_date = day.isoformat()
+                success_dates_n += 1
+                next_index = i + 1
+                _write_ckpt()
+                if success_dates_n % ROSTER_PROGRESS_LOG_EVERY == 0:
+                    logger.info(
+                        "roster progress %d/%d last_date=%s union_symbol_n=%d "
+                        "resume_count=%d episode_retry_n=%d",
+                        next_index,
+                        expected_dates_n,
+                        day,
+                        len(union),
+                        resume_count,
+                        episode_retry_n,
+                    )
+                if success_dates_n % ROSTER_PROACTIVE_RELOGIN_EVERY == 0 and bs is not None:
+                    _relogin(bs)
+                i += 1
+        finally:
+            if bs is not None:
+                try:
+                    bs.logout()
+                except Exception:  # noqa: BLE001 - best-effort logout
+                    pass
+
+        closure = {
+            "expected_dates_n": expected_dates_n,
+            "success_dates_n": success_dates_n,
+            "failed_dates_n": 0,
+            "failed_dates_sample": [],
+            "union_symbol_n": len(union),
+            "union_symbol_hash": self._roster_union_hash(union),
+            "closed": True,
+            "unresolved_n": 0,
+            "identity_not_in_roster_n": 0,
+            "identity_not_in_roster_hash": "0" * 64,
+            "identity_not_in_roster_sample": [],
+            "roster_not_in_identity_n": 0,
+            "roster_not_in_identity_hash": "0" * 64,
+            "roster_not_in_identity_sample": [],
+        }
+        if roster_closure_symbols is not None:
+            missing = sorted(roster_closure_symbols - union)  # A
+            extra = sorted(union - roster_closure_symbols)  # B
+            closure.update(
+                {
+                    "identity_not_in_roster_n": len(missing),
+                    "identity_not_in_roster_hash": (
+                        sha256_bytes(
+                            json.dumps(missing, separators=(",", ":")).encode()
+                        )
+                        if missing
+                        else "0" * 64
+                    ),
+                    "identity_not_in_roster_sample": missing[:200],
+                    "roster_not_in_identity_n": len(extra),
+                    "roster_not_in_identity_hash": (
+                        sha256_bytes(
+                            json.dumps(extra, separators=(",", ":")).encode()
+                        )
+                        if extra
+                        else "0" * 64
+                    ),
+                    "roster_not_in_identity_sample": extra[:200],
+                    "closed": not missing and not extra,
+                    "unresolved_n": len(missing) + len(extra),
+                }
+            )
+        ckpt = _write_ckpt()
+        return {"closure": closure, "checkpoint": ckpt, "union": union}
 
     def stage_merge(self) -> dict[str, Any]:
         self._prepare_network_env()

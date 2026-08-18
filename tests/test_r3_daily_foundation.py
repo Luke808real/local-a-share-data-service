@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -712,6 +713,37 @@ def test_preflight_readonly_filesystem_and_env(monkeypatch, tmp_path):
     assert receipt["plan_sha"] == PLAN_SHA
 
 
+def _mock_bs_session(monkeypatch):
+    """Replace the pinned Baostock session lifecycle so tests never go to
+    network; roster_on itself is mocked separately per test."""
+
+    class FakeBS:
+        def logout(self):
+            return None
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session.import_baostock",
+        lambda: FakeBS(),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._login",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._relogin",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._ensure_socket_timeout",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._force_close_baostock_socket",
+        lambda: None,
+    )
+    return FakeBS
+
+
 def _stage_b_runner(tmp_path, monkeypatch, *, close=True) -> "object":
     import types
 
@@ -720,7 +752,16 @@ def _stage_b_runner(tmp_path, monkeypatch, *, close=True) -> "object":
     runner.meta.mkdir(parents=True)
     runner.daily_as_of = R3_DAILY_AS_OF
     runner.history_start = R3_HISTORY_START
+    runner.plan_sha = PLAN_SHA
     runner.cfg = types.SimpleNamespace()
+    runner.machine = r3.StageMachine(runner.meta / "execution-state.json")
+    # V07.3: direct _identity_completion_v072 tests run against the same
+    # same-stage state the interrupted incident leaves behind
+    # (current=B_discovery, status=running, completed=[A_instruments]).
+    runner.machine.save(
+        {"status": "running", "current": "B_discovery", "completed": ["A_instruments"]}
+    )
+    _mock_bs_session(monkeypatch)
 
     class LedgerX:
         def __init__(self):
@@ -751,7 +792,7 @@ def _stage_b_runner(tmp_path, monkeypatch, *, close=True) -> "object":
         fake_basics,
     )
 
-    def fake_roster(day):
+    def fake_roster(day, *, bs=None, login=True):
         return {"600000.SH", "600001.SH"} if close else {"600000.SH"}
 
     monkeypatch.setattr(
@@ -1364,7 +1405,7 @@ def test_cdr_roster_not_observable_not_blocking(monkeypatch, tmp_path):
         lambda: basics,
     )
 
-    def roster_sh(day):
+    def roster_sh(day, *, bs=None, login=True):
         return {"600000.SH"}
 
     monkeypatch.setattr(
@@ -1399,7 +1440,7 @@ def test_common_stock_missing_still_blocks(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "cnequity.adapters.baostock.delisted_bars.roster_on",
-        lambda day: {"600000.SH"},
+        lambda day, **kw: {"600000.SH"},
     )
     monkeypatch.setattr(r3, "known_delisted_instruments", lambda cfg, asof: {})
     with pytest.raises(R3Error, match="NOT_CLOSED"):
@@ -1629,7 +1670,7 @@ def test_stage_e_zero_volume_only_unresolved(monkeypatch, tmp_path):
 def test_callable_contract_happy_path():
     contract = r3.approved_callable_contract()
     assert contract["verified"] is True
-    assert contract["count"] == 10
+    assert contract["count"] == 15
     assert len(contract["hash"]) == 64
 
 
@@ -2004,3 +2045,652 @@ def test_a_success_rows_equal_idempotent(monkeypatch, tmp_path):
     )
     out = runner.finalize_completed_a_manifest()
     assert out["idempotent"] is True
+
+
+# ============================================================================
+# V07.3 resumable roster closure (single shared session + checkpoint)
+# ============================================================================
+
+
+def _v073_days(n: int, start: date = date(2016, 1, 4)) -> list[date]:
+    return [date.fromordinal(start.toordinal() + i) for i in range(n)]
+
+
+def _v073_checkpoint_provenance(days, formal, expected):
+    return {
+        "plan_sha": PLAN_SHA,
+        "history_start": R3_HISTORY_START.isoformat(),
+        "daily_as_of": R3_DAILY_AS_OF.isoformat(),
+        "formal_identity_hash": r3.sha256_bytes(
+            json.dumps(sorted(formal), separators=(",", ":")).encode()
+        ),
+        "roster_expected_hash": r3.sha256_bytes(
+            json.dumps(sorted(expected), separators=(",", ":")).encode()
+        ),
+        "expected_dates_n": len(days),
+        "expected_dates_hash": r3.sha256_bytes(
+            json.dumps(sorted(d.isoformat() for d in days), separators=(",", ":")).encode()
+        ),
+    }
+
+
+def _v073_ctx(
+    monkeypatch,
+    tmp_path,
+    *,
+    days=None,
+    roster_impl=None,
+    pre_state=None,
+    checkpoint_payload=None,
+    identity_receipt=False,
+    formal=None,
+    expected=None,
+):
+    import types
+
+    days = days or _v073_days(5)
+    formal = formal if formal is not None else {"600000.SH", "600001.SH"}
+    expected = expected if expected is not None else {"600000.SH", "600001.SH"}
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.plan_sha = PLAN_SHA
+    runner.cfg = types.SimpleNamespace(rate_limit=lambda key: None)
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save(
+        pre_state
+        or {"status": "running", "current": "B_discovery", "completed": ["A_instruments"]}
+    )
+
+    class FakeBS:
+        def logout(self):
+            return None
+
+    seen = {"login": 0, "relogin": 0}
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session.import_baostock",
+        lambda: FakeBS(),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._login",
+        lambda *a, **k: seen.update(login=seen["login"] + 1),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._relogin",
+        lambda *a, **k: seen.update(relogin=seen["relogin"] + 1),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._ensure_socket_timeout",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._force_close_baostock_socket",
+        lambda: None,
+    )
+
+    calls = []
+    if roster_impl is None:
+        def _ok(day, *, bs=None, login=False):
+            calls.append({"day": day, "bs": bs, "login": login})
+            return {"600000.SH", "600001.SH"}
+
+        roster_impl = _ok
+    else:
+        _orig = roster_impl
+
+        def _wrapped(day, *, bs=None, login=False):
+            calls.append({"day": day, "bs": bs, "login": login})
+            return _orig(day, bs=bs, login=login)
+
+        roster_impl = _wrapped
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        roster_impl,
+    )
+
+    if checkpoint_payload is not None:
+        (meta / r3.ROSTER_CHECKPOINT_FILENAME).write_text(
+            json.dumps(checkpoint_payload)
+        )
+    if identity_receipt:
+        (meta / "r3-identity-receipt.json").write_text(json.dumps({"ok": True}))
+
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    ctrl = {
+        "meta": meta,
+        "calls": calls,
+        "seen": seen,
+        "sleeps": sleeps,
+        "formal_set": formal,
+        "expected_set": expected,
+    }
+    formal_hash = r3.sha256_bytes(
+        json.dumps(sorted(formal), separators=(",", ":")).encode()
+    )
+    expected_hash = r3.sha256_bytes(
+        json.dumps(sorted(expected), separators=(",", ":")).encode()
+    )
+    return runner, ctrl, days, formal_hash, expected_hash, fake_sleep
+
+
+def test_v073_100_dates_single_login_shared_session(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=_v073_days(100)
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    # login exactly once (never per date), every query on the shared session
+    assert ctrl["seen"]["login"] == 1
+    assert ctrl["seen"]["relogin"] == 0  # 100 < 300 proactive relogin bound
+    assert len(ctrl["calls"]) == 100
+    shared = ctrl["calls"][0]["bs"]
+    assert all(c["bs"] is shared for c in ctrl["calls"])
+    assert all(c["login"] is False for c in ctrl["calls"])
+    # monkeypatched sleep is never actually called on the happy path? it IS
+    # only used on retries, so none here
+    assert out["closure"]["closed"] is True
+    assert out["closure"]["success_dates_n"] == 100
+
+
+def test_v073_proactive_relogin_every_300(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=_v073_days(300)
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    assert ctrl["seen"]["login"] == 1
+    assert ctrl["seen"]["relogin"] == 1  # at the 300th successful date
+    assert out["closure"]["success_dates_n"] == 300
+
+
+def test_v073_date_retry_then_success(monkeypatch, tmp_path):
+    days = _v073_days(3)
+    struck = {"i": 0}
+
+    def flaky(day, *, bs=None, login=False):
+        if day == days[1] and struck["i"] == 0:
+            struck["i"] += 1
+            raise RuntimeError("roster reset")
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, roster_impl=flaky
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    # attempt1 failed -> force-close + relogin -> attempt2 success for the same date
+    day1_calls = [c for c in ctrl["calls"] if c["day"] == days[1]]
+    assert len(day1_calls) == 2
+    assert ctrl["seen"]["relogin"] == 1
+    assert ctrl["sleeps"] == [1.0]  # bounded backoff 1s before the retry
+    assert out["closure"]["closed"] is True
+    assert out["closure"]["success_dates_n"] == 3
+    ckpt = json.loads((ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["next_index"] == 3
+
+
+def test_v073_exhausted_date_failfast(monkeypatch, tmp_path):
+    days = _v073_days(5)
+
+    def bad_day(day, *, bs=None, login=False):
+        if day >= days[2]:
+            raise RuntimeError("baostock down")
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, roster_impl=bad_day
+    )
+    with pytest.raises(R3Error, match="ROSTER_DATE_RETRY_EXHAUSTED"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=ctrl["expected_set"],
+            formal_identity_hash=formal,
+            roster_expected_hash=expected,
+            sleep=sleep,
+        )
+    # exactly 3 attempts on the blocked date; later dates never touched
+    blocked_calls = [c for c in ctrl["calls"] if c["day"] == days[2]]
+    assert len(blocked_calls) == 3
+    assert all(c["day"] < days[3] for c in ctrl["calls"])
+    assert ctrl["sleeps"] == [1.0, 3.0]  # 1s/3s realized; 8s bound unused at 3 max
+    ckpt = json.loads((ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["blocked_date"] == days[2].isoformat()
+    assert ckpt["next_index"] == 2  # only the two predecessors succeeded
+    assert not (ctrl["meta"] / "r3-identity-receipt.json").exists()
+
+
+def test_v073_checkpoint_advances_every_date(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=_v073_days(3)
+    )
+    runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    ckpt = json.loads((ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["next_index"] == 3
+    assert ckpt["success_dates_n"] == 3
+    assert ckpt["last_completed_date"] == days[2].isoformat()
+    assert ckpt["union_symbol_n"] == 2
+    assert set(ckpt["union_symbols"]) == {"600000.SH", "600001.SH"}
+    assert ckpt["route"] == "V07.3_resumable_roster_closure"
+
+
+def test_v073_interrupt_preserves_checkpoint_and_resumes(monkeypatch, tmp_path):
+    days = _v073_days(4)
+    interrupted = {"at": None}
+
+    def interrupt(day, *, bs=None, login=False):
+        if day == days[2]:
+            interrupted["at"] = day
+            raise KeyboardInterrupt()
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, roster_impl=interrupt
+    )
+    with pytest.raises(KeyboardInterrupt):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=ctrl["expected_set"],
+            formal_identity_hash=formal,
+            roster_expected_hash=expected,
+            sleep=sleep,
+        )
+    ckpt = json.loads((ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["next_index"] == 2  # days[2] never advanced
+    assert ckpt["last_completed_date"] == days[1].isoformat()
+    state = runner.machine.load()
+    assert state["current"] == "B_discovery"  # never completed
+    assert "B_discovery" not in state["completed"]
+    assert not (ctrl["meta"] / "r3-identity-receipt.json").exists()
+
+    # next run resumes exactly from day[2], never re-fetching 0..1
+    runner2 = object.__new__(r3.R3Runner)
+    runner2.meta = ctrl["meta"]
+    runner2.daily_as_of = R3_DAILY_AS_OF
+    runner2.history_start = R3_HISTORY_START
+    runner2.plan_sha = PLAN_SHA
+    import types as _t
+    runner2.cfg = _t.SimpleNamespace(rate_limit=lambda key: None)
+    runner2.machine = r3.StageMachine(ctrl["meta"] / "execution-state.json")
+    _mock_bs_session(monkeypatch)
+    ctrl["calls"].clear()
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        lambda day, **kw: ctrl["calls"].append({"day": day, "bs": kw.get("bs"), "login": kw.get("login")}) or {"600000.SH", "600001.SH"},
+    )
+    out = runner2._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=time.sleep,
+    )
+    resumed_days = [c["day"] for c in ctrl["calls"]]
+    assert resumed_days == days[2:]  # exact resume from next_index
+    assert out["closure"]["success_dates_n"] == 4
+    assert out["closure"]["closed"] is True
+
+
+def test_v073_checkpoint_provenance_mismatch_blocks(monkeypatch, tmp_path):
+    days = _v073_days(3)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_checkpoint_provenance(days, form, exp)
+    prov.update(
+        {
+            "next_index": 1,
+            "success_dates_n": 1,
+            "union_symbols": ["600000.SH"],
+            "union_symbol_hash": r3.sha256_bytes(
+                json.dumps(["600000.SH"], separators=(",", ":")).encode()
+            ),
+            "last_completed_date": None,
+            "execution_episode": 1,
+            "resume_count": 0,
+        }
+    )
+    prov["plan_sha"] = "0" * 40  # corrupt provenance
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov
+    )
+    with pytest.raises(R3Error, match="ROSTER_CHECKPOINT_PROVENANCE_MISMATCH"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=exp,
+            formal_identity_hash=prov["formal_identity_hash"],
+            roster_expected_hash=prov["roster_expected_hash"],
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []  # never swiped on a mismatched checkpoint
+
+
+def test_v073_checkpoint_union_corrupt_blocks(monkeypatch, tmp_path):
+    days = _v073_days(3)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_checkpoint_provenance(days, form, exp)
+    prov.update(
+        {
+            "next_index": 1,
+            "success_dates_n": 1,
+            "union_symbols": ["600000.SH"],
+            "union_symbol_hash": "0" * 64,  # inconsistent with union_symbols
+            "last_completed_date": None,
+            "execution_episode": 1,
+            "resume_count": 0,
+        }
+    )
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov
+    )
+    with pytest.raises(R3Error, match="ROSTER_CHECKPOINT_CORRUPT"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=exp,
+            formal_identity_hash=prov["formal_identity_hash"],
+            roster_expected_hash=prov["roster_expected_hash"],
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
+
+
+def test_v073_bootstrap_resume_from_zero(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=_v073_days(2)
+    )
+    runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    state = runner.machine.load()
+    resumes = state["resumes"]
+    assert resumes[-1]["route"] == "V07.3_resumable_roster_closure"
+    assert resumes[-1]["checkpoint_present"] is False
+    assert resumes[-1]["resume_from_index"] == 0
+    assert resumes[-1]["resume_count"] == 0
+
+
+def test_v073_checkpoint_resume_exact_next_index(monkeypatch, tmp_path):
+    days = _v073_days(4)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_checkpoint_provenance(days, form, exp)
+    prov.update(
+        {
+            "next_index": 2,
+            "success_dates_n": 2,
+            "union_symbols": ["600000.SH", "600001.SH"],
+            "union_symbol_hash": r3.sha256_bytes(
+                json.dumps(["600000.SH", "600001.SH"], separators=(",", ":")).encode()
+            ),
+            "last_completed_date": days[1].isoformat(),
+            "execution_episode": 1,
+            "resume_count": 0,
+        }
+    )
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=exp,
+        formal_identity_hash=prov["formal_identity_hash"],
+        roster_expected_hash=prov["roster_expected_hash"],
+        sleep=sleep,
+    )
+    # only dates 2..3 were fetched; 0..1 came from the checkpoint
+    assert [c["day"] for c in ctrl["calls"]] == days[2:]
+    state = runner.machine.load()
+    assert state["resumes"][-1]["resume_from_index"] == 2
+    assert state["resumes"][-1]["resume_count"] == 1
+    assert state["resumes"][-1]["checkpoint_present"] is True
+    assert out["closure"]["success_dates_n"] == 4
+
+
+def test_v073_identity_receipt_blocks_resume(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=_v073_days(2), identity_receipt=True
+    )
+    with pytest.raises(R3Error, match="B_RESUME_FINAL_RECEIPT_PRESENT"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=ctrl["expected_set"],
+            formal_identity_hash=formal,
+            roster_expected_hash=expected,
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
+
+
+def test_v073_wrong_completed_prefix_blocks(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch,
+        tmp_path,
+        days=_v073_days(2),
+        pre_state={
+            "status": "running",
+            "current": "B_discovery",
+            "completed": ["A_instruments", "C_merge"],
+        },
+    )
+    with pytest.raises(R3Error, match="RECOVERY_STATE_MISMATCH"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=ctrl["expected_set"],
+            formal_identity_hash=formal,
+            roster_expected_hash=expected,
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
+
+
+def test_v073_wrong_current_blocks(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch,
+        tmp_path,
+        days=_v073_days(2),
+        pre_state={
+            "status": "running",
+            "current": "C_merge",
+            "completed": ["A_instruments"],
+        },
+    )
+    with pytest.raises(R3Error, match="RECOVERY_STATE_MISMATCH"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=ctrl["expected_set"],
+            formal_identity_hash=formal,
+            roster_expected_hash=expected,
+            sleep=sleep,
+        )
+    assert ctrl["calls"] == []
+
+
+def test_v073_final_date_closed(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=_v073_days(3)
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    assert out["closure"]["closed"] is True
+    assert out["closure"]["failed_dates_n"] == 0
+    assert out["closure"]["union_symbol_n"] == 2
+
+
+def test_v073_partial_checkpoint_forbids_final_receipt(monkeypatch, tmp_path):
+    days = _v073_days(4)
+    form = {"600000.SH", "600001.SH"}
+    exp = {"600000.SH", "600001.SH"}
+    prov = _v073_checkpoint_provenance(days, form, exp)
+    prov.update(
+        {
+            "next_index": 2,
+            "success_dates_n": 2,
+            "union_symbols": ["600000.SH", "600001.SH"],
+            "union_symbol_hash": r3.sha256_bytes(
+                json.dumps(["600000.SH", "600001.SH"], separators=(",", ":")).encode()
+            ),
+            "last_completed_date": days[1].isoformat(),
+            "execution_episode": 1,
+            "resume_count": 0,
+        }
+    )
+
+    def bad(day, *, bs=None, login=False):
+        if day >= days[3]:
+            raise RuntimeError("down again")
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, days2, formal, expected, sleep = _v073_ctx(
+        monkeypatch, tmp_path, days=days, checkpoint_payload=prov, roster_impl=bad
+    )
+    with pytest.raises(R3Error, match="ROSTER_DATE_RETRY_EXHAUSTED"):
+        runner._resumable_roster_sweep(
+            days,
+            roster_closure_symbols=exp,
+            formal_identity_hash=prov["formal_identity_hash"],
+            roster_expected_hash=prov["roster_expected_hash"],
+            sleep=sleep,
+        )
+    # a partial checkpoint can never yield a final identity receipt
+    assert not (ctrl["meta"] / "r3-identity-receipt.json").exists()
+
+
+def test_v073_final_closure_still_requires_zero_residual(monkeypatch, tmp_path):
+    runner, ctrl, days, formal, expected, sleep = _v073_ctx(
+        monkeypatch,
+        tmp_path,
+        days=_v073_days(2),
+        expected={"600000.SH", "600001.SH", "600002.SH"},
+    )
+    out = runner._resumable_roster_sweep(
+        days,
+        roster_closure_symbols=ctrl["expected_set"],
+        formal_identity_hash=formal,
+        roster_expected_hash=expected,
+        sleep=sleep,
+    )
+    closure = out["closure"]
+    assert closure["closed"] is False
+    assert closure["identity_not_in_roster_n"] == 1
+    assert closure["roster_not_in_identity_n"] == 0
+    assert closure["unresolved_n"] == 1
+
+
+def test_v073_stage_discovery_skips_enter_on_resume(monkeypatch, tmp_path):
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save(
+        {"status": "running", "current": "B_discovery", "completed": ["A_instruments"]}
+    )
+    entered = []
+    monkeypatch.setattr(
+        r3.StageMachine, "enter", lambda self, stage: entered.append(stage)
+    )
+    monkeypatch.setattr(
+        r3.R3Runner, "_identity_completion_v072", lambda self: {"shsz_closure": {"closed": True}}
+    )
+    runner.stage_discovery()
+    state = runner.machine.load()
+    assert entered == []  # current was already B_discovery: no re-enter
+    assert state["completed"] == ["A_instruments", "B_discovery"]
+    assert state["current"] is None
+
+
+def test_v073_stage_discovery_enters_fresh(monkeypatch, tmp_path):
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save({"status": "pending", "current": None, "completed": ["A_instruments"]})
+    monkeypatch.setattr(
+        r3.R3Runner, "_identity_completion_v072", lambda self: {"shsz_closure": {"closed": True}}
+    )
+    runner.stage_discovery()
+    state = runner.machine.load()
+    assert state["completed"] == ["A_instruments", "B_discovery"]
+    assert state["current"] is None
+
+
+def test_v073_b_happy_path_writes_receipt_and_terminal_checkpoint(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+    receipt = runner._identity_completion_v072()
+    assert receipt["shsz_closure"]["closed"] is True
+    assert (runner.meta / "r3-identity-receipt.json").exists()
+    assert any(
+        rec.get("v07_2_identity") is True and rec.get("stage") == "B_discovery"
+        for rec in runner.ledger.calls
+    )
+    ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["terminal_status"] == "success"
+    assert len(ckpt["final_identity_receipt_sha"]) == 64
+
+
+def test_v073_no_sina_tdx_in_sweep_source():
+    src = inspect.getsource(r3.R3Runner._resumable_roster_sweep)
+    for forbidden in (
+        "discover_delisted",
+        "fetch_daily_bars_sina",
+        "fetch_bars_via_sina",
+        "sina.bars",
+        "quotes_service",
+        "tdx",
+    ):
+        assert forbidden not in src
+
+
+def test_v073_approved_callables_extended():
+    assert len(r3.APPROVED_CALLABLES) == 15
+    session_modules = {
+        entry[1]
+        for entry in r3.APPROVED_CALLABLES
+        if entry[0] in ("import_baostock", "_login", "_relogin", "_ensure_socket_timeout", "_force_close_baostock_socket")
+    }
+    assert session_modules == {"cnequity.adapters.baostock._session"}
+    contract = r3.approved_callable_contract()
+    assert contract["verified"] is True
+    assert contract["count"] == 15
