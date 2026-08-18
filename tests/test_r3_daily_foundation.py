@@ -9,7 +9,9 @@ market network.
 from __future__ import annotations
 
 import inspect
-from datetime import date
+import json
+import os
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -287,7 +289,7 @@ def test_failed_roster_dates_means_not_closed():
 
 def test_roster_closure_receipt_splits_authority():
     days = [R3_HISTORY_START]
-    identity = {"600000.SH", "000001.SZ"}
+    identity = {"600000.SH"}
 
     def roster(day):
         return {"600000.SH"}
@@ -299,8 +301,42 @@ def test_roster_closure_receipt_splits_authority():
     assert receipt["failed_dates_n"] == 0
     assert "union_symbol_hash" in receipt
     diff = receipt["stock_basic_vs_roster_diff"]
-    assert diff["n_identity_not_in_roster"] == 1
-    assert "000001.SZ" in diff["identity_not_in_roster"]
+    assert diff["n_identity_not_in_roster"] == 0
+    assert receipt["unresolved_n"] == 0
+
+
+def test_roster_empty_day_not_closed():
+    days = [R3_HISTORY_START, date(2016, 1, 4)]
+
+    def empty_roster(day):
+        return set()
+
+    with pytest.raises(R3Error, match="NOT_CLOSED"):
+        roster_closure_receipt(days, empty_roster, stock_basic_symbols=set())
+
+
+def test_roster_unresolved_identity_residual_not_closed():
+    days = [R3_HISTORY_START]
+
+    def roster(day):
+        return {"600000.SH"}
+
+    with pytest.raises(R3Error, match="NOT_CLOSED"):
+        roster_closure_receipt(
+            days, roster, stock_basic_symbols={"600000.SH", "000001.SZ"}
+        )
+
+
+def test_roster_exact_reconciled_closed():
+    days = [R3_HISTORY_START, date(2016, 1, 4)]
+    identity = {"600000.SH", "000001.SZ"}
+
+    def roster(day):
+        return {"600000.SH", "000001.SZ"}
+
+    receipt = roster_closure_receipt(days, roster, stock_basic_symbols=identity)
+    assert receipt["closed"] is True
+    assert receipt["unresolved_n"] == 0
 
 
 def test_stage_e_never_calls_fetch_daily_bars_sina():
@@ -368,3 +404,207 @@ def test_exit_requires_zero_unresolved():
     # unresolved=None (null) must not count as 0
     assert v072_exit_verdict("PROVEN", None)["DAILY_READY"] is False
     assert v072_exit_verdict("PROVEN", 0)["DAILY_READY"] is True
+
+
+def test_exit_gate_exposes_bj_historical_gate():
+    blocked = v072_exit_verdict(BJ_HISTORICAL_AUTHORITY_VERDICT, None)
+    assert blocked["BJ_HISTORICAL_GATE"] == "BLOCKED"
+    assert blocked["R3_EXIT"] == "BLOCKED_BJ_HISTORICAL_IDENTITY"
+    passed = v072_exit_verdict("PROVEN", 0)
+    assert passed["BJ_HISTORICAL_GATE"] == "PASS"
+
+
+def test_stage_e_formal_delisted_present_in_instruments_is_target():
+    formal = {"AX0001.SH": date(2019, 12, 31), "BX0001.SH": date(2018, 6, 30)}
+    catalog = {}
+    instruments = pl.DataFrame(
+        {
+            "symbol": ["AX0001.SH", "CUR.SH", "NEW.BJ"],
+            "name": ["X", "C", "N"],
+            "exchange": ["SH", "SH", "BJ"],
+            "asset_type": ["stock", "stock", "stock"],
+            "list_date": [date(2000, 1, 1), date(2020, 1, 1), date(2024, 1, 1)],
+            "delist_date": [date(2019, 12, 31), None, None],
+            "prev_symbol": [None, None, None],
+            "source": ["sina", "tdx_protocol", "sina"],
+            "data_version": ["v1", "v1", "v1"],
+            "fetched_at": [datetime(2026, 1, 1, tzinfo=timezone.utc)] * 3,
+        }
+    )
+    part = r3.stage_e_target_partition(
+        formal, catalog, instruments, R3_DAILY_AS_OF, R3_HISTORY_START
+    )
+    assert "AX0001.SH" in part["targets"]
+    assert "AX0001.SH" in part["recover"]
+    assert part["sina_catalog_role"] == "CROSSCHECK_ONLY"
+
+
+def test_c2_builds_bj_from_stage_b_receipt(monkeypatch, tmp_path):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    membership = [
+        {
+            "symbol": "920001.BJ", "name": "BJ ONE", "exchange": "BJ",
+            "asset_type": "stock", "list_date": date(2025, 1, 1), "delist_date": None,
+        },
+        {
+            "symbol": "920002.BJ", "name": "BJ TWO", "exchange": "BJ",
+            "asset_type": "stock", "list_date": date(2025, 3, 1), "delist_date": None,
+        },
+    ]
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps({"bj_current_membership": membership}, default=str)
+    )
+
+    non_bj = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "000001.SZ"],
+            "name": ["A", "B"],
+            "exchange": ["SH", "SZ"],
+            "asset_type": ["stock", "stock"],
+            "list_date": [date(2000, 1, 1), date(2000, 1, 1)],
+            "delist_date": [None, None],
+            "prev_symbol": [None, None],
+            "source": ["tdx_protocol", "tdx_protocol"],
+            "data_version": ["v1", "v1"],
+            "fetched_at": [datetime(2026, 1, 1, tzinfo=timezone.utc)] * 2,
+        }
+    )
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "manifest.db",
+        staging_root=tmp_path / "staging",
+    )
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner._new_run = lambda job: "c2rid"  # type: ignore[attr-defined]
+
+    manifest_calls: list = []
+    writer_calls: list = []
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: non_bj)
+    monkeypatch.setattr(
+        r3, "Manifest", lambda *a, **k: FakeManifest(manifest_calls)
+    )
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter(writer_calls))
+    monkeypatch.setattr(r3.R3Runner, "_compact", lambda self, rid: {"status": "success"})
+
+    result = runner._enrich_bj_metadata()
+    assert result["bj_rows"] == 2
+    assert writer_calls and writer_calls[-1][0] == "c2-enrich-bj"
+    called_symbols = set(manifest_calls[0][2]["symbols"])
+    assert "920001.BJ" in called_symbols and "920002.BJ" in called_symbols
+
+
+def test_unexplained_missing_out_of_span_only(monkeypatch):
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = type(
+        "CfgStub",
+        (),
+        {
+            "manifest_path": Path("/nonexistent/manifest.db"),
+            "staging_root": Path("/nonexistent/staging"),
+        },
+    )()
+
+    class Ledger3:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            if r.get("event") == "ATTEMPT_START" and r["symbol"] == "920001.BJ":
+                self.calls.append(r)
+
+    ledger = Ledger3()
+    runner.ledger = ledger
+    writer_calls: list = []
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest([]))
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: FakeWriter(writer_calls))
+    # wrapper returns EXISTS but all rows are OUTSIDE the requested span
+    out_of_span = _bars_frame()
+    out_of_span = out_of_span.with_columns(
+        pl.lit(date(2030, 1, 1)).alias("trade_date")
+    )
+
+    def exists_out_of_span(symbol, start, end, config=None):
+        return {"state": "EXISTS", "reason": "valid_bars", "symbol": symbol, "frame": out_of_span}
+
+    monkeypatch.setattr(r3, "em_daily_tristate", exists_out_of_span)
+    with pytest.raises(R3Error, match="UNEXPLAINED_MISSING"):
+        runner._em_primary_route("rid", {"920001.BJ": (R3_HISTORY_START, R3_DAILY_AS_OF)})
+    assert not writer_calls  # nothing staged
+    assert len(ledger.calls) >= 3  # exact retries with ATTEMPT_START lineage
+
+
+def test_preflight_readonly_filesystem_and_env(monkeypatch, tmp_path):
+    import types
+    import inspect
+
+    root = tmp_path / "target-root"
+    root.mkdir()
+    (root / "curated").mkdir()
+    proxies_before = {
+        "HTTP_PROXY": "http://127.0.0.1:9",
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "ALL_PROXY": "socks5h://127.0.0.1:9",
+        "NO_PROXY": "localhost",
+    }
+    for k, v in proxies_before.items():
+        os.environ[k] = v
+    before_tree = sorted(p.name for p in root.rglob("*"))
+
+    class DummyVfs:
+        f_bavail = 3 * 2**20
+        f_frsize = 64 * 1024
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(
+        data_root=root,
+        workers=1,
+        tdx_allow_mock=False,
+        manifest_path=root / "meta" / "manifest.db",
+        meta_root=root / "meta",
+        minute_bars_enabled=False,
+        minute_bars_frequencies=[],
+        trade_ticks_enabled=False,
+    )
+    runner.root = root
+    runner.meta = root / "meta" / "asl" / "r3"
+    runner.state_path = runner.meta / "execution-state.json"
+    runner.plan_sha = PLAN_SHA
+    runner.repo_root = tmp_path
+    runner.config_path = Path("/nonexistent/config/cnequity.toml")
+    runner.machine = StageMachine(runner.state_path)
+    monkeypatch.setattr(r3, "runtime_provenance", lambda cfg, cp: {"ok": True})
+    monkeypatch.setattr(
+        "cnequity.domain.datasets.is_dataset_enabled",
+        lambda name, cfg: False,
+    )
+    monkeypatch.setattr(os, "statvfs", lambda p: DummyVfs())
+    monkeypatch.setattr(
+        r3, "git_sha", lambda p: "0" * 40
+    )
+    monkeypatch.setattr(
+        r3, "target_tree_snapshot",
+        lambda rootp, exclude=None: {
+            "digest": "0" * 64,
+            "entries": 0,
+            "lines": [],
+        },
+    )
+    monkeypatch.setattr(r3, "zero_data_layout_errors", lambda rootp: [])
+    monkeypatch.setattr(
+        r3.R3Runner, "_check_legacy_isolation", lambda self: None
+    )
+    monkeypatch.setattr(
+        r3.R3Runner, "_check_argv_surface", lambda self, argv: None
+    )
+
+    receipt = runner.preflight()
+    after_tree = sorted(p.name for p in root.rglob("*"))
+    assert before_tree == after_tree  # filesystem unchanged
+    for k, v in proxies_before.items():
+        assert os.environ.get(k) == v  # proxy env unchanged
+    assert receipt["plan_sha"] == PLAN_SHA

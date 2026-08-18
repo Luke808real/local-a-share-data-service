@@ -44,7 +44,6 @@ def main() -> int:
             "E_delisted",
             "F_daily",
             "G_coverage",
-            "quality",
         ],
     )
     parser.add_argument("--preflight-only", action="store_true")

@@ -29,12 +29,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from ashare_data.r3_daily import (  # noqa: E402
+    BJ_HISTORICAL_AUTHORITY_VERDICT,
     CONFIG_SHA,
     LOCK_SHA,
     PINNED_CNEQUITY_SHA,
     R3_DAILY_AS_OF,
     R3_HISTORY_START,
     target_tree_snapshot,
+    v072_exit_verdict,
 )
 
 BAR_DATASETS = ("instruments", "trading_calendar", "daily_bars")
@@ -330,6 +332,24 @@ def main() -> int:
         and structural["value_violations"] == 0
         and gaps["unexplained_symbols"] == 0
     )
+    # BJ historical gate — read receipts read-only; necessary condition only
+    identity_receipt = root / "meta" / "asl" / "r3" / "r3-identity-receipt.json"
+    delisted_receipt = root / "meta" / "asl" / "r3" / "r3-delisted-recovery.json"
+    bj_authority = BJ_HISTORICAL_AUTHORITY_VERDICT
+    bj_unresolved: int | None = None
+    if identity_receipt.exists():
+        ident = json.loads(identity_receipt.read_text(encoding="utf-8"))
+        bj_authority = str(
+            ident.get("bj_historical_authority") or BJ_HISTORICAL_AUTHORITY_VERDICT
+        )
+    if delisted_receipt.exists():
+        delist = json.loads(delisted_receipt.read_text(encoding="utf-8"))
+        unresolved_raw = delist.get("bj_historical_unresolved_n")
+        if unresolved_raw is not None:
+            bj_unresolved = int(unresolved_raw)
+    bj_gate = v072_exit_verdict(bj_authority, bj_unresolved)
+    bj_pass = bj_gate["BJ_HISTORICAL_GATE"] == "PASS"
+    verified = bool(verified) and bj_pass
     report = {
         "verified": bool(verified),
         "root": str(root),
@@ -345,6 +365,10 @@ def main() -> int:
         "gaps": gaps,
         "publish_markers": publish_markers,
         "latest_good_as_of": "NOT_PUBLISHED",
+        "bj_historical_gate": bj_gate,
+        "DAILY_READY": bool(verified),
+        "R3_EXIT": None if bj_pass else "BLOCKED_BJ_HISTORICAL_IDENTITY",
+        "R4_EXECUTION": "FORBIDDEN",
     }
     print(json.dumps(report, indent=2, default=str))
     return 0 if verified else 1

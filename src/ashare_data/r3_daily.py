@@ -238,6 +238,19 @@ def group_by_span(spans: dict[str, tuple[date, date]]) -> list[tuple[tuple[date,
 EM_KNOWN_SYMBOL_COLS = ("symbol", "trade_date", "open", "high", "low", "close", "volume")
 
 
+def parse_clist_date(value: Any) -> date | None:
+    """Parse EastMoney clist list-date (f26) YYYYMMDD/date-ISO, mirroring pinned."""
+    if value in (None, "", "-"):
+        return None
+    text = str(value).strip()
+    if len(text) == 8 and text.isdigit():
+        return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
 def em_daily_tristate(
     symbol: str,
     start: date,
@@ -318,8 +331,26 @@ def roster_closure_receipt(
         except Exception as exc:
             failed_dates.append(day)
             continue
+        if not roster:
+            # empty roster on a trading day = SOURCE_ERROR / NOT CLOSED
+            failed_dates.append(day)
+            continue
         success_dates.append(day)
         union |= roster
+
+    residual: set[str] = set()
+    diff: dict[str, Any] | None = None
+    if stock_basic_symbols is not None:
+        residual = stock_basic_symbols - union
+        not_in_identity = sorted(union - stock_basic_symbols)
+        diff = {
+            "identity_not_in_roster": sorted(residual)[:200],
+            "roster_not_in_identity": not_in_identity[:200],
+            "n_identity_not_in_roster": len(residual),
+            "n_roster_not_in_identity": len(not_in_identity),
+        }
+    unresolved_n = len(failed_dates) + len(residual)
+    closed = unresolved_n == 0
     receipt = {
         "expected_dates_n": len(days),
         "success_dates_n": len(success_dates),
@@ -329,41 +360,84 @@ def roster_closure_receipt(
         "union_symbol_hash": sha256_bytes(
             json.dumps(sorted(union), separators=(",", ":")).encode()
         ),
-        "closed": len(failed_dates) == 0,
+        "closed": closed,
+        "unresolved_n": unresolved_n,
+        "unresolved_identity_residual_n": len(residual),
+        "unresolved_residual_hash": sha256_bytes(
+            json.dumps(sorted(residual), separators=(",", ":")).encode()
+        ),
+        "unresolved_residual_sample": sorted(residual)[:200],
     }
-    if stock_basic_symbols is not None:
-        receipt["stock_basic_vs_roster_diff"] = {
-            "identity_not_in_roster": sorted(stock_basic_symbols - union)[:200],
-            "roster_not_in_identity": sorted(union - stock_basic_symbols)[:200],
-            "n_identity_not_in_roster": len(stock_basic_symbols - union),
-            "n_roster_not_in_identity": len(union - stock_basic_symbols),
-        }
-    receipt["unresolved_n"] = len(failed_dates)
-    if receipt["closed"] is False:
-        receipt["closed"] = "NOT_CLOSED"
+    if diff is not None:
+        receipt["stock_basic_vs_roster_diff"] = diff
+    if not closed:
         raise R3Error(
             "NOT_CLOSED",
-            f"{len(failed_dates)}/{len(days)} roster dates failed (failed_dates_n>0 => NOT CLOSED)",
+            f"roster not closed: {len(failed_dates)} failed date(s) and "
+            f"{len(residual)} unresolved identity residual(s) "
+            f"(unresolved_n={unresolved_n} > 0 => NOT CLOSED)",
         )
     return receipt
 
 
 def v072_exit_verdict(bj_authority: str, unresolved_n: int | None) -> dict[str, Any]:
-    """Frozen R3 exit gate (V07.2). UNKNOWN/null unresolved is never 0."""
-    if bj_authority != "PROVEN" or unresolved_n != 0:
-        return {
-            "DAILY_READY": False,
-            "R3_EXIT": "BLOCKED_BJ_HISTORICAL_IDENTITY",
-            "R4_EXECUTION": "FORBIDDEN",
-            "bj_historical_authority": bj_authority,
-            "bj_historical_unresolved_n": unresolved_n,
-        }
+    """Frozen BJ historical gate (V07.2). NECESSARY, never sufficient.
+
+    DAILY_READY still requires the final read-only verifier to pass every R3
+    quality gate AND this gate == PASS. UNKNOWN/null unresolved is never 0.
+    """
+    gate = "PASS" if (bj_authority == "PROVEN" and unresolved_n == 0) else "BLOCKED"
     return {
-        "DAILY_READY": True,
-        "R3_EXIT": None,
+        "BJ_HISTORICAL_GATE": gate,
+        "DAILY_READY": gate == "PASS",
+        "R3_EXIT": None if gate == "PASS" else "BLOCKED_BJ_HISTORICAL_IDENTITY",
         "R4_EXECUTION": "FORBIDDEN",
         "bj_historical_authority": bj_authority,
         "bj_historical_unresolved_n": unresolved_n,
+    }
+
+
+def stage_e_target_partition(
+    formal: dict[str, date],
+    catalog: dict[str, date],
+    instruments_df: Any,
+    as_of: date,
+    history_start: date,
+) -> dict[str, Any]:
+    """Stage-E target partition (V07.2).
+
+    Membership authority = Baostock FORMAL historical identity. Sina catalog is
+    CROSSCHECK only and never decides membership. `active` uses real date
+    semantics: delist is null or >= as_of AND list is null or <= as_of. A formal
+    delisted symbol that is already present in curated instruments is STILL a
+    recovery target.
+    """
+    active: set[str] = set()
+    if instruments_df is not None and not instruments_df.is_empty():
+        df = instruments_df.filter(
+            (pl.col("delist_date").is_null() | (pl.col("delist_date") >= as_of))
+            & (pl.col("list_date").is_null() | (pl.col("list_date") <= as_of))
+        )
+        active = set(df["symbol"].to_list())
+    targets = sorted(s for s in formal if s not in active)
+    no_data = sorted(
+        s
+        for s in targets
+        if formal.get(s) is not None and formal.get(s) < history_start
+    )
+    recover = sorted(s for s in targets if s not in no_data)
+    return {
+        "targets": targets,
+        "no_data": no_data,
+        "recover": recover,
+        "sh_sz": sorted(s for s in recover if not s.endswith(".BJ")),
+        "bj": sorted(s for s in recover if s.endswith(".BJ")),
+        "active": sorted(active),
+        "sina_catalog_role": "CROSSCHECK_ONLY",
+        "sina_catalog_symbols_n": len(catalog),
+        "target_set_sha": sha256_bytes(
+            json.dumps(sorted(targets), separators=(",", ":")).encode()
+        ),
     }
 
 
@@ -399,7 +473,7 @@ class ServiceLedger:
         ).hexdigest()
 
 
-STAGES = ("preflight", "A_instruments", "B_discovery", "C_merge", "C2_enrich", "D_calendar", "E_delisted", "F_daily", "G_coverage", "quality")
+STAGES = ("preflight", "A_instruments", "B_discovery", "C_merge", "C2_enrich", "D_calendar", "E_delisted", "F_daily", "G_coverage")
 STAGE_ORDER = {name: index for index, name in enumerate(STAGES)}
 
 
@@ -478,16 +552,16 @@ class R3Runner:
         self.state_path = self.meta / "execution-state.json"
         self.ledger = ServiceLedger(self.meta / "service-ledger.jsonl")
         self.machine = StageMachine(self.state_path)
-        self._clear_ambient_proxy()
+        self._network_env_cleared: list[str] = []
 
-    def _clear_ambient_proxy(self) -> None:
-        """Record and clear ambient HTTP(S)/SOCKS proxy env vars.
+    def _prepare_network_env(self) -> None:
+        """Writer-stage-only env prep: clear ambient HTTP(S)/SOCKS proxies.
 
-        The frozen config declares no proxy. TDX and Baostock use raw sockets and
-        are unaffected; leaving ambient vars set makes httpx (EastMoney) fail
-        because this venv lacks socksio for a SOCKS ALL_PROXY. Direct egress to
-        the pinned endpoints is verified reachable. This is a runtime-env guard,
-        not a config or dependency change.
+        Never called in __init__ or preflight. The frozen config declares no
+        proxy; httpx (EastMoney) would otherwise fail without socksio for a
+        SOCKS ALL_PROXY. This is a runtime-env guard, not a config/dependency
+        change. It records the removal and persists a small note ONLY as part
+        of a writer stage, never during read-only preflight.
         """
         removed = {
             key: os.environ.pop(key)
@@ -496,17 +570,10 @@ class R3Runner:
         }
         if removed:
             logger.warning(
-                "AMBIENT_PROXY_CLEARED: removed %s during R3 execution",
+                "AMBIENT_PROXY_CLEARED(writer-stage): removed %s",
                 sorted(set(k.upper() for k in removed)),
             )
-            self.meta.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(
-                self.meta / "r3-proxy-guard.json",
-                {
-                    "cleared": sorted(set(k.upper() for k in removed)),
-                    "note": "ambient proxy env cleared for pinned direct egress only",
-                },
-            )
+            self._network_env_cleared = sorted(set(k.upper() for k in removed))
 
     # --- guards ---------------------------------------------------------
 
@@ -608,7 +675,7 @@ class R3Runner:
             if wal.exists() and wal.stat().st_size not in (0, 32):
                 raise R3Error("MANIFEST_WAL", "non-empty manifest WAL present; stop")
 
-        receipt = {
+        return {
             "plan_sha": self.plan_sha,
             "base_head": BASE_HEAD,
             "repo_head": git_sha(self.repo_root),
@@ -620,8 +687,6 @@ class R3Runner:
             "surface_clean": True,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
-        atomic_write_json(self.meta / "r3-preflight.json", receipt)
-        return receipt
 
     # --- stage helpers -----------------------------------------------------
 
@@ -676,31 +741,66 @@ class R3Runner:
         return receipt
 
     def _identity_completion_v072(self) -> dict[str, Any]:
+        self._prepare_network_env()
         from cnequity.adapters.baostock.delisted_bars import roster_on
         from cnequity.adapters.baostock.instruments import fetch_instrument_basics
         from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
         from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 
         basic_df = fetch_instrument_basics()
-        identity_symbols = set(basic_df["symbol"].to_list()) if basic_df.height else set()
+        if basic_df.height:
+            identity_df = basic_df.filter(
+                (pl.col("exchange").is_in(["SH", "SZ"]))
+                & (pl.col("asset_type").is_in(["stock", "cdr"]))
+                & (pl.col("list_date").is_null() | (pl.col("list_date") <= self.daily_as_of))
+                & (
+                    pl.col("delist_date").is_null()
+                    | (pl.col("delist_date") >= self.history_start)
+                )
+            )
+            identity_symbols = set(identity_df["symbol"].to_list())
+        else:
+            identity_symbols = set()
         identity_hash = sha256_bytes(
             json.dumps(sorted(identity_symbols), separators=(",", ":")).encode()
         )
 
         dates = list_trading_dates(self.cfg, self.history_start, self.daily_as_of)
+        if not dates:
+            raise R3Error("NO_TRADING_DATES", "no trading dates in R3 window")
         closure = roster_closure_receipt(
             dates, roster_on, stock_basic_symbols=identity_symbols
         )
 
-        # BJ current identity via EastMoney clist (existing C2 machinery reused)
+        # BJ current identity: EM clist -> complete active BJ membership
         client = EastMoneyClient(config=self.cfg)
         try:
             clist = fetch_clist_pages(client, fields="f12,f13,f14,f26")
         finally:
             client.close()
-        bj_current = sorted(
-            {sym for sym, _item in clist_rows_to_symbols(clist) if sym.endswith(".BJ")}
-        )
+        bj_membership: list[dict[str, Any]] = []
+        for sym, item in clist_rows_to_symbols(clist):
+            if not sym.endswith(".BJ"):
+                continue
+            list_date = parse_clist_date(item.get("f26"))
+            name = (item.get("f14") or "").strip() or None
+            if not name or list_date is None or list_date > self.daily_as_of:
+                raise R3Error(
+                    "BLOCKED_ALL_A_METADATA",
+                    f"active BJ {sym} lacks verified name/list_date in EM clist",
+                )
+            bj_membership.append(
+                {
+                    "symbol": sym,
+                    "name": name,
+                    "exchange": "BJ",
+                    "asset_type": "stock",
+                    "list_date": list_date,
+                    "delist_date": None,
+                    "prev_symbol": None,
+                }
+            )
+        bj_current = sorted(m["symbol"] for m in bj_membership)
         bj_current_hash = sha256_bytes(
             json.dumps(bj_current, separators=(",", ":")).encode()
         )
@@ -714,11 +814,13 @@ class R3Runner:
             "bj_current_authority": "EastMoney_clist",
             "bj_current_symbols": len(bj_current),
             "bj_current_hash": bj_current_hash,
+            "bj_current_membership": bj_membership,
             "bj_historical_authority": BJ_HISTORICAL_AUTHORITY_VERDICT,
             "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
             "bj_historical_resolved": False,
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
+        atomic_write_json(self.meta / "r3-identity-receipt.json", receipt)
         self.ledger.append({"stage": "B_discovery", "v07_2_identity": True, "receipt": receipt})
         return receipt
 
@@ -736,68 +838,38 @@ class R3Runner:
         return receipt
 
     def _enrich_bj_metadata(self) -> dict[str, Any]:
-        from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
-        from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+        """C2: build the complete instruments snapshot from the Stage-B receipt.
+
+        Existing non-BJ instruments + the COMPLETE Stage-B EM BJ membership
+        (from r3-identity-receipt.json) => full instruments snapshot. Does not
+        depend on Sina or on any BJ rows already present in curated instruments.
+        """
+        membership = self._load_identity_bj_membership()
+        if not membership:
+            raise R3Error("BLOCKED_ALL_A_UNIVERSE", "no active BJ membership from Stage-B receipt")
+        bad_members = [
+            m["symbol"]
+            for m in membership
+            if not m.get("name") or m.get("list_date") is None or m["list_date"] > self.daily_as_of
+        ]
+        if bad_members:
+            raise R3Error(
+                "BLOCKED_ALL_A_METADATA",
+                f"{len(bad_members)} active BJ rows lack verified name/list_date: {bad_members[:20]}",
+            )
 
         instruments = load_curated_instruments(self.cfg)
         if instruments is None or instruments.is_empty():
-            raise R3Error("C2_NO_INSTRUMENTS", "no curated instruments to enrich")
-        bj = instruments.filter(pl.col("symbol").str.ends_with(".BJ"))
-        if bj.is_empty():
-            raise R3Error("BLOCKED_ALL_A_UNIVERSE", "no BJ rows in security master")
-
-        client = EastMoneyClient(config=self.cfg)
-        try:
-            rows = fetch_clist_pages(client, fields="f12,f13,f14,f26")
-        finally:
-            client.close()
-        meta: dict[str, dict[str, Any]] = {}
-        for sym, item in clist_rows_to_symbols(rows):
-            if not sym.endswith(".BJ"):
-                continue
-            meta[sym] = {"name": item.get("f14"), "f26": item.get("f26")}
-
-        def parse_f26(value: Any) -> date | None:
-            if value in (None, "", "-"):
-                return None
-            text = str(value).strip()
-            if len(text) == 8 and text.isdigit():
-                return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
-            try:
-                return date.fromisoformat(text[:10])
-            except ValueError:
-                return None
-
-        enrich_rows: list[dict[str, Any]] = []
-        missing: list[str] = []
-        for row in bj.select("symbol", "name", "list_date").iter_rows(named=True):
-            symbol = row["symbol"]
-            info = meta.get(symbol)
-            name = row["name"] or (info or {}).get("name")
-            list_date = row["list_date"] or parse_f26((info or {}).get("f26"))
-            if not name or list_date is None or list_date > self.daily_as_of:
-                missing.append(symbol)
-                continue
-            enrich_rows.append(
-                {
-                    "symbol": symbol,
-                    "name": str(name).strip(),
-                    "exchange": "BJ",
-                    "asset_type": "stock",
-                    "list_date": list_date,
-                    "delist_date": None,
-                    "prev_symbol": None,
-                }
+            non_bj = pl.DataFrame()
+        else:
+            non_bj = instruments.filter(~pl.col("symbol").str.ends_with(".BJ"))
+        bj_df = pl.DataFrame(
+            sorted(
+                membership,
+                key=lambda m: m["symbol"],
             )
-        if missing:
-            raise R3Error(
-                "BLOCKED_ALL_A_METADATA",
-                f"{len(missing)} active BJ rows lack verified name/list_date: {missing[:20]}",
-            )
-
-        non_bj = instruments.filter(~pl.col("symbol").str.ends_with(".BJ"))
-        enriched_df = pl.DataFrame(enrich_rows)
-        merged = pl.concat([non_bj, enriched_df], how="diagonal_relaxed")
+        )
+        merged = pl.concat([non_bj, bj_df], how="diagonal_relaxed")
         merged = with_provenance(merged, source="eastmoney", data_version="v1")
         merged = merged.sort("symbol").unique(subset=["symbol"], keep="last")
 
@@ -829,12 +901,43 @@ class R3Runner:
         )
         if bad:
             raise R3Error("C2_POSTCHECK", f"{bad} BJ rows still lack metadata post-compact")
+        bj_count = int(merged.filter(pl.col("symbol").str.ends_with(".BJ")).height)
+        if bj_count != len(membership):
+            raise R3Error(
+                "C2_POSTCHECK",
+                f"BJ membership mismatch: staged {bj_count}, receipt {len(membership)}",
+            )
         return {
-            "bj_rows": merged.filter(pl.col("symbol").str.ends_with(".BJ")).height,
-            "missing_before": len(missing),
+            "bj_rows": bj_count,
+            "membership_source": "r3-identity-receipt.json",
             "run_id": run_id,
             "compact": compact,
         }
+
+    def _load_identity_bj_membership(self) -> list[dict[str, Any]]:
+        """Complete active BJ membership from the Stage-B identity receipt."""
+        receipt_path = self.meta / "r3-identity-receipt.json"
+        if not receipt_path.exists():
+            raise R3Error(
+                "IDENTITY_RECEIPT_MISSING",
+                f"Stage-B identity receipt missing: {receipt_path}",
+            )
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        members = payload.get("bj_current_membership") or []
+        return [
+            {
+                "symbol": m["symbol"],
+                "name": m.get("name"),
+                "exchange": m.get("exchange", "BJ"),
+                "asset_type": m.get("asset_type", "stock"),
+                "list_date": date.fromisoformat(str(m["list_date"]))
+                if isinstance(m.get("list_date"), str)
+                else m.get("list_date"),
+                "delist_date": m.get("delist_date"),
+                "prev_symbol": m.get("prev_symbol"),
+            }
+            for m in members
+        ]
 
     def stage_calendar(self) -> dict[str, Any]:
         self.machine.enter("D_calendar")
@@ -854,29 +957,23 @@ class R3Runner:
 
     def _recover_delisted_daily(self) -> dict[str, Any]:
         """R3-safe delisted recovery; never touches backfill_delisted_bars."""
+        self._prepare_network_env()
         from cnequity.adapters.baostock.delisted_bars import fetch_delisted_bars
 
         formal = known_delisted_instruments(self.cfg, self.daily_as_of)
         catalog = load_delisted_catalog(self.cfg)
-        targets_raw = set(formal) | set(catalog)
         instruments = load_curated_instruments(self.cfg)
-        active = set() if instruments is None else set(instruments["symbol"].to_list())
-        targets = sorted(s for s in targets_raw if s not in active)
-        target_set_sha = hashlib.sha256(
-            json.dumps(sorted(targets), separators=(",", ":")).encode()
-        ).hexdigest()
-
-        no_data: list[str] = []
-        recover: list[str] = []
-        for symbol in targets:
-            delist = formal.get(symbol)
-            last = catalog.get(symbol)
-            if (delist is not None and delist < self.history_start) or (
-                last is not None and last < self.history_start
-            ):
-                no_data.append(symbol)
-            else:
-                recover.append(symbol)
+        partition = stage_e_target_partition(
+            formal,
+            catalog,
+            instruments,
+            self.daily_as_of,
+            self.history_start,
+        )
+        targets = partition["targets"]
+        no_data = partition["no_data"]
+        recover = partition["recover"]
+        target_set_sha = partition["target_set_sha"]
 
         run_id = self._new_run("r3_delisted_daily")
         manifest = Manifest(self.cfg.manifest_path)
@@ -885,8 +982,8 @@ class R3Runner:
         recovered_spans: dict[str, tuple[date, date]] = {}
         total_rows = 0
 
-        sh_sz = sorted(s for s in recover if not s.endswith(".BJ"))
-        bj = sorted(s for s in recover if s.endswith(".BJ"))
+        sh_sz = partition["sh_sz"]
+        bj = partition["bj"]
 
         rows_dict: dict[str, list[dict[str, Any]]] = {}
         attempts = 0
@@ -1004,6 +1101,8 @@ class R3Runner:
             "recovered": len(recovered_spans),
             "rows_written": total_rows,
             "unresolved": len(unresolved),
+            "sina_catalog_role": "CROSSCHECK_ONLY",
+            "sina_catalog_symbols_n": len(catalog),
             "bj_historical_targets": len(bj),
             "bj_historical_authority": bj_authority,
             "bj_historical_delisted": HISTORICAL_DELISTED_BJ_LABEL,
@@ -1102,11 +1201,16 @@ class R3Runner:
     def _em_primary_route(self, run_id: str, spans: dict[str, tuple[date, date]]) -> dict[str, Any]:
         """Stage F2 (V07.2): EastMoney primary for non-TDX (BJ) daily bars.
 
-        Sina is never called here. Every fetch goes through the §5a tri-state
-        wrapper; exact retries (<=3) per symbol; EXISTS rows are staged with a
-        unique controller-managed batch id and provenance; symbols still without
-        valid bars after retries become UNEXPLAINED_MISSING in the coverage
-        classifier layer and fail the gate.
+        Sina is never called. Each attempt: a deterministic unique batch id + a
+        blocking manifest controller batch are created BEFORE the network fetch,
+        and a service-ledger attempt record is written; AFTER the attempt,
+        success/failure state, attempt, symbol, exact window, adapter, rows,
+        status, and lineage are recorded.
+
+        EXISTS requires at least one valid row inside the requested effective
+        span; an out-of-span-only frame is NOT success. After exact retries
+        (<=3), a symbol with no valid in-span bars becomes UNEXPLAINED_MISSING
+        (coverage classifier) and fails the gate.
         """
         if not spans:
             return {"symbols": 0}
@@ -1122,46 +1226,109 @@ class R3Runner:
                 attempt = 0
                 state: str | None = None
                 reason: str | None = None
-                frame = None
+                out_rows = 0
+                batch_id: str | None = None
                 while attempt < 3:
                     attempt += 1
-                    result = em_daily_tristate(
-                        symbol, start, end, config=self.cfg
-                    )
-                    state = result["state"]
-                    reason = result["reason"]
-                    frame = result["frame"]
-                    if state == "EXISTS":
-                        break
-                    self.ledger.append(
-                        {"stage": "F2", "symbol": symbol, "attempt": attempt, "state": state, "reason": reason}
-                    )
-                if state == "EXISTS" and frame is not None and not frame.is_empty():
-                    out = frame.filter(
-                        (pl.col("trade_date") >= start) & (pl.col("trade_date") <= end)
-                    )
-                    out = out.unique(subset=["symbol", "trade_date"], keep="last")
-                    out = with_provenance(
-                        out, source="eastmoney", data_version=data_version_for("daily_bars")
-                    )
                     batch_id = (
                         "em-"
                         + hashlib.sha256(
                             f"{symbol}|{start.isoformat()}|{end.isoformat()}|a{attempt}".encode()
                         ).hexdigest()[:12]
                     )
+                    # BEFORE network fetch: blocking manifest batch + ledger
                     manifest.start_batch(
                         run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
                         symbols=[symbol], window_start=start.isoformat(),
                         window_end=end.isoformat(), blocks_compaction=True,
                     )
-                    writer.write_batch("daily_bars", run_id, batch_id, out)
-                    manifest.finish_batch(
-                        run_id, batch_id, "success",
-                        rows_read=out.height, rows_written=out.height,
+                    self.ledger.append(
+                        {
+                            "stage": "F2",
+                            "event": "ATTEMPT_START",
+                            "attempt": attempt,
+                            "symbol": symbol,
+                            "window_start": start.isoformat(),
+                            "window_end": end.isoformat(),
+                            "adapter": "eastmoney",
+                            "batch_id": batch_id,
+                            "status": "running",
+                        }
                     )
+                    try:
+                        result = em_daily_tristate(symbol, start, end, config=self.cfg)
+                        state = result["state"]
+                        reason = result["reason"]
+                        frame = result["frame"]
+                    except Exception as exc:
+                        state = "SOURCE_ERROR"
+                        reason = f"wrapper_exc:{type(exc).__name__}"
+                        frame = None
+
+                    if state == "EXISTS" and frame is not None and not frame.is_empty():
+                        out = frame.filter(
+                            (pl.col("trade_date") >= start) & (pl.col("trade_date") <= end)
+                        )
+                        if out.is_empty():
+                            # out-of-span-only frame => NOT success
+                            state = "SOURCE_ERROR"
+                            reason = "OUT_OF_SPAN_EMPTY"
+                            out_rows = 0
+                        else:
+                            out = out.unique(subset=["symbol", "trade_date"], keep="last")
+                            out = with_provenance(
+                                out,
+                                source="eastmoney",
+                                data_version=data_version_for("daily_bars"),
+                            )
+                            writer.write_batch("daily_bars", run_id, batch_id, out)
+                            manifest.finish_batch(
+                                run_id, batch_id, "success",
+                                rows_read=out.height, rows_written=out.height,
+                            )
+                            out_rows = out.height
+                            self.ledger.append(
+                                {
+                                    "stage": "F2",
+                                    "event": "ATTEMPT_END",
+                                    "attempt": attempt,
+                                    "symbol": symbol,
+                                    "window_start": start.isoformat(),
+                                    "window_end": end.isoformat(),
+                                    "adapter": "eastmoney",
+                                    "batch_id": batch_id,
+                                    "state": "EXISTS",
+                                    "reason": reason,
+                                    "rows": out_rows,
+                                    "status": "success",
+                                }
+                            )
+                            break
+
+                    manifest.finish_batch(
+                        run_id, batch_id, "failed",
+                        error_message=f"{state}:{reason}",
+                    )
+                    self.ledger.append(
+                        {
+                            "stage": "F2",
+                            "event": "ATTEMPT_END",
+                            "attempt": attempt,
+                            "symbol": symbol,
+                            "window_start": start.isoformat(),
+                            "window_end": end.isoformat(),
+                            "adapter": "eastmoney",
+                            "batch_id": batch_id,
+                            "state": state,
+                            "reason": reason,
+                            "rows": 0,
+                            "status": "failed",
+                        }
+                    )
+
+                if out_rows > 0:
                     outcomes.append(
-                        {"symbol": symbol, "state": "EXISTS", "attempt": attempt, "rows": out.height}
+                        {"symbol": symbol, "state": "EXISTS", "attempt": attempt, "rows": out_rows}
                     )
                 else:
                     unexplained.append(symbol)
@@ -1170,12 +1337,10 @@ class R3Runner:
                     )
 
         if unexplained:
-            # coverage classifier output: after exact retries exhausted, still no
-            # valid bars -> UNEXPLAINED_MISSING (blocks the gate)
             raise R3Error(
                 "UNEXPLAINED_MISSING",
-                f"{len(unexplained)} BJ symbols have no valid bars after retries: "
-                f"{unexplained[:20]}",
+                f"{len(unexplained)} BJ symbols have no valid in-span bars after "
+                f"retries: {unexplained[:20]}",
             )
         return {
             "symbols": len(spans),
