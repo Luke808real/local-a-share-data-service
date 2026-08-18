@@ -27,6 +27,8 @@ docs/contracts/R3_DAILY_FOUNDATION_CONTRACT.md for the authoritative wording.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import inspect
 import json
 import logging
 import os
@@ -34,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import fcntl
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -55,6 +58,113 @@ from cnequity.steps.delisted import (
 from cnequity.storage import StagingWriter
 
 logger = logging.getLogger(__name__)
+
+
+# Callables actually used by R3 (no Sina):
+# (label, module, dotted_attr, expected_module, expected_signature)
+APPROVED_CALLABLES: tuple[tuple[str, str, str, str, str], ...] = (
+    ("JobEngine.run_job", "cnequity.orchestrator.engine", "JobEngine.run_job",
+     "cnequity.orchestrator.engine",
+     "(self, job_name: 'str', trade_date: 'date | None' = None, *, steps: 'list[str] | None' = None, waves: 'list[WaveConfig] | None' = None, backfill: 'bool' = False, run_id: 'str | None' = None, retry_failed_only: 'bool' = False, finalize_run: 'bool' = True) -> 'dict[str, Any]'"),
+    ("JobEngine.run_step", "cnequity.orchestrator.engine", "JobEngine.run_step",
+     "cnequity.orchestrator.engine",
+     "(self, name: 'str', trade_date: 'date', run_id: 'str', context: 'dict[str, Any] | None' = None) -> 'dict[str, Any]'"),
+    ("fetch_daily_bars_parallel", "cnequity.orchestrator.worker_pool", "fetch_daily_bars_parallel",
+     "cnequity.orchestrator.worker_pool",
+     "(config: 'Config', symbols: 'list[str]', start: 'date', end: 'date', run_id: 'str', dataset: 'str' = 'daily_bars', *, batch_specs: 'list[BatchSpec] | None' = None) -> 'dict[str, Any]'"),
+    ("fetch_instrument_basics", "cnequity.adapters.baostock.instruments", "fetch_instrument_basics",
+     "cnequity.adapters.baostock.instruments",
+     "(*, bs=None, sleep=<built-in function sleep>) -> 'pl.DataFrame'"),
+    ("roster_on", "cnequity.adapters.baostock.delisted_bars", "roster_on",
+     "cnequity.adapters.baostock.delisted_bars",
+     "(day: 'date', *, bs=None, login: 'bool' = True) -> 'set[str]'"),
+    ("fetch_delisted_bars", "cnequity.adapters.baostock.delisted_bars", "fetch_delisted_bars",
+     "cnequity.adapters.baostock.delisted_bars",
+     "(symbols: 'list[str]', start: 'date', end: 'date', *, config=None, bs=None) -> 'tuple[list[dict], list[str]]'"),
+    ("fetch_clist_pages", "cnequity.adapters.eastmoney.clist", "fetch_clist_pages",
+     "cnequity.adapters.eastmoney.clist",
+     "(client: 'EastMoneyClient', *, fields: 'str', fs: 'str' = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048', page_size: 'int' = 100) -> 'list[dict]'"),
+    ("clist_rows_to_symbols", "cnequity.adapters.eastmoney.clist", "clist_rows_to_symbols",
+     "cnequity.adapters.eastmoney.clist",
+     "(rows: 'list[dict]') -> 'list[tuple[str, dict]]'"),
+    ("fetch_daily_bars", "cnequity.adapters.eastmoney.bars", "fetch_daily_bars",
+     "cnequity.adapters.eastmoney.bars",
+     "(symbols: 'list[str]', start: 'date', end: 'date', *, client: 'EastMoneyClient | None' = None, config=None) -> 'pl.DataFrame'"),
+    ("delisted_coverage_report", "cnequity.steps.delisted", "delisted_coverage_report",
+     "cnequity.steps.delisted",
+     "(config: 'Config', start: 'date', end: 'date | None' = None, *, sample: 'int' = 15) -> 'dict'"),
+)
+
+
+def _runtime_pin_proof() -> dict[str, Any]:
+    import importlib.metadata as md
+    version = md.version("cnequity")
+    dist = md.distribution("cnequity")
+    direct_path = Path(dist._path) / "direct_url.json"  # type: ignore[attr-defined]
+    direct = json.loads(direct_path.read_text(encoding="utf-8")) if direct_path.exists() else {}
+    vcs = direct.get("vcs_info") or {}
+    ok = (
+        version == PINNED_CNEQUITY_VERSION
+        and vcs.get("commit_id") == PINNED_CNEQUITY_SHA
+    )
+    return {
+        "verified": bool(ok),
+        "version": version,
+        "commit": vcs.get("commit_id"),
+    }
+
+
+def approved_callable_contract() -> dict[str, Any]:
+    import cnequity
+
+    pkg_dir = Path(cnequity.__file__).resolve().parent
+    entries: list[dict[str, Any]] = []
+    for entry in APPROVED_CALLABLES:
+        _label, module_name, attr_path, expected_module, expected_signature = entry
+        module = importlib.import_module(module_name)
+        if module.__name__ != expected_module:
+            raise R3Error(
+                "RUNTIME_CONTRACT_DRIFT",
+                f"callable {_label} module mismatch: {module.__name__} != {expected_module}",
+            )
+        obj = module
+        for part in attr_path.split("."):
+            obj = getattr(obj, part)
+        signature = str(inspect.signature(obj))
+        if signature != expected_signature:
+            raise R3Error(
+                "RUNTIME_CONTRACT_DRIFT",
+                f"callable {_label} signature mismatch: {signature} != {expected_signature}",
+            )
+        source_file = inspect.getsourcefile(obj) or ""
+        in_dist = Path(source_file).resolve().is_relative_to(pkg_dir)
+        entries.append(
+            {
+                "name": _label,
+                "module": module.__name__,
+                "signature": signature,
+                "source": Path(source_file).name if source_file else None,
+                "in_distribution": bool(in_dist),
+            }
+        )
+        if not in_dist:
+            raise R3Error(
+                "RUNTIME_CONTRACT_DRIFT",
+                f"callable {_label} not inside pinned cnequity distribution: {source_file}",
+            )
+    pin = _runtime_pin_proof()
+    contract = {
+        "verified": bool(pin["verified"]),
+        "count": len(entries),
+        "hash": sha256_bytes(
+            json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+        ),
+        "runtime_pin": pin,
+        "identities": entries,
+    }
+    if not pin["verified"]:
+        raise R3Error("RUNTIME_CONTRACT_DRIFT", f"runtime pin mismatch: {pin}")
+    return contract
 
 
 # --- Frozen R3 constants ----------------------------------------------------
@@ -608,22 +718,62 @@ class R3Runner:
             if fragment in joined:
                 raise R3Error("FORBIDDEN_SURFACE", f"forbidden upstream surface: {fragment}")
 
-    def _acquire_lock(self) -> Path:
+    def _acquire_lock(self) -> int:
         self.meta.mkdir(parents=True, exist_ok=True)
-        lock = self.meta / "runner.lock"
+        path = self.meta / "runner.lock"
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
-            raise R3Error("WRITER_LOCKED", "another R3 runner holds the writer lock") from exc
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise R3Error("WRITER_LOCKED", "another R3 runner holds the writer lock")
         os.write(fd, f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n".encode())
-        os.close(fd)
-        return lock
+        return fd
 
-    def _release_lock(self, lock: Path) -> None:
+    def _release_lock(self, fd) -> None:
         try:
-            lock.unlink()
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def service_lock_active(self) -> bool:
+        """Read-only proof of an active writer lock (no lock mutation)."""
+        path = self.meta / "runner.lock"
+        if not path.exists():
+            return False
+        try:
+            fd = os.open(path, os.O_RDONLY)
         except FileNotFoundError:
-            pass
+            return False
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def run_writer_stage(self, name: str) -> dict[str, Any]:
+        """Single-writer stage entrypoint: lock -> execute one stage -> release."""
+        fd = self._acquire_lock()
+        try:
+            stage_map = {
+                "A_instruments": self.stage_instruments,
+                "B_discovery": self.stage_discovery,
+                "C_merge": self.stage_merge,
+                "C2_enrich": self.stage_enrich,
+                "D_calendar": self.stage_calendar,
+                "E_delisted": self.stage_delisted,
+                "F_daily": self.stage_daily,
+                "G_coverage": self.stage_coverage,
+            }
+            if name not in stage_map:
+                raise R3Error("STAGE_UNKNOWN", f"unknown writer stage {name}")
+            return stage_map[name]()
+        finally:
+            self._release_lock(fd)
 
     # --- preflight --------------------------------------------------------
 
@@ -702,6 +852,8 @@ class R3Runner:
             "free_gib": round(free_gib, 1),
             "legacy_isolation": True,
             "surface_clean": True,
+            "service_writer_lock_active": self.service_lock_active(),
+            "callable_contract": approved_callable_contract(),
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -1287,6 +1439,20 @@ class R3Runner:
                 frame = frame.with_columns(
                     pl.lit("baostock").alias("source")
                 ) if "source" not in frame.columns else frame
+                traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
+                if traded.is_empty():
+                    # non-empty frame but ZERO positive-volume rows => not success
+                    manifest.finish_batch(run_id, batch_id, "failed",
+                                          error_message="ZERO_VOLUME_ONLY")
+                    prior_failed.append(batch_id)
+                    self.ledger.append(
+                        {
+                            "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                            "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
+                            "status": "failed", "reason": "ZERO_VOLUME_ONLY",
+                        }
+                    )
+                    continue
                 frame = with_provenance(
                     frame, source="baostock", data_version=data_version_for("daily_bars")
                 )
@@ -1307,12 +1473,10 @@ class R3Runner:
                         }
                     )
                 prior_failed.clear()
-                traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
-                if not traded.is_empty():
-                    recovered_spans[symbol] = (
-                        traded["trade_date"].min(),
-                        traded["trade_date"].max(),
-                    )
+                recovered_spans[symbol] = (
+                    traded["trade_date"].min(),
+                    traded["trade_date"].max(),
+                )
                 total_rows += frame.height
                 self.ledger.append(
                     {
@@ -1510,12 +1674,22 @@ class R3Runner:
             return {"symbols": 0}
         batch_size = int(getattr(self.cfg, "batch_size", 50) or 50)
         chunks: list[tuple[str, list[str], date, date]] = []
-        for index in range(0, len(symbols), batch_size):
-            chunk_symbols = symbols[index : index + batch_size]
-            span = spans[chunk_symbols[0]]
-            chunks.append(
-                (_symbol_batch_id(span[0], span[1], index // batch_size), chunk_symbols, span[0], span[1])
-            )
+        global_index = 0
+        for identical_span, span_symbols in group_by_span(spans):
+            # batch built from an identical effective span only; never the
+            # first symbol's span generalized across neighbours
+            for index in range(0, len(span_symbols), batch_size):
+                chunk_symbols = span_symbols[index : index + batch_size]
+                start, end = identical_span
+                chunks.append(
+                    (
+                        _symbol_batch_id(start, end, global_index),
+                        chunk_symbols,
+                        start,
+                        end,
+                    )
+                )
+                global_index += 1
         self.cfg.failover_enabled = False
 
         def _specs_symbols(specs):
@@ -1534,12 +1708,22 @@ class R3Runner:
             if not specs:
                 break
             scoped = _specs_symbols(specs)
+            specs_windows = [
+                {
+                    "batch_id": b,
+                    "window_start": w0.isoformat(),
+                    "window_end": w1.isoformat(),
+                    "symbols": syms,
+                }
+                for b, syms, w0, w1 in specs
+            ]
             self.ledger.append(
                 {
                     "stage": "F1",
                     "event": "ATTEMPT_START",
                     "attempt": attempt,
                     "batch_ids": [b for b, _s, _w0, _w1 in specs],
+                    "specs_windows": specs_windows,
                     "symbols": scoped,
                     "symbol_hash": sha256_bytes(
                         json.dumps(sorted(scoped), separators=(",", ":")).encode()

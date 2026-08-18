@@ -70,17 +70,7 @@ def main() -> int:
             raise R3Error("STAGE_REQUIRED", "provide --stage or --preflight-only")
 
         prepare = runner.preflight()
-        stage_map = {
-            "A_instruments": runner.stage_instruments,
-            "B_discovery": runner.stage_discovery,
-            "C_merge": runner.stage_merge,
-            "C2_enrich": runner.stage_enrich,
-            "D_calendar": runner.stage_calendar,
-            "E_delisted": runner.stage_delisted,
-            "F_daily": runner.stage_daily,
-            "G_coverage": runner.stage_coverage,
-        }
-        result = stage_map[args.stage]()
+        result = runner.run_writer_stage(args.stage)
         print(json.dumps({"stage": args.stage, **result}, indent=2, default=str))
         return 0
     except R3Error as exc:

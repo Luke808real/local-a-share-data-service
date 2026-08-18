@@ -1470,3 +1470,186 @@ def test_c2_controller_terminal_only_after_postproof_failure(monkeypatch, tmp_pa
         runner._enrich_bj_metadata()
     completes = [r for r in runner.ledger.calls if r.get("event") == "CONTROLLER_COMPLETE"]
     assert completes and completes[-1]["status"] == "failed"
+
+
+# ============================================================================
+# V04 final preflight gate fixes
+# ============================================================================
+
+
+def _f1_batch_runner(monkeypatch, impl_result):
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(batch_size=10, failover_enabled=False)
+    runner.history_start = R3_HISTORY_START
+    runner.daily_as_of = R3_DAILY_AS_OF
+
+    class LedgerF:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, rec):
+            self.calls.append(rec)
+
+    runner.ledger = LedgerF()
+    calls = {"n": 0}
+
+    def wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return impl_result
+
+    monkeypatch.setattr(r3, "fetch_daily_bars_parallel", wrapped)
+    return runner, calls
+
+
+def test_f1_mixed_spans_never_share_batch(monkeypatch):
+    runner, _ = _f1_batch_runner(monkeypatch, {"failed_symbols": [], "rows_written": 9})
+    _tdx_spans = {
+        "A.SH": (date(2021, 8, 1), R3_DAILY_AS_OF),
+        "B.SZ": (R3_HISTORY_START, R3_DAILY_AS_OF),
+    }
+    result = runner._tdx_route("rid", _tdx_spans)
+    assert result["failed_after"] == 0
+    starts = [x for x in runner.ledger.calls if x.get("event") == "ATTEMPT_START"]
+    assert len(starts) == 1
+    windows = [(sw["window_start"], sw["window_end"]) for sw in starts[0]["specs_windows"]]
+    assert (date(2021, 8, 1).isoformat(), R3_DAILY_AS_OF.isoformat()) in windows
+    # B's 2016 start is preserved (not truncated to A's span)
+    assert (R3_HISTORY_START.isoformat(), R3_DAILY_AS_OF.isoformat()) in windows
+    assert len(windows) == 2
+
+
+def test_f1_ledger_windows_equal_batchspec_windows(monkeypatch):
+    runner, _ = _f1_batch_runner(monkeypatch, {"failed_symbols": [], "rows_written": 9})
+    runner._tdx_route("rid", {"A.SH": (date(2021, 8, 1), R3_DAILY_AS_OF)})
+    start = [x for x in runner.ledger.calls if x.get("event") == "ATTEMPT_START"][0]
+    parsed = {
+        (sw["window_start"], sw["window_end"]) for sw in start["specs_windows"]
+    }
+    assert parsed == {(date(2021, 8, 1).isoformat(), R3_DAILY_AS_OF.isoformat())}
+
+
+def test_second_writer_blocked(tmp_path):
+    runner1 = object.__new__(r3.R3Runner)
+    runner2 = object.__new__(r3.R3Runner)
+    runner1.meta = tmp_path / "m1"
+    runner2.meta = tmp_path / "m1"
+    fd1 = runner1._acquire_lock()
+    try:
+        with pytest.raises(R3Error, match="WRITER_LOCKED"):
+            runner2._acquire_lock()
+    finally:
+        runner1._release_lock(fd1)
+
+
+def test_lock_released_after_exception(tmp_path, monkeypatch):
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = tmp_path / "m2"
+
+    def boom(self):
+        raise R3Error("STAGE_X", "boom")
+
+    monkeypatch.setattr(r3.R3Runner, "stage_instruments", boom)
+    with pytest.raises(R3Error, match="STAGE_X"):
+        runner.run_writer_stage("A_instruments")
+    assert runner.service_lock_active() is False
+
+
+def test_preflight_lock_proof_readonly(monkeypatch, tmp_path):
+    # reuse the preflight readonly harness, then assert no lock file created
+    import types
+
+    root = tmp_path / "target-root"
+    root.mkdir()
+    (root / "curated").mkdir()
+
+    class DummyVfs:
+        f_bavail = 3 * 2**20
+        f_frsize = 64 * 1024
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(
+        data_root=root, workers=1, tdx_allow_mock=False,
+        manifest_path=root / "meta" / "manifest.db", meta_root=root / "meta",
+        minute_bars_enabled=False, minute_bars_frequencies=[],
+        trade_ticks_enabled=False,
+    )
+    runner.root = root
+    runner.meta = root / "meta" / "asl" / "r3"
+    runner.state_path = runner.meta / "execution-state.json"
+    runner.plan_sha = PLAN_SHA
+    runner.repo_root = tmp_path
+    runner.config_path = Path("/nonexistent/config/cnequity.toml")
+    runner.machine = StageMachine(runner.state_path)
+    monkeypatch.setattr(r3, "runtime_provenance", lambda cfg, cp: {"ok": True})
+    monkeypatch.setattr("cnequity.domain.datasets.is_dataset_enabled",
+                        lambda name, cfg: False)
+    monkeypatch.setattr(os, "statvfs", lambda p: DummyVfs())
+    monkeypatch.setattr(r3, "git_sha", lambda p: "0" * 40)
+    monkeypatch.setattr(r3, "target_tree_snapshot",
+                        lambda rootp, exclude=None: {"digest": "0" * 64, "entries": 0, "lines": []})
+    monkeypatch.setattr(r3, "zero_data_layout_errors", lambda rootp: [])
+    monkeypatch.setattr(r3.R3Runner, "_check_legacy_isolation", lambda self: None)
+    monkeypatch.setattr(r3.R3Runner, "_check_argv_surface", lambda self, argv: None)
+    monkeypatch.setattr(r3, "approved_callable_contract",
+                        lambda: {"verified": True, "count": 10, "hash": "x" * 64,
+                                 "runtime_pin": {"verified": True}, "identities": []})
+    receipt = runner.preflight()
+    assert receipt["service_writer_lock_active"] is False
+    assert not (runner.meta / "runner.lock").exists()  # preflight never creates it
+
+
+def test_stage_e_zero_volume_only_unresolved(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+
+    def zero_bs(symbols, start, end, config=None):
+        sym = symbols[0]
+        return [
+            {
+                "symbol": sym, "trade_date": date(2019, 12, 30),
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                "volume": 0, "amount": 0.0,
+            }
+        ], []
+
+    runner, ledger, manifest, writer, _ = _stage_e_ctx(
+        monkeypatch, tmp_path, fetch_impl=zero_bs,
+        formal_map=formal, instruments_df=_instruments_with(formal),
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner._recover_delisted_daily()
+    # no success recovery batch was written (only failed attempts)
+    assert not any(bid.startswith("e-baostock-") and True for bid, _ in writer.calls)
+    ends = [r for r in ledger.calls if r.get("event") == "ATTEMPT_END"]
+    assert all(e["status"] == "failed" for e in ends)
+    assert all(e["reason"] == "ZERO_VOLUME_ONLY" for e in ends)
+
+
+def test_callable_contract_happy_path():
+    contract = r3.approved_callable_contract()
+    assert contract["verified"] is True
+    assert contract["count"] == 10
+    assert len(contract["hash"]) == 64
+
+
+def test_callable_contract_module_mismatch(monkeypatch):
+    bogus = (
+        ("JobEngine.run_job", "cnequity.orchestrator.engine", "JobEngine.run_job",
+         "cnequity.not.the.engine",
+         r3.APPROVED_CALLABLES[0][4]),
+    )
+    monkeypatch.setattr(r3, "APPROVED_CALLABLES", bogus)
+    with pytest.raises(R3Error, match="RUNTIME_CONTRACT_DRIFT"):
+        r3.approved_callable_contract()
+
+
+def test_callable_contract_signature_mismatch(monkeypatch):
+    bogus = (
+        ("JobEngine.run_job", "cnequity.orchestrator.engine", "JobEngine.run_job",
+         "cnequity.orchestrator.engine",
+         "(definitely, not, the, signature)"),
+    )
+    monkeypatch.setattr(r3, "APPROVED_CALLABLES", bogus)
+    with pytest.raises(R3Error, match="RUNTIME_CONTRACT_DRIFT"):
+        r3.approved_callable_contract()
