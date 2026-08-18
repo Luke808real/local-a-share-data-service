@@ -3470,6 +3470,39 @@ def test_v08_no_eastmoney_or_provider_in_mvp_paths_source():
         "fetch_daily_bars",
     ):
         assert forbidden not in (c_src + c2_src)
+
+
+def test_v08_runner_accepts_plan_and_scope_decision_ancestors(monkeypatch, tmp_path):
+    import types
+
+    cfg_path = tmp_path / "c.toml"
+    cfg_path.write_text("")
+    monkeypatch.setattr(
+        r3,
+        "has_ancestor",
+        lambda root, sha: sha in (r3.PLAN_SHA, r3.V08_SCOPE_DECISION_SHA),
+    )
+    monkeypatch.setattr(
+        r3, "load_config", lambda p: types.SimpleNamespace(data_root="/tmp/unused")
+    )
+    runner = r3.R3Runner(cfg_path, repo_root=tmp_path, plan_sha=r3.PLAN_SHA)
+    assert runner.plan_sha == r3.PLAN_SHA
+
+
+def test_v08_runner_fails_closed_without_scope_decision_ancestor(monkeypatch, tmp_path):
+    import types
+
+    cfg_path = tmp_path / "c.toml"
+    cfg_path.write_text("")
+    # repo HEAD contains PLAN_SHA but NOT V08_SCOPE_DECISION_SHA -> fail closed
+    monkeypatch.setattr(
+        r3, "has_ancestor", lambda root, sha: sha == r3.PLAN_SHA
+    )
+    monkeypatch.setattr(
+        r3, "load_config", lambda p: types.SimpleNamespace(data_root="/tmp/unused")
+    )
+    with pytest.raises(R3Error, match="V08_SCOPE_NOT_ANCESTOR"):
+        r3.R3Runner(cfg_path, repo_root=tmp_path, plan_sha=r3.PLAN_SHA)
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================

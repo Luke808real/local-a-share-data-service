@@ -3,7 +3,12 @@
 **SPEC_VERSION:** `V1.0 FROZEN`
 **PLAN:** `docs/plans/R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN_V07.md` (V07.2)
 **PLAN_SHA (audited):** `3ab1f184edeea1d0e408c45df4a706248b6558d0`
+**V08_SCOPE_DECISION_SHA (audited):** `00085fed36f50312b6a5475dc26f0c5e347c6768`
 **STATUS:** frozen contract for the R3 DAILY FOUNDATION phase
+
+`V08_SCOPE_DECISION_SHA` is the independently reviewed authority point for the
+current SH/SZ MVP scope decision (BJ = `DEFERRED_EXTENSION`). Every executing
+HEAD must contain both `PLAN_SHA` and `V08_SCOPE_DECISION_SHA` as ancestors.
 
 ## Window and provenance
 

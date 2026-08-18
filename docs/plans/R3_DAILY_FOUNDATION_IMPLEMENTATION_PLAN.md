@@ -389,7 +389,10 @@ per-date resumable closure checkpoint (`r3-roster-closure-progress-v073.json`).
   `roster_extra_vs_formal_n == 0` (`QUARTERLY_ROSTER_AUTHORITY_CONFLICT`
   otherwise), `roster_span_conflict_n == 0` (`ROSTER_SPAN_CONFLICT` otherwise),
   and the superseded V07.3 partial union must be a subset of the V07.4 formal
-  identity with a valid historical span (`AUTHORITY_CONFLICT` otherwise).
+  identity (`unknown symbol -> AUTHORITY_CONFLICT`). No V07.3 union symbol is
+  required to overlap a quarterly-end sample (FIX01 rule): stock_basic is the
+  identity authority and a quarterly sample must never negate a short-lived
+  symbol.
 - `formal_not_seen_in_quarterly_sample_n` is an OBSERVATION / CROSSCHECK only
   and never blocks Stage B.
 - Execution: single shared Baostock session, no concurrent connections;
@@ -411,7 +414,9 @@ cost without adding any formal identity authority.
 Stage B final identity receipt uses `route =
 V07.4_stock_basic_plus_quarterly_roster_audit`, `identity_authority =
 BAOSTOCK_QUERY_STOCK_BASIC`, `audit_method = QUARTERLY_LAST_TRADING_DAY`, and no
-longer claims a 2,580-date closure. BJ policy is unchanged.
+longer claims a 2,580-date closure. BJ historical unresolved verdict remains
+`UNKNOWN_CARRIED`; under V08 the current BJ execution scope is
+`DEFERRED_EXTENSION` (not evaluated, never 0/empty/PASS).
 
 ### Stage C — Merge BSE/live-missing identities
 

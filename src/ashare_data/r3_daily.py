@@ -1,10 +1,12 @@
 """R3 DAILY FOUNDATION control plane.
 
-This module implements the R3-DAILY-FOUNDATION-V07.2 plan (Sol AUDIT_PASS at
-``PLAN_SHA``). It is the only authorized R3 data-execution surface: a thin
-service-owned orchestrator on top of the pinned CNEquity raw adapters. It
-deliberately does not call the generic ``step_daily_bars``/``cne init``/``cne
-run``/retry paths, writes no derived dataset, and never cleans staging.
+Baseline: the R3-DAILY-FOUNDATION V07.2/V07.4 reviewed plan lineage (Sol
+AUDIT_PASS at ``PLAN_SHA``). Current scope decision: V08 SH/SZ MVP
+(``V08_SCOPE_DECISION_SHA``), under which BJ is DEFERRED_EXTENSION. This module
+is the only authorized R3 data-execution surface: a thin service-owned
+orchestrator on top of the pinned CNEquity raw adapters. It deliberately does
+not call the generic ``step_daily_bars``/``cne init``/``cne run``/retry paths,
+writes no derived dataset, and never cleans staging.
 
 Fail-closed invariants enforced here:
 * exact reviewed plan SHA and Git base;
@@ -189,6 +191,9 @@ R3_HISTORY_START = date(2016, 1, 1)
 R3_DAILY_AS_OF = date(2026, 8, 17)
 PLAN_SHA = "3ab1f184edeea1d0e408c45df4a706248b6558d0"
 BASE_HEAD = "0254122a99f0a365d2be12f29a2a59b951497fd3"
+# Independently reviewed authority point for the V08 SH/SZ MVP scope decision;
+# a child of this commit must remain an ancestor of every executing HEAD.
+V08_SCOPE_DECISION_SHA = "00085fed36f50312b6a5475dc26f0c5e347c6768"
 
 BJ_HISTORICAL_AUTHORITY_VERDICT = "UNPROVABLE_BOUNDED_RESEARCH"
 HISTORICAL_DELISTED_BJ_LABEL = "UNKNOWN_CARRIED"
@@ -824,6 +829,12 @@ class R3Runner:
             raise R3Error(
                 "PLAN_NOT_ANCESTOR", f"repo HEAD lacks reviewed plan {PLAN_SHA}"
             )
+        if not has_ancestor(self.repo_root, V08_SCOPE_DECISION_SHA):
+            raise R3Error(
+                "V08_SCOPE_NOT_ANCESTOR",
+                f"repo HEAD lacks reviewed V08 scope decision "
+                f"{V08_SCOPE_DECISION_SHA}",
+            )
         self.cfg: Config = load_config(self.config_path)
         if getattr(self.cfg, "data_root", None) is None:
             raise R3Error("CONFIG_ROOT", "data root not set; refusing to execute")
@@ -1267,8 +1278,10 @@ class R3Runner:
 
         No Sina issued-code sweep: SH/SZ historical identity is Baostock
         query_stock_basic (authority), the roster is a quarterly last-trading-day
-        audit / crosscheck only; BJ current identity from EastMoney clist; BJ
-        historical remains UNPROVABLE_BOUNDED_RESEARCH -> UNKNOWN_CARRIED.
+        audit / crosscheck only. Under V08 the Stage-B current authority scope
+        is SH/SZ; BJ current/historical extension is deferred
+        (DEFERRED_EXTENSION / NOT_EVALUATED / UNKNOWN_CARRIED), so Stage B makes
+        no EastMoney clist call.
 
         Re-entry is same-stage resume/transition: when the interrupted run
         already left current=B_discovery running on the exact A prefix, we do not
