@@ -914,14 +914,22 @@ class R3Runner:
             raise R3Error("FORBIDDEN_STEP", f"step not allowed: {set(steps) - allowed}")
         engine = JobEngine(self.cfg)
         run_id = self._new_run(f"r3_{steps[0]}")
-        result = engine.run_job(
-            f"r3_{steps[0]}",
-            self.daily_as_of,
-            steps=steps,
-            backfill=True,
-            run_id=run_id,
-            finalize_run=False,
-        )
+        try:
+            result = engine.run_job(
+                f"r3_{steps[0]}",
+                self.daily_as_of,
+                steps=steps,
+                backfill=True,
+                run_id=run_id,
+                finalize_run=False,
+            )
+        except Exception as exc:
+            # the created manifest run must reach a terminal failed status even
+            # when run_job itself raises (no compact, no machine.complete)
+            Manifest(self.cfg.manifest_path).finish_run(
+                run_id, "failed", error_message=f"{type(exc).__name__}: {exc}"
+            )
+            raise
         return {"run_id": run_id, "result": result}
 
     def _compact(self, run_id: str) -> dict[str, Any]:
@@ -1015,7 +1023,19 @@ class R3Runner:
         )
         before = {"run_status": run_status, "batch_statuses": statuses}
         idempotent = run_status == "success"
-        if not idempotent:
+        if idempotent:
+            # already-success: verify manifest rows == state A evidence rows
+            run_row = manifest.get_run(run_id)
+            _rr = dict(run_row) if run_row is not None else {}
+            manifest_rows_read = int(_rr.get("rows_read") or 0)
+            manifest_rows_written = int(_rr.get("rows_written") or 0)
+            if manifest_rows_read != rows_read or manifest_rows_written != rows_written:
+                raise R3Error(
+                    "A_MANIFEST_RECOVERY_MISMATCH",
+                    f"success run rows ({manifest_rows_read}/{manifest_rows_written}) "
+                    f"!= A evidence rows ({rows_read}/{rows_written})",
+                )
+        else:
             if run_status != "running":
                 raise R3Error(
                     "A_MANIFEST_RECOVERY_MISMATCH",
@@ -1080,12 +1100,13 @@ class R3Runner:
                     "a_finalize_run_id": finalized["run_id"],
                 }
             )
-            self.machine.abandon_current(
-                "B_discovery",
-                reason="LEGACY_SINA_PARTIAL_SUPERSEDED_BY_V07_2",
-                replacement="V07.2_identity_completion",
-            )
-            state_after = self.machine.load()
+            # deterministic target state; abandon must come ONLY after the
+            # recovery receipt is durably written (fail-closed order)
+            projected_state_after = {
+                "status": "pending",
+                "current": None,
+                "completed": ["A_instruments"],
+            }
             receipt = {
                 "recovery_type": "R3_INTERRUPTED_CONTROL_PLANE_RECOVERY",
                 "prior_state_hash": prior_hash,
@@ -1098,17 +1119,26 @@ class R3Runner:
                 "legacy_b_classification": "B_PARTIAL_NO_COMPLETE_RECEIPT_LEGACY_SINA",
                 "legacy_b_evidence_preserved": True,
                 "v072_identity_receipt_present_before": bool(identity_before),
-                "state_after": {
-                    "status": state_after["status"],
-                    "current": state_after.get("current"),
-                    "completed": state_after["completed"],
-                },
+                "state_after": projected_state_after,
                 "recovery_timestamp": datetime.now(timezone.utc).isoformat(),
                 "plan_sha": self.plan_sha,
             }
             atomic_write_json(
                 self.meta / "control-plane-recovery-v01.json", receipt
             )
+            # abandon the legacy B marker LAST; if receipt write failed above,
+            # current stays B_discovery/running and re-entry stays blocked.
+            self.machine.abandon_current(
+                "B_discovery",
+                reason="LEGACY_SINA_PARTIAL_SUPERSEDED_BY_V07_2",
+                replacement="V07.2_identity_completion",
+            )
+            state_after = self.machine.load()
+            receipt["state_after"] = {
+                "status": state_after["status"],
+                "current": state_after.get("current"),
+                "completed": state_after["completed"],
+            }
             return receipt
         finally:
             self._release_lock(fd)

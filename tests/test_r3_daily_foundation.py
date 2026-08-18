@@ -1667,6 +1667,7 @@ def _incident_ctx(
     identity_receipt=False,
     batches=(("instruments", "success"), ("compact", "success")),
     run_status="running",
+    success_rows=None,
     a_compact_status="success",
     current="B_discovery",
     completed=None,
@@ -1690,7 +1691,11 @@ def _incident_ctx(
         )
         manifest.finish_batch(rid, bid, st, rows_read=1, rows_written=1)
     if run_status == "success":
-        manifest.finish_run(rid, "success", rows_read=1, rows_written=1)
+        manifest.finish_run(
+            rid, "success",
+            rows_read=success_rows if success_rows is not None else 1,
+            rows_written=success_rows if success_rows is not None else 1,
+        )
     state = {
         "status": "running",
         "current": current,
@@ -1886,3 +1891,116 @@ def test_future_stage_a_terminalizes_manifest(monkeypatch, tmp_path):
     monkeypatch.setattr(r3.R3Runner, "_compact", lambda self, rid: {"status": "success"})
     runner.stage_instruments()
     assert manifest_calls == [("arun", "success", 7, 7)]
+
+
+def test_recovery_receipt_write_failure_leaves_b_running(tmp_path, monkeypatch):
+    runner, manifest, rid, meta = _incident_ctx(monkeypatch, tmp_path)
+    real = r3.atomic_write_json
+
+    def guarded(path, text):
+        if "control-plane-recovery-v01.json" in str(path):
+            raise RuntimeError("receipt write failed")
+        return real(path, text)
+
+    monkeypatch.setattr(r3, "atomic_write_json", guarded)
+    with pytest.raises(RuntimeError, match="receipt write failed"):
+        runner.recover_interrupted_control_plane()
+    after = runner.machine.load()
+    assert after["current"] == "B_discovery"
+    assert after["status"] == "running"
+    assert after["completed"] == ["A_instruments"]
+    with pytest.raises(R3Error, match="STAGE_IN_PROGRESS"):
+        runner.machine.enter("B_discovery")  # B still blocked
+
+
+def test_recovery_final_state_matches_receipt(tmp_path, monkeypatch):
+    runner, manifest, rid, meta = _incident_ctx(monkeypatch, tmp_path)
+    result = runner.recover_interrupted_control_plane()
+    assert result["state_after"] == {
+        "status": "pending", "current": None, "completed": ["A_instruments"],
+    }
+    after = runner.machine.load()
+    assert after["status"] == "pending"
+    assert after["current"] is None
+    assert after["completed"] == ["A_instruments"]
+
+
+def test_recovery_abandon_failure_state(tmp_path, monkeypatch):
+    runner, manifest, rid, meta = _incident_ctx(monkeypatch, tmp_path)
+
+    def boom_abandon(self, stage, **kw):
+        raise R3Error("ABANDON_BOOM", "abandon failed")
+
+    monkeypatch.setattr(r3.StageMachine, "abandon_current", boom_abandon)
+    with pytest.raises(R3Error, match="ABANDON_BOOM"):
+        runner.recover_interrupted_control_plane()
+    assert (meta / "control-plane-recovery-v01.json").exists()
+    after = runner.machine.load()
+    assert after["completed"] == ["A_instruments"]  # B never added
+    assert after["current"] == "B_discovery"  # abandon failed -> unchanged
+    assert not (meta / "r3-identity-receipt.json").exists()
+
+
+def test_run_job_exception_terminalizes_manifest(tmp_path, monkeypatch):
+    import types
+
+    db_path = tmp_path / "manifest.db"
+    manifest = r3.Manifest(db_path)
+    rid = manifest.start_run("r3_instruments", {})
+
+    class FakeEngine:
+        def run_job(self, *a, **k):
+            raise RuntimeError("run_job boom")
+
+    monkeypatch.setattr(r3, "JobEngine", lambda cfg: FakeEngine())
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(manifest_path=db_path)
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner._new_run = lambda job: rid
+    with pytest.raises(RuntimeError, match="run_job boom"):
+        runner._run_single_step_runjob(["instruments"])
+    row = manifest.get_run(rid)
+    assert row["status"] == "failed"
+    assert row["finished_at"] is not None
+    assert row["error_message"]
+
+
+def test_compact_exception_terminalizes_manifest(tmp_path, monkeypatch):
+    import types
+
+    db_path = tmp_path / "manifest.db"
+    manifest = r3.Manifest(db_path)
+    rid = manifest.start_run("r3_instruments", {})
+
+    def boom_compact(self, rid_):
+        raise R3Error("COMPACT_FAILED", "boom compact")
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(manifest_path=db_path)
+    monkeypatch.setattr(
+        r3.R3Runner, "_run_single_step_runjob",
+        lambda self, steps: {"run_id": rid, "result": {"rows_read": 1, "rows_written": 1}},
+    )
+    monkeypatch.setattr(r3.R3Runner, "_compact", boom_compact)
+    with pytest.raises(R3Error, match="COMPACT_FAILED"):
+        runner._run_single_step_terminal(["instruments"])
+    row = manifest.get_run(rid)
+    assert row["status"] == "failed"
+    assert row["finished_at"] is not None
+    assert row["error_message"]
+
+
+def test_a_success_rows_mismatch_blocks(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path, run_status="success", success_rows=99,
+    )
+    with pytest.raises(R3Error, match="A_MANIFEST_RECOVERY_MISMATCH"):
+        runner.finalize_completed_a_manifest()
+
+
+def test_a_success_rows_equal_idempotent(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path, run_status="success", success_rows=1,
+    )
+    out = runner.finalize_completed_a_manifest()
+    assert out["idempotent"] is True
