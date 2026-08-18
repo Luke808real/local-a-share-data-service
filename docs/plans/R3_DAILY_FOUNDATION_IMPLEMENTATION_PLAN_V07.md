@@ -150,24 +150,51 @@ SOURCE_ERROR    -> transport/auth/parse failure -> NEVER becomes NOT_EXISTS
   — counted, hashed, never silently excluded from reporting, and it explicitly
   prevents claiming full all-A survivorship completeness for BJ.
 
-### 5a. EastMoney tri-state — thin service-owned wrapper (V07.1 correction)
+### 5a. EastMoney tri-state — thin service-owned wrapper (V07.2 correction)
 
 Pinned `eastmoney.bars.fetch_daily_bars()` must NOT be used directly as the
 authoritative tri-state fetcher. The plan defines a thin service-owned wrapper
-with exactly:
+that returns EXACTLY one of three states:
 
 ```text
-known BJ symbol + valid bars         -> EXISTS
-HTTP / transport / parse failure    -> SOURCE_ERROR
-empty / invalid response for a known
-BJ symbol                           -> SOURCE_ERROR or UNEXPLAINED_MISSING
-                                          (NEVER NOT_EXISTS)
+EXISTS
+NOT_EXISTS
+SOURCE_ERROR
 ```
 
-An empty `push2his` response for a symbol already known from the security
-master is never used to infer that the security does not exist. `NOT_EXISTS`
-is reserved exclusively for sources whose protocol distinguishes proven
-absence from error.
+Mapping for a BJ symbol already confirmed in the security master:
+
+```text
+valid bars                             -> EXISTS
+HTTP / transport / parse failure       -> SOURCE_ERROR
+empty response                         -> SOURCE_ERROR (reason=EMPTY_KNOWN_SYMBOL)
+invalid payload / non-bar payload      -> SOURCE_ERROR (reason=INVALID_KNOWN_SYMBOL_RESPONSE)
+```
+
+An empty `push2his` response for a known BJ symbol NEVER becomes `NOT_EXISTS`.
+`NOT_EXISTS` is reserved exclusively for a protocol/source that can positively
+prove identity absence (the wrapper never returns it on its own for a known
+symbol).
+
+### 5b. Coverage layer (V07.2) — separate enum from the wrapper
+
+The wrapper state and the R3 coverage classification are two distinct layers
+and their enums are never mixed:
+
+```text
+provider wrapper:
+  EXISTS / NOT_EXISTS / SOURCE_ERROR
+
+coverage classifier (only after exact retries / fallback / reconciliation):
+  OBSERVED
+  EXPLAINED_MISSING
+  UNEXPLAINED_MISSING
+  PENDING_R4_STATUS_EXPLANATION
+```
+
+`UNEXPLAINED_MISSING` is produced only by the coverage classifier after exact
+scoped retries / fallback / reconciliation are exhausted — never by the wrapper
+itself.
 
 ## 6. DAILY_READY behavior (V07.1 frozen)
 

@@ -148,19 +148,32 @@ R4_EXECUTION = FORBIDDEN
 
 until `BJ_HISTORICAL_AUTHORITY = PROVEN` AND `BJ_HISTORICAL_UNRESOLVED_N = 0`.
 
-### EastMoney tri-state (thin service-owned wrapper)
+### EastMoney tri-state (thin service-owned wrapper) — V07.2 layering
 
 Pinned `eastmoney.bars.fetch_daily_bars()` is never used directly as the
-authoritative tri-state fetcher. Wrapper contract:
+authoritative tri-state fetcher. The wrapper returns EXACTLY one of:
 
 ```text
-known BJ symbol + valid bars  -> EXISTS
-HTTP/transport/parse failure -> SOURCE_ERROR
-empty/invalid for known BJ   -> SOURCE_ERROR or UNEXPLAINED_MISSING
-                                (NEVER NOT_EXISTS)
+EXISTS
+NOT_EXISTS
+SOURCE_ERROR
 ```
 
-An empty `push2his` response never infers a security does not exist.
+For a BJ symbol already confirmed in the security master:
+
+```text
+valid bars                 -> EXISTS
+HTTP/transport/parse fail  -> SOURCE_ERROR
+empty response             -> SOURCE_ERROR (reason=EMPTY_KNOWN_SYMBOL)
+invalid payload            -> SOURCE_ERROR (reason=INVALID_KNOWN_SYMBOL_RESPONSE)
+```
+
+Empty/invalid for a known BJ NEVER becomes `NOT_EXISTS`; `NOT_EXISTS` is
+reserved for a protocol/source that positively proves identity absence.
+`UNEXPLAINED_MISSING` is produced only by the separate coverage classifier
+(OBSERVED / EXPLAINED_MISSING / UNEXPLAINED_MISSING /
+PENDING_R4_STATUS_EXPLANATION) after exact retries/fallback/reconciliation —
+never by the wrapper. The two enums are never mixed.
 
 ### Baostock authority + closure
 
