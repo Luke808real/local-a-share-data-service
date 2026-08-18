@@ -1653,3 +1653,236 @@ def test_callable_contract_signature_mismatch(monkeypatch):
     monkeypatch.setattr(r3, "APPROVED_CALLABLES", bogus)
     with pytest.raises(R3Error, match="RUNTIME_CONTRACT_DRIFT"):
         r3.approved_callable_contract()
+
+
+# ============================================================================
+# interrupted control-plane recovery (V01)
+# ============================================================================
+
+
+def _incident_ctx(
+    monkeypatch,
+    tmp_path,
+    *,
+    identity_receipt=False,
+    batches=(("instruments", "success"), ("compact", "success")),
+    run_status="running",
+    a_compact_status="success",
+    current="B_discovery",
+    completed=None,
+):
+    import types
+
+    completed = completed if completed is not None else ["A_instruments"]
+    meta = tmp_path / "meta" / "asl" / "r3"
+    meta.mkdir(parents=True)
+    db_path = tmp_path / "manifest.db"
+    manifest = r3.Manifest(db_path)
+    rid = manifest.start_run("r3_instruments", {"trade_date": R3_DAILY_AS_OF.isoformat(), "backfill": True})
+    for ds, st in batches:
+        bid = f"b-{ds}"
+        manifest.start_batch(
+            rid, bid, task_id=ds, dataset=ds,
+            symbols=["600000.SH"],
+            window_start=R3_HISTORY_START.isoformat(),
+            window_end=R3_DAILY_AS_OF.isoformat(),
+            blocks_compaction=True,
+        )
+        manifest.finish_batch(rid, bid, st, rows_read=1, rows_written=1)
+    if run_status == "success":
+        manifest.finish_run(rid, "success", rows_read=1, rows_written=1)
+    state = {
+        "status": "running",
+        "current": current,
+        "completed": list(completed),
+        "started_at": "2026-08-18T02:10:37.433982+00:00",
+        "evidence": {
+            "A_instruments": {
+                "job": {
+                    "run_id": rid,
+                    "result": {"rows_read": 1, "rows_written": 1, "status": "success"},
+                },
+                "compact": {"status": a_compact_status},
+            }
+        },
+    }
+    (meta / "execution-state.json").write_text(json.dumps(state))
+    if identity_receipt:
+        (meta / "r3-identity-receipt.json").write_text(json.dumps({"x": 1}))
+    # legacy evidence preserved
+    (meta / "r3-discovery-pacing.json").write_text(json.dumps({"legacy": True}))
+    (meta / "service-ledger.jsonl").write_text(
+        json.dumps({"legacy": "B_discovery_partial", "stage": "B_discovery"}) + "\n"
+    )
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=db_path, staging_root=tmp_path / "staging",
+        meta_root=tmp_path / "meta",
+    )
+    runner.meta = meta
+    runner.state_path = meta / "execution-state.json"
+    runner.ledger = r3.ServiceLedger(meta / "service-ledger.jsonl")
+    runner.machine = r3.StageMachine(runner.state_path)
+    runner.plan_sha = PLAN_SHA
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    return runner, manifest, rid, meta
+
+
+def _network_sentinels(monkeypatch):
+    sent = []
+    for name in ("fetch_daily_bars_parallel", "em_daily_tristate"):
+        def boom(*a, **k):
+            sent.append(name)
+            raise AssertionError(f"network fn called: {name}")
+        monkeypatch.setattr(r3, name, boom)
+    return sent
+
+
+def test_abandon_exact_incident(tmp_path):
+    state = {
+        "status": "running", "current": "B_discovery",
+        "completed": ["A_instruments"],
+        "started_at": "t0", "evidence": {"A_instruments": {}},
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(state))
+    machine = r3.StageMachine(p)
+    out = machine.abandon_current(
+        "B_discovery", reason="LEGACY_SINA_PARTIAL_SUPERSEDED_BY_V07_2",
+        replacement="V07.2_identity_completion",
+    )
+    assert out["current"] is None
+    assert out["status"] == "pending"
+    assert out["completed"] == ["A_instruments"]  # B NOT added
+    assert out["abandoned"][0]["stage"] == "B_discovery"
+
+
+def test_abandon_refuses_wrong_current(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"status": "running", "current": "C_merge",
+                             "completed": ["A_instruments", "B_discovery"]}))
+    machine = r3.StageMachine(p)
+    with pytest.raises(R3Error, match="RECOVERY_STATE_MISMATCH"):
+        machine.abandon_current("B_discovery", reason="x")
+
+
+def test_abandon_refuses_wrong_prefix(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"status": "running", "current": "B_discovery",
+                             "completed": []}))
+    machine = r3.StageMachine(p)
+    with pytest.raises(R3Error, match="RECOVERY_STATE_MISMATCH"):
+        machine.abandon_current("B_discovery", reason="x")
+
+
+def test_a_manifest_finalize_success_and_idempotent(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(monkeypatch, tmp_path)
+    first = runner.finalize_completed_a_manifest()
+    assert first["status"] == "success"
+    assert first["idempotent"] is False
+    second = runner.finalize_completed_a_manifest()
+    assert second["idempotent"] is True
+    assert manifest.get_run(rid)["status"] == "success"
+
+
+def test_a_manifest_incomplete_batch_blocks(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path,
+        batches=(("instruments", "success"), ("compact", "failed")),
+    )
+    with pytest.raises(R3Error, match="A_MANIFEST_RECOVERY_MISMATCH"):
+        runner.finalize_completed_a_manifest()
+
+
+def test_a_manifest_compact_evidence_blocks(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path, a_compact_status="warning",
+    )
+    with pytest.raises(R3Error, match="A_MANIFEST_RECOVERY_MISMATCH"):
+        runner.finalize_completed_a_manifest()
+
+
+def test_already_success_a_idempotent(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path, run_status="success",
+    )
+    out = runner.finalize_completed_a_manifest()
+    assert out["idempotent"] is True
+    assert out["status"] == "success"
+
+
+def test_recovery_preserves_legacy_and_final_state(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(monkeypatch, tmp_path)
+    pacing_before = (meta / "r3-discovery-pacing.json").read_bytes()
+    ledger_before = (meta / "service-ledger.jsonl").read_bytes()
+    result = runner.recover_interrupted_control_plane()
+    assert (meta / "r3-discovery-pacing.json").read_bytes() == pacing_before
+    # ledger gains a recovery append but legacy record prefix preserved
+    ledger_after = (meta / "service-ledger.jsonl").read_text()
+    assert "B_discovery_partial" in ledger_after
+    assert result["legacy_b_evidence_preserved"] is True
+    after = runner.machine.load()
+    assert after["completed"] == ["A_instruments"]
+    assert after["current"] is None
+    assert after["abandoned"][0]["replacement"] == "V07.2_identity_completion"
+
+
+def test_recovery_identity_receipt_blocks(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path, identity_receipt=True,
+    )
+    with pytest.raises(R3Error, match="B_RECOVERY_NOT_SAFE"):
+        runner.recover_interrupted_control_plane()
+
+
+def test_recovery_wrong_current_blocks(monkeypatch, tmp_path):
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path, current="C_merge",
+    )
+    with pytest.raises(R3Error, match="B_RECOVERY_NOT_SAFE"):
+        runner.recover_interrupted_control_plane()
+
+
+def test_recovery_no_provider_calls_and_releases_lock(monkeypatch, tmp_path):
+    sent = _network_sentinels(monkeypatch)
+    runner, manifest, rid, meta = _incident_ctx(
+        monkeypatch, tmp_path,
+        a_compact_status="warning",  # finalize fails -> exception path
+    )
+    with pytest.raises(R3Error, match="A_MANIFEST_RECOVERY_MISMATCH"):
+        runner.recover_interrupted_control_plane()
+    assert sent == []
+    assert runner.service_lock_active() is False  # lock released after exception
+
+
+def test_future_stage_a_terminalizes_manifest(monkeypatch, tmp_path):
+    import types
+
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = types.SimpleNamespace(manifest_path=tmp_path / "m.db")
+    runner.meta = tmp_path / "meta" / "asl" / "r3"
+
+    class StubMachine:
+        def enter(self, s):
+            return {}
+
+        def complete(self, s, ev):
+            return {}
+
+    runner.machine = StubMachine()
+    manifest_calls = []
+
+    class FakeManifest2:
+        def finish_run(self, run_id, status, rows_read=0, rows_written=0, error_message=None):
+            manifest_calls.append((run_id, status, rows_read, rows_written))
+
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest2())
+    monkeypatch.setattr(
+        r3.R3Runner, "_run_single_step_runjob",
+        lambda self, steps: {"run_id": "arun", "result": {"rows_read": 7, "rows_written": 7, "status": "success"}},
+    )
+    monkeypatch.setattr(r3.R3Runner, "_compact", lambda self, rid: {"status": "success"})
+    runner.stage_instruments()
+    assert manifest_calls == [("arun", "success", 7, 7)]

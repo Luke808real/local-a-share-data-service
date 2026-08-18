@@ -644,6 +644,50 @@ class StageMachine:
         self.save(state)
         return state
 
+    def abandon_current(
+        self,
+        expected_stage: str,
+        *,
+        reason: str,
+        replacement: str | None = None,
+    ) -> dict[str, Any]:
+        """Append-only abandon of an interrupted running stage (fail-closed).
+
+        Required: current == expected_stage, status == running, completed == the
+        exact legal prefix of expected_stage. After: completed unchanged,
+        current = None, status = pending, and an append-only `abandoned` record
+        is added. Never adds the stage to completed, never deletes evidence.
+        """
+        state = self.load()
+        if state.get("current") != expected_stage or state.get("status") != "running":
+            raise R3Error(
+                "RECOVERY_STATE_MISMATCH",
+                f"expected current={expected_stage} running; got current="
+                f"{state.get('current')} status={state.get('status')}",
+            )
+        if expected_stage not in ENTRY_ORDER:
+            raise R3Error("STAGE_UNKNOWN", f"cannot abandon unknown stage {expected_stage}")
+        index = ENTRY_ORDER.index(expected_stage)
+        expected_prefix = list(ENTRY_ORDER[:index])
+        if state["completed"] != expected_prefix:
+            raise R3Error(
+                "RECOVERY_STATE_MISMATCH",
+                f"abandon {expected_stage} requires completed == "
+                f"{expected_prefix}; got {state['completed']}",
+            )
+        recorded = {
+            "stage": expected_stage,
+            "reason": reason,
+            "replacement": replacement,
+            "abandoned_at": datetime.now(timezone.utc).isoformat(),
+            "prior_started_at": state.get("started_at"),
+        }
+        state.setdefault("abandoned", []).append(recorded)
+        state["current"] = None
+        state["status"] = "pending"
+        self.save(state)
+        return state
+
 
 # --- R3 runner ------------------------------------------------------------
 
@@ -887,14 +931,195 @@ class R3Runner:
             raise R3Error("COMPACT_FAILED", f"compact failed: {out}")
         return out
 
+    def _run_single_step_terminal(self, steps: list[str]) -> dict[str, Any]:
+        """Single-step run + compact + manifest terminalize (success/failed).
+
+        Fixes the future-Stage-A gap: a successful run_job (finalize_run=False)
+        followed by compact is now finalized with Manifest.finish_run success.
+        Any failure is auditable with finish_run failed; never a fake success.
+        """
+        out = self._run_single_step_runjob(steps)
+        run_id = out["run_id"]
+        try:
+            compact = self._compact(run_id)
+            rows_read = int(out["result"].get("rows_read") or 0)
+            rows_written = int(out["result"].get("rows_written") or 0)
+            Manifest(self.cfg.manifest_path).finish_run(
+                run_id, "success", rows_read=rows_read, rows_written=rows_written
+            )
+        except Exception as exc:
+            try:
+                Manifest(self.cfg.manifest_path).finish_run(
+                    run_id, "failed", error_message=f"{type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                pass
+            raise
+        return {"job": out, "run_id": run_id, "compact": compact}
+
+    def finalize_completed_a_manifest(self) -> dict[str, Any]:
+        """Terminalize the exact Stage-A instruments manifest run (idempotent)."""
+        state = self.machine.load()
+        completed = list(state.get("completed") or [])
+        if completed != ["A_instruments"]:
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH",
+                f"completed must be exactly ['A_instruments']; got {completed}",
+            )
+        evidence = (state.get("evidence") or {}).get("A_instruments") or {}
+        run_id = (evidence.get("job") or {}).get("run_id")
+        if not run_id:
+            raise R3Error("A_MANIFEST_RECOVERY_MISMATCH", "no A run_id in state evidence")
+        if (evidence.get("compact") or {}).get("status") != "success":
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH",
+                "A evidence compact.status != success",
+            )
+        manifest = Manifest(self.cfg.manifest_path)
+        run = manifest.get_run(run_id)
+        if run is None:
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH", f"manifest run {run_id} not found"
+            )
+        job_name = str(run["job_name"])
+        run_status = str(run["status"])
+        if job_name != "r3_instruments":
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH",
+                f"manifest job_name {job_name} != r3_instruments",
+            )
+        batches = manifest.get_batches_for_run(run_id)
+        statuses = sorted({(str(b["dataset"]), str(b["status"])) for b in batches})
+        datasets = [ds for ds, _st in statuses]
+        if "instruments" not in datasets or "compact" not in datasets:
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH",
+                f"missing instruments/compact batch; got {datasets}",
+            )
+        if any(status != "success" for _ds, status in statuses):
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH",
+                f"non-success batch statuses: {statuses}",
+            )
+        incomplete = manifest.incomplete_batch_counts_by_dataset(run_id) or {}
+        if any(n > 0 for n in incomplete.values()):
+            raise R3Error(
+                "A_MANIFEST_RECOVERY_MISMATCH",
+                f"incomplete batches present: {incomplete}",
+            )
+        rows_read = int(
+            evidence.get("job", {}).get("result", {}).get("rows_read", 0) or 0
+        )
+        rows_written = int(
+            evidence.get("job", {}).get("result", {}).get("rows_written", 0) or 0
+        )
+        before = {"run_status": run_status, "batch_statuses": statuses}
+        idempotent = run_status == "success"
+        if not idempotent:
+            if run_status != "running":
+                raise R3Error(
+                    "A_MANIFEST_RECOVERY_MISMATCH",
+                    f"manifest run status {run_status} not running",
+                )
+            manifest.finish_run(
+                run_id, "success", rows_read=rows_read, rows_written=rows_written
+            )
+        after_run = manifest.get_run(run_id)
+        after_status = str(after_run["status"]) if after_run else "UNKNOWN"
+        return {
+            "run_id": run_id,
+            "status": after_status,
+            "idempotent": bool(idempotent),
+            "rows_read": rows_read,
+            "rows_written": rows_written,
+            "a_batch_statuses": statuses,
+            "manifest_before": before,
+            "manifest_after": {"run_status": after_status},
+        }
+
+    def recover_interrupted_control_plane(self) -> dict[str, Any]:
+        """Fail-closed control-plane recovery for the B_discovery incident.
+
+        Exact incident: completed==[A_instruments], current==B_discovery,
+        status==running, and no V07.2 identity receipt. Terminalizes the exact
+        A manifest run, appends a recovery ledger event, abandons the legacy B
+        marker (append-only), writes control-plane-recovery-v01.json, then
+        releases the writer lock. No market stage, no provider, no delete.
+        """
+        fd = self._acquire_lock()
+        try:
+            state = self.machine.load()
+            current = state.get("current")
+            completed = list(state.get("completed") or [])
+            if current != "B_discovery" or completed != ["A_instruments"]:
+                raise R3Error(
+                    "B_RECOVERY_NOT_SAFE",
+                    f"incident must be current=B_discovery completed=[A]; "
+                    f"got current={current} completed={completed}",
+                )
+            prior_hash = (
+                sha256_file(self.state_path)
+                if self.state_path.exists()
+                else "0" * 64
+            )
+            identity = self.meta / "r3-identity-receipt.json"
+            identity_before = identity.exists()
+            if identity_before:
+                raise R3Error(
+                    "B_RECOVERY_NOT_SAFE",
+                    "V07.2 identity receipt present; abort recovery",
+                )
+            finalized = self.finalize_completed_a_manifest()
+            self.ledger.append(
+                {
+                    "stage": "CTRL_RECOVERY",
+                    "event": "INTERRUPTED_B_ABANDONED",
+                    "reason": "LEGACY_SINA_PARTIAL_SUPERSEDED_BY_V07_2",
+                    "replacement": "V07.2_identity_completion",
+                    "state_before_hash": prior_hash,
+                    "a_finalize_run_id": finalized["run_id"],
+                }
+            )
+            self.machine.abandon_current(
+                "B_discovery",
+                reason="LEGACY_SINA_PARTIAL_SUPERSEDED_BY_V07_2",
+                replacement="V07.2_identity_completion",
+            )
+            state_after = self.machine.load()
+            receipt = {
+                "recovery_type": "R3_INTERRUPTED_CONTROL_PLANE_RECOVERY",
+                "prior_state_hash": prior_hash,
+                "prior_current": current,
+                "prior_completed": completed,
+                "a_run_id": finalized["run_id"],
+                "a_manifest_before": finalized["manifest_before"],
+                "a_manifest_after": finalized["manifest_after"],
+                "a_batch_statuses": finalized["a_batch_statuses"],
+                "legacy_b_classification": "B_PARTIAL_NO_COMPLETE_RECEIPT_LEGACY_SINA",
+                "legacy_b_evidence_preserved": True,
+                "v072_identity_receipt_present_before": bool(identity_before),
+                "state_after": {
+                    "status": state_after["status"],
+                    "current": state_after.get("current"),
+                    "completed": state_after["completed"],
+                },
+                "recovery_timestamp": datetime.now(timezone.utc).isoformat(),
+                "plan_sha": self.plan_sha,
+            }
+            atomic_write_json(
+                self.meta / "control-plane-recovery-v01.json", receipt
+            )
+            return receipt
+        finally:
+            self._release_lock(fd)
+
     # --- stages ------------------------------------------------------------
 
     def stage_instruments(self) -> dict[str, Any]:
         self._prepare_network_env()
-        state = self.machine.enter("A_instruments")
-        out = self._run_single_step_runjob(["instruments"])
-        compact = self._compact(out["run_id"])
-        receipt = {"job": out, "compact": compact}
+        self.machine.enter("A_instruments")
+        run = self._run_single_step_terminal(["instruments"])
+        receipt = {"job": run["job"], "compact": run["compact"]}
         self.machine.complete("A_instruments", receipt)
         return receipt
 
@@ -1093,10 +1318,9 @@ class R3Runner:
     def stage_merge(self) -> dict[str, Any]:
         self._prepare_network_env()
         self.machine.enter("C_merge")
-        out = self._run_single_step_runjob(["instruments"])
-        compact = self._compact(out["run_id"])
-        self.machine.complete("C_merge", {"job": out, "compact": compact})
-        return {"job": out, "compact": compact}
+        run = self._run_single_step_terminal(["instruments"])
+        self.machine.complete("C_merge", {"job": run["job"], "compact": run["compact"]})
+        return {"job": run["job"], "compact": run["compact"]}
 
     def stage_enrich(self) -> dict[str, Any]:
         self.machine.enter("C2_enrich")
@@ -1310,10 +1534,9 @@ class R3Runner:
         engine = JobEngine(self.cfg)
         engine.config._backfill = True  # type: ignore[attr-defined]
         engine.config._backfill_start = self.history_start  # type: ignore[attr-defined]
-        out = self._run_single_step_runjob(["trading_calendar"])
-        compact = self._compact(out["run_id"])
-        self.machine.complete("D_calendar", {"job": out, "compact": compact})
-        return {"job": out, "compact": compact}
+        run = self._run_single_step_terminal(["trading_calendar"])
+        self.machine.complete("D_calendar", {"job": run["job"], "compact": run["compact"]})
+        return {"job": run["job"], "compact": run["compact"]}
 
     def stage_delisted(self) -> dict[str, Any]:
         self.machine.enter("E_delisted")

@@ -47,8 +47,20 @@ def main() -> int:
         ],
     )
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument(
+        "--recover-interrupted-control-plane",
+        action="store_true",
+        help="Run the fail-closed interrupted-state recovery (mutually "
+        "exclusive with --stage / --preflight-only).",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    if args.recover_interrupted_control_plane and (args.stage or args.preflight_only):
+        parser.error(
+            "--recover-interrupted-control-plane is mutually exclusive with "
+            "--stage and --preflight-only"
+        )
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
@@ -62,6 +74,11 @@ def main() -> int:
         plan_sha=args.plan_sha,
     )
     try:
+        if args.recover_interrupted_control_plane:
+            prepare = runner.preflight()
+            result = runner.recover_interrupted_control_plane()
+            print(json.dumps({"recovery": result}, indent=2, default=str))
+            return 0
         if args.preflight_only or args.stage == "preflight":
             receipt = runner.preflight()
             print(json.dumps(receipt, indent=2, default=str))
