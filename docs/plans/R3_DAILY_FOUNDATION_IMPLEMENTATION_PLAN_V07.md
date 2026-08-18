@@ -1,7 +1,8 @@
-# R3 DAILY FOUNDATION IMPLEMENTATION PLAN — V07 (PROPOSED REVISION)
+# R3 DAILY FOUNDATION IMPLEMENTATION PLAN — V07.1 (PROPOSED REVISION, CORRECTED)
 
-**STATUS:** `PENDING_GPT_5_6_SOL_AUDIT` — author-drafted under Sol decision
-`approve-v07-revision`. NOT executable. The frozen plan
+**STATUS:** `PENDING_GPT_5_6_SOL_AUDIT — V07.1` — author-drafted under Sol
+decision `approve-v07-revision`, then corrected per task
+`R3_V07_1_PLAN_CORRECTION`. NOT executable. The frozen plan
 `R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN.md` at SHA
 `d13e2ecefbb66250b73aca4312dc8706a4d2b7a3` remains authoritative until this V07
 revision passes an independent plan audit.
@@ -53,6 +54,41 @@ delisted security be present and resolvable, without silently omitting any.
 | D BJ historical | **None pinned** — EM clist is current-only; TDX has no BJ; Baostock `_is_stock` rejects BJ | `adapters/baostock/delisted_bars.py:41-57`; `adapters/tdx_protocol/minute_bars.py:216-219` |
 | E survivorship (SH/SZ) | Baostock rosters give the positive traded set per trading day; closed over R3 window | `delisted_bars.roster_on` / `steps/delisted.py` `_delisted_universe` |
 | F tri-state | All adapters above: EXISTS / NOT_EXISTS / SOURCE_ERROR; failures must not set NOT_FOUND/NOT_EXISTS | pinned adapter code; V07 contract below |
+
+### 3a. Baostock authority split and roster-closure receipt (V07.1 correction)
+
+Authority is split explicitly:
+
+```text
+Baostock stock_basic (query_stock_basic)
+  = SH/SZ FORMAL HISTORICAL IDENTITY AUTHORITY
+    (listed + delisted names, list_date/delist_date)
+
+roster_on (query_all_stock per day)
+  = CLOSURE / RECONCILIATION EVIDENCE only
+```
+
+Any claim that the SH/SZ universe is `roster_closed` requires a receipt:
+
+```text
+expected_dates_n
+success_dates_n
+failed_dates_n
+union_symbol_n
+union_symbol_hash
+stock_basic_vs_roster_diff
+unresolved_n
+```
+
+And the fail-closed rule:
+
+```text
+failed_dates_n > 0  =>  NOT CLOSED
+```
+
+`NOT CLOSED` means the SH/SZ historical delisted set cannot be certified on that
+evidence and must be surfaced as explicit residual, never silently treated as
+complete.
 
 ## 4. Dependency graphs
 
@@ -114,26 +150,68 @@ SOURCE_ERROR    -> transport/auth/parse failure -> NEVER becomes NOT_EXISTS
   — counted, hashed, never silently excluded from reporting, and it explicitly
   prevents claiming full all-A survivorship completeness for BJ.
 
-## 6. DAILY_READY impact
+### 5a. EastMoney tri-state — thin service-owned wrapper (V07.1 correction)
+
+Pinned `eastmoney.bars.fetch_daily_bars()` must NOT be used directly as the
+authoritative tri-state fetcher. The plan defines a thin service-owned wrapper
+with exactly:
+
+```text
+known BJ symbol + valid bars         -> EXISTS
+HTTP / transport / parse failure    -> SOURCE_ERROR
+empty / invalid response for a known
+BJ symbol                           -> SOURCE_ERROR or UNEXPLAINED_MISSING
+                                          (NEVER NOT_EXISTS)
+```
+
+An empty `push2his` response for a symbol already known from the security
+master is never used to infer that the security does not exist. `NOT_EXISTS`
+is reserved exclusively for sources whose protocol distinguishes proven
+absence from error.
+
+## 6. DAILY_READY behavior (V07.1 frozen)
 
 The DAILY_READY quality threshold is **unchanged**. V07 changes the *inputs*
-that must substantiate it:
+that must substantiate it, and the `UNKNOWN_CARRIED` bucketing is now frozen
+with explicit phase gating:
 
 - SH/SZ: roster-closed positive coverage (equivalent or stronger than the Sina
   sweep) — retains the concrete sanity checks (daily_duplicate=0, date bounds,
   value checks, unit checks, per-active-symbol positive-volume coverage).
 - BJ current: EM-clist identity completeness (unchanged C2 gate).
-- BJ historical delisted: `UNKNOWN_CARRIED` may remain as an explicitly
-  carried, hashed bucket; it is **not** counted as EXPLAINED and must be called
-  out in the author report, verifier output, and PROJECT_STATE carry-forward.
-  R3 does not claim BJ-survivorship-complete; full all-A survivorship for BJ
-  becomes a documented remaining blocker until a source proves BJ delisted
-  history.
+- `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED` may exist as an R3 intermediate
+  state, but it freezes the phase:
+
+```text
+DAILY_READY = FALSE
+R3_EXIT      = BLOCKED_BJ_HISTORICAL_IDENTITY
+R4_EXECUTION = FORBIDDEN
+```
+
+  until BOTH:
+
+```text
+BJ_HISTORICAL_AUTHORITY      = PROVEN
+BJ_HISTORICAL_UNRESOLVED_N   = 0
+```
+
+The `UNKNOWN_CARRIED` bucket is counted and hashed, is never counted as
+EXPLAINED, and must be surfaced in the author report, verifier output, and
+PROJECT_STATE carry-forward. R3 never claims BJ-survivorship-complete while it
+is non-empty.
+
+## 6a. Signed carry-forward (supersedes the earlier V07 §6 wording)
+
+See §6 above for the frozen `DAILY_READY = FALSE` /
+`R3_EXIT = BLOCKED_BJ_HISTORICAL_IDENTITY` / `R4_EXECUTION = FORBIDDEN` gate and
+the `PROVEN` + `BJ_HISTORICAL_UNRESOLVED_N = 0` release conditions.
 
 ## 7. Bounded research step (identity proof, not data collection)
 
-BEFORE any data stage resumes, complete a read-only investigation (pinned
-sources only) to attempt positive BJ historical delisted identity:
+BEFORE any data stage resumes, complete a read-only investigation to attempt
+positive BJ historical delisted identity. Candidates in scope:
+
+### 7a. Pinned-source candidates (already-pinned CNEquity v0.7.2)
 
 1. EM datacenter endpoints available from pinned `eastmoney` adapters (e.g.,
    `datacenter-web.eastmoney.com`) for delisted/status fields on BJ codes.
@@ -142,10 +220,55 @@ sources only) to attempt positive BJ historical delisted identity:
 3. Deterministic cross-check of current BJ list coverage between EM clist and
    any secondary pinned source.
 
-Outcome is a `BJ_HISTORICAL_AUTHORITY` verdict: `PROVEN_<source>` or
-`UNPROVABLE_PINNED`. The verdict is recorded under `meta/asl/r3/` and in the
-author report. If `PROVEN`, that source becomes the BJ historical authority.
-If `UNPROVABLE`, the plan proceeds with `UNKNOWN_CARRIED` (fail-closed).
+### 7b. BSE official public-source candidates (bounded research, V07.1)
+
+Add the Beijing Stock Exchange official public channel as a research candidate:
+
+- Whether an enumerable directory/announcement index of historical
+  termination-of-listing (终止上市/退市) securities exists;
+- Whether **completeness** can be established, not merely a single announcement;
+- symbol / name / list_date / delist_date fields;
+- `920xxx` new vs legacy code mapping;
+- provenance / pagination / historical coverage semantics.
+
+Known sanity case: `920305` (南京云创大数据科技股份有限公司; BSE has published
+a termination-of-listing decision). The 2026-08-18 bounded probe confirmed the
+public symbol/name mapping `920305 -> 云创退` via EastMoney quote, as
+supplementary evidence only. Finding one case never establishes completeness.
+
+### 7c. Bounded probe evidence (2026-08-18, read-only)
+
+Direct, proxy-cleared GETs against `https://www.bse.cn`:
+
+| URL | Result |
+|---|---|
+| `/` | 200 — WAF JS cookie challenge (bootstrap only, sets 300s `C3VK` cookie, `window.open("/","_self")`) |
+| `/disclosure/` | 404 |
+| `/about/base/organization/` | 404 |
+| `/data/stock/stockdirectory/` | 404 |
+| `/stock/announcement/` | 404 |
+| `/disclosure/more/` | 404 |
+| `/sitemap.xml` | 403 |
+
+The official site is a WAF/JS-challenge SPA; a bounded read-only pass did not
+surface an enumerable, completeness-provable delisted-security catalog or
+announcement index. Public web search was unavailable (platform 429). Web
+quality indicates no completeness claim may be made from the one confirmed
+case.
+
+### 7d. Verdict
+
+```text
+BJ_HISTORICAL_AUTHORITY = UNPROVABLE_BOUNDED_RESEARCH
+```
+
+`PROVEN_BSE_OFFICIAL` is NOT established because an enumerable, complete,
+official delisted-catalog cannot be demonstrated under the bounded read-only
+research performed. Therefore the plan proceeds with
+`HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED` and the frozen
+`DAILY_READY = FALSE` / `R3_EXIT = BLOCKED_BJ_HISTORICAL_IDENTITY` /
+`R4_EXECUTION = FORBIDDEN` gate until a source proves BJ delisted history
+completeness (`PROVEN` and `BJ_HISTORICAL_UNRESOLVED_N = 0`).
 
 ## 8. Resume point and execution delta (when audit passes)
 
@@ -155,17 +278,17 @@ sequence:
 | Step | V07 behavior |
 |---|---|
 | Stage A | Kept (done, 7757 rows / 337 delisted) |
-| Stage B (V07) | Baostock identity + rosters for SH/SZ; EM clist current BJ; BJ historical research/UNKNOWN_CARRIED; Sina sweep optional crosscheck only; tri-state ledger |
+| Stage B (V07.1) | Baostock `stock_basic` = SH/SZ formal identity authority; `roster_on` = closure evidence with receipt (`failed_dates_n>0 => NOT CLOSED`); EM clist current BJ; BJ historical = UNPROVABLE_BOUNDED_RESEARCH (7c/7d) => UNKNOWN_CARRIED; Sina sweep optional crosscheck only; tri-state ledger |
 | Stage C | unchanged (merge) |
 | Stage C2 | unchanged (BJ metadata via EM f12/f13/f14/f26) |
 | Stage D | unchanged (trading_calendar, TDX) |
-| Stage E (V07) | SH/SZ via Baostock `fetch_delisted_bars`; BJ via EM push2his kline; no Sina hard dep |
-| Stage F (V07) | F1 SH/SZ via TDX parallel (unchanged); F2 BJ via EM push2his primary (Sina crosscheck optional); unique batch ids; effective-span and zero-volume rules unchanged |
+| Stage E (V07.1) | SH/SZ via Baostock `fetch_delisted_bars`; BJ via EM push2his kline through the §5a tri-state wrapper; no Sina hard dep |
+| Stage F (V07.1) | F1 SH/SZ via TDX parallel (unchanged); F2 BJ via EM push2his primary through the §5a tri-state wrapper (Sina crosscheck optional); unique batch ids; effective-span and zero-volume rules unchanged |
 | Stage G | unchanged (delisted coverage report) |
-| Quality | unchanged L0/L1/universe/gap gates + new `HISTORICAL_DELISTED_BJ` bucket |
+| Quality | unchanged L0/L1/universe/gap gates + new `HISTORICAL_DELISTED_BJ` bucket; `DAILY_READY = FALSE` until `BJ_HISTORICAL_AUTHORITY = PROVEN` and `BJ_HISTORICAL_UNRESOLVED_N = 0` (§6) |
 
-The controller changes for the V07 delta are **not implemented in this task**;
-they will be implemented only after the V07 plan audit passes.
+The controller changes for the V07.1 delta are **not implemented in this task**;
+they will be implemented only after the V07.1 plan audit passes.
 
 ## 9. Exclusions and prohibitions (V07)
 
@@ -179,10 +302,12 @@ they will be implemented only after the V07 plan audit passes.
 
 ## 10. Remaining blockers
 
-1. This V07 plan requires an independent GPT-5.6 Sol audit before execution.
-2. BJ historical delisted identity: `UNPROVABLE_PINNED` expected unless the
-   bounded research step finds a pinned source; the documented
-   `UNKNOWN_CARRIED` bucket remains until then.
+1. This V07.1 plan requires an independent GPT-5.6 Sol audit before execution.
+2. BJ historical delisted identity: `UNPROVABLE_BOUNDED_RESEARCH` (official
+   BSE catalog not enumerable/provable under bounded read-only research;
+   §7). `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED` freezes
+   `DAILY_READY = FALSE` / `R3_EXIT = BLOCKED_BJ_HISTORICAL_IDENTITY` /
+   `R4_EXECUTION = FORBIDDEN` until `PROVEN` + `unresolved_n = 0`.
 3. Sina remains `SOURCE_FRAGILE`; used only as optional crosscheck, never as a
    hard gate.
 

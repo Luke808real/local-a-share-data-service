@@ -132,3 +132,57 @@ plan audit before data execution resumes.
   (3) Sina SOURCE_FRAGILE — crosscheck only, no hard gate.
 
 Full revision contract: `docs/plans/R3_DAILY_FOUNDATION_IMPLEMENTATION_PLAN_V07.md`.
+
+## V07.1 corrections (task `R3_V07_1_PLAN_CORRECTION`)
+
+### DAILY_READY gating (frozen)
+
+`HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED` is allowed only as an R3
+intermediate state with:
+
+```text
+DAILY_READY = FALSE
+R3_EXIT      = BLOCKED_BJ_HISTORICAL_IDENTITY
+R4_EXECUTION = FORBIDDEN
+```
+
+until `BJ_HISTORICAL_AUTHORITY = PROVEN` AND `BJ_HISTORICAL_UNRESOLVED_N = 0`.
+
+### EastMoney tri-state (thin service-owned wrapper)
+
+Pinned `eastmoney.bars.fetch_daily_bars()` is never used directly as the
+authoritative tri-state fetcher. Wrapper contract:
+
+```text
+known BJ symbol + valid bars  -> EXISTS
+HTTP/transport/parse failure -> SOURCE_ERROR
+empty/invalid for known BJ   -> SOURCE_ERROR or UNEXPLAINED_MISSING
+                                (NEVER NOT_EXISTS)
+```
+
+An empty `push2his` response never infers a security does not exist.
+
+### Baostock authority + closure
+
+`stock_basic` = SH/SZ formal historical identity authority. `roster_on`
+= closure/reconciliation evidence only. Roster-closure claim requires receipt
+(`expected_dates_n / success_dates_n / failed_dates_n / union_symbol_n / hash /
+stock_basic_vs_roster_diff / unresolved_n`) with
+`failed_dates_n > 0 => NOT CLOSED`.
+
+### BSE official bounded research (2026-08-18)
+
+Probes (`www.bse.cn`, direct proxy-cleared): `/` = 200 WAF JS cookie challenge;
+`/disclosure/`, `/about/base/organization/`, `/data/stock/stockdirectory/`,
+`/stock/announcement/`, `/disclosure/more/` = 404; `/sitemap.xml` = 403. No
+enumerable, completeness-provable official delisted catalog surfaced. Sanity
+case `920305` confirmed publicly as `云创退` (EastMoney quote, supplementary,
+non-authoritative) — one case is not completeness. Web search unavailable
+(429). Verdict:
+
+```text
+BJ_HISTORICAL_AUTHORITY = UNPROVABLE_BOUNDED_RESEARCH
+```
+
+Therefore `UNKNOWN_CARRIED` + the DAILY_READY=false gates above apply until a
+source proves BJ delisted-history completeness.
