@@ -121,3 +121,18 @@ def test_legacy_isolation_guard():
 def test_r3_module_import_smoke():
     assert hasattr(r3, "R3Runner")
     assert hasattr(r3, "PLAN_SHA")
+
+
+def test_runtime_pacing_override_keeps_config_intact(tmp_path, monkeypatch):
+    # This test only inspects the pacing decision helper via a stub object.
+    class StubCfg:
+        def __init__(self):
+            self.source_intervals = {"sina": 0.3}
+            self._rate_limiters = object()
+
+    cfg = StubCfg()
+    runner = object.__new__(r3.R3Runner)
+    runner.cfg = cfg
+    runner._set_sina_interval(1.2)
+    assert cfg.source_intervals["sina"] == 1.2
+    assert cfg._rate_limiters is None

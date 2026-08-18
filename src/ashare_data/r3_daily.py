@@ -61,6 +61,8 @@ logger = logging.getLogger(__name__)
 
 R3_HISTORY_START = date(2016, 1, 1)
 R3_DAILY_AS_OF = date(2026, 8, 17)
+SINA_RUNTIME_MIN_INTERVAL_BASE = 0.6
+SINA_RUNTIME_MIN_INTERVAL_MAX = 3.5
 PLAN_SHA = "d13e2ecefbb66250b73aca4312dc8706a4d2b7a3"
 BASE_HEAD = "0254122a99f0a365d2be12f29a2a59b951497fd3"
 
@@ -528,10 +530,12 @@ class R3Runner:
 
     def stage_discovery(self) -> dict[str, Any]:
         self.machine.enter("B_discovery")
+        self._apply_discovery_pacing()
         attempts = 0
         last_remaining: int | None = None
         stalled = 0
         total_failed = 0
+        interval = SINA_RUNTIME_MIN_INTERVAL_BASE
         while True:
             attempts += 1
             if attempts > 400:
@@ -539,6 +543,11 @@ class R3Runner:
             result = discover_delisted(self.cfg, limit=1000)
             remaining = result.remaining
             total_failed += len(result.failed)
+            if result.failed:
+                interval = min(interval * 1.6, SINA_RUNTIME_MIN_INTERVAL_MAX)
+            else:
+                interval = max(interval * 0.9, SINA_RUNTIME_MIN_INTERVAL_BASE)
+            self._set_sina_interval(interval)
             self.ledger.append(
                 {
                     "stage": "B_discovery",
@@ -549,10 +558,20 @@ class R3Runner:
                     "failed": len(result.failed),
                     "remaining": remaining,
                     "complete": result.complete,
+                    "sina_interval": round(interval, 3),
                 }
             )
             if remaining == 0:
                 break
+            if result.failed:
+                # Sina's WAF throttles at a per-window count; pause between
+                # chunks to let counters decay (bounded operational backoff).
+                logger.warning(
+                    "discovery %s had %s failed probe(s); backing off 30s",
+                    attempts,
+                    len(result.failed),
+                )
+                time.sleep(30)
             if last_remaining is not None and remaining >= last_remaining:
                 stalled += 1
                 logger.warning(
@@ -579,6 +598,39 @@ class R3Runner:
         }
         self.machine.complete("B_discovery", receipt)
         return receipt
+
+    def _apply_discovery_pacing(self) -> None:
+        """Runtime-only Sina pacing override for the probe sweep.
+
+        The committed config sets [sources.sina].min_interval_seconds=0.3,
+        which Sina's WAF rate-limits with HTTP 456 after a short request
+        window. Overriding the in-memory limiter interval for discovery-only
+        does not touch the config file (CONFIG_SHA is unchanged) and does not
+        change schema/units/PK/semantics/provenance. Recorded as evidence.
+        """
+        previous = dict(getattr(self.cfg, "source_intervals", {}) or {}).get("sina")
+        self._set_sina_interval(SINA_RUNTIME_MIN_INTERVAL_BASE)
+        record = {
+            "source": "sina",
+            "committed_min_interval_seconds": previous,
+            "runtime_base_interval_seconds": SINA_RUNTIME_MIN_INTERVAL_BASE,
+            "adaptive_domain": f"[{SINA_RUNTIME_MIN_INTERVAL_BASE}, {SINA_RUNTIME_MIN_INTERVAL_MAX}]s",
+            "scope": "B_discovery probe sweep only",
+            "reason": "Sina WAF returns HTTP 456 after a short request window "
+            "at the committed 0.3s pace; adaptive pacing converges to a "
+            "sustainable rate and backs off after any 456-heavy chunk",
+            "config_file_unchanged": True,
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_write_json(self.meta / "r3-discovery-pacing.json", record)
+        self.ledger.append({"stage": "B_discovery", "pacing": record})
+
+    def _set_sina_interval(self, interval: float) -> None:
+        """Runtime-only per-source interval override (config file untouched)."""
+        intervals = dict(getattr(self.cfg, "source_intervals", {}) or {})
+        intervals["sina"] = float(interval)
+        self.cfg.source_intervals = intervals
+        self.cfg._rate_limiters = None  # type: ignore[attr-defined]
 
     def stage_merge(self) -> dict[str, Any]:
         self.machine.enter("C_merge")
