@@ -1,6 +1,6 @@
 # R3 DAILY FOUNDATION IMPLEMENTATION PLAN
 
-**TASK_CONTRACT:** `R3-DAILY-FOUNDATION-V03`
+**TASK_CONTRACT:** `R3-DAILY-FOUNDATION-V04`
 **SPEC_VERSION:** `V1.0 FROZEN`
 **BASE_HEAD:** `0254122a99f0a365d2be12f29a2a59b951497fd3`
 **PHASE:** `R3 — DAILY FOUNDATION`
@@ -406,6 +406,13 @@ pinned schema are deterministic from canonical symbol/exchange/asset_type and
 are frozen for the R8 query projection; R3 does not fork the upstream Parquet
 schema merely to duplicate them.
 
+Membership semantics after C2: a discovery `live_missing` symbol that receives
+a verified instrument row here is an ACTIVE current-universe member with a
+proven TDX-less route, not a delisted target. It belongs to the Stage F2 daily
+fetch set whenever its verified identity dates are effective in the frozen
+daily window. Stage E never includes this class; only formal delisted identity
+and discovery classified-delisted terminals are delisted targets.
+
 ### Stage D — Trading calendar foundation
 
 Run a single pinned `JobEngine.run_job` containing only `trading_calendar`,
@@ -476,8 +483,11 @@ obey the pinned schema/provenance contract.
 #### F1 — SH/SZ via TDX parallel workers
 
 1. Build the effective active SH/SZ symbol set from the security master using
-   verified list/delist dates; exclude Stage E delisted targets, `never_issued`,
-   and `live_missing` from the fetch set.
+   verified list/delist dates. Stage E delisted targets and `never_issued`
+   codes are excluded by construction because they hold no effective active
+   instrument row. The pinned TDX client serves only SH/SZ, so any
+   `live_missing` symbol here would mean a security-master routing defect:
+   stop `BLOCKED_ROUTING_MISMATCH` instead of dropping it.
 2. Create one manifest run with `Manifest.start_run("r3_daily_bars", ...)` and
    build deterministic `BatchSpec` tuples
    `(batch_id, symbols, window_start, window_end)` from the pinned
@@ -500,20 +510,36 @@ obey the pinned schema/provenance contract.
 #### F2 — Non-TDX (mainly BJ) via Sina, bounded EastMoney fallback
 
 1. Build the effective active non-TDX symbol set from the security master with
-   verified metadata; the same exclusions apply.
-2. Call pinned `fetch_bars_via_sina(config, symbols, window, run_id)` once for
-   the full set under one blocking controller/ledger pair. Every row staged by
-   that adapter gets `source=sina` and the documented null-amount limitation
-   below.
-3. Interpret the adapter result as partial, not complete: a symbol with failed
-   fetch, empty response, or missing expected effective dates is an explicit
-   retry scope. Retry each scope deterministically through the same exact
-   pinned callable at most three unchanged attempts, recording attempt state.
-4. If a scope still fails, fall back per symbol to pinned EastMoney
-   `fetch_daily_bars` with an explicit service ledger/controller batch and
-   `source=eastmoney` provenance; amount is retained when present. A same-PK
-   Sina/EastMoney value conflict is `DATA_CONFLICT` and blocks the gate.
-5. A symbol keeps the Sina rows when the fallback matches, or the fallback's
+   verified metadata. This set INCLUDES post-C2 BJ rows that originated from
+   discovery `live_missing`; only Stage E delisted targets and `never_issued`
+   codes are excluded. Each symbol carries its verified effective span
+   `[max(list_date, R3_HISTORY_START), min(delist_date, R3_DAILY_AS_OF)]`.
+2. Partition the set into groups of identical effective span, because the
+   pinned `fetch_bars_via_sina` accepts one shared `start/end` and marks a
+   symbol failed when any calendar date in that shared range is missing. A
+   per-span group therefore neutralizes the upstream global-window assumption:
+   pre-list dates can never be demanded of a later-listed BJ. A group of size
+   one is equivalent to a per-symbol call and is the intended granularity.
+3. For each span group, call pinned
+   `fetch_bars_via_sina(config, symbols, group_start, group_end, run_id,
+   batch_prefix=<unique deterministic value>)` under one blocking
+   controller/ledger pair. The `batch_prefix` must uniquely encode span and
+   attempt (for example `sina-<span>-a<attempt>`), so a retry writes a NEW
+   staging file and never overwrites a previous attempt's rows. Every row
+   staged by that adapter gets `source=sina` and the documented null-amount
+   limitation below.
+4. Interpret each adapter result as partial, not complete: a symbol with
+   failed fetch, empty response, or missing expected effective dates is an
+   explicit retry scope. Retry each scope deterministically through the same
+   pinned callable at most three unchanged attempts, with a fresh unique
+   `batch_prefix` and attempt state recorded in the ledger; all staging files
+   from every attempt are retained and hashed.
+5. If a scope still fails, fall back per symbol to pinned EastMoney
+   `fetch_daily_bars` with an explicit service ledger/controller batch carrying
+   a unique controller batch id and `source=eastmoney` provenance; amount is
+   retained when present. A same-PK Sina/EastMoney value conflict is
+   `DATA_CONFLICT` and blocks the gate.
+6. A symbol keeps the Sina rows when the fallback matches, or the fallback's
    rows when Sina has none; it never receives both. Compact only after both
    ledgers show every route complete and the run has zero incomplete manifest
    batches. Symbols that still report failure or an empty full-window response
