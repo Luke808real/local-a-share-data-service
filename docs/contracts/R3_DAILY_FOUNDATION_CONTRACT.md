@@ -36,12 +36,26 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
 
 - Active SH/SZ/BJ stock+CDR must all be present; BJ requires verified nonblank
   `name` and `list_date` (`BLOCKED_ALL_A_METADATA` otherwise).
-- Stage B is V07.2 identity completion — NO Sina issued-code sweep.
-  - SH/SZ formal historical identity authority: Baostock `stock_basic`.
-  - SH/SZ closure evidence: Baostock `roster_on` with a receipt
-    (`expected/success/failed_dates_n`, `union_symbol_n/hash`,
-    `stock_basic_vs_roster_diff`, `unresolved_n`); `failed_dates_n > 0 =>
-    NOT CLOSED` -> stage fails closed.
+- Stage B is V07.4 upstream-aligned identity completion — NO Sina issued-code
+  sweep, and NO 2,580-date full daily roster closure.
+  - SH/SZ formal historical identity authority: Baostock `query_stock_basic`
+    (`fetch_instrument_basics`), SH/SZ stock+CDR; Stage-A formal drift
+    (`missing_n == extra_n == date_mismatch_n == 0`) fails closed.
+  - Roster is a QUARTERLY last-trading-day AUDIT / CROSSCHECK only (~43
+    samples, 2016 Q1 .. 2026 Q3, deterministic from the trading-day list).
+    Hard gates: `successful_sample_n == sample_dates_n`, `failed_sample_n == 0`,
+    `roster_extra_vs_formal_n == 0`
+    (`QUARTERLY_ROSTER_AUTHORITY_CONFLICT`), `roster_span_conflict_n == 0`
+    (`ROSTER_SPAN_CONFLICT`); the superseded V07.3 union crosscheck must also be
+    clean (`AUTHORITY_CONFLICT` otherwise). `formal_not_seen_in_quarterly_sample_n`
+    is OBSERVATION ONLY and never blocks Stage B.
+  - Single shared Baostock session; no concurrent connections; max 3 in-place
+    retries per sampled date with bounded backoff; exhausted sample stops
+    fail-closed (`ROSTER_DATE_RETRY_EXHAUSTED`). Progress checkpointed
+    atomically per sample in `r3-quarterly-roster-audit-progress-v074.json`;
+    the V07.3 closure checkpoint is preserved as superseded-execution evidence
+    (bytes never modified, never reused as V07.4 progress) and the transition is
+    recorded in `r3-b-v074-transition-receipt.json`.
   - BJ current: EastMoney clist (f12/f13/f14/f26).
   - BJ historical: `BJ_HISTORICAL_AUTHORITY = UNPROVABLE_BOUNDED_RESEARCH`;
     `HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED`.

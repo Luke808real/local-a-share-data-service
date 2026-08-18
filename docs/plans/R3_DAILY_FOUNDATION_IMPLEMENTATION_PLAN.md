@@ -343,28 +343,52 @@ Require a successful run and compact batch. This obtains the live SH/SZ
 snapshot plus Baostock formal delisting identity. Verify unique symbols,
 provenance, and formal identity evidence before continuing.
 
-### Stage B — Resumable full issued-code discovery
+### Stage B — Identity authority + quarterly roster audit (V07.4)
 
-Call pinned `discover_delisted(config, limit=1000)` in bounded chunks. The
-equivalent CLI shape is:
+**OLD (superseded):** full daily roster closure — scan every trading date in
+`2016-01-01 .. 2026-08-17` (~2,580 dates) with `roster_on(day)` and require the
+union to close against `stock_basic` (`failed_dates_n == 0`,
+`identity_not_in_roster_n == 0`, `roster_not_in_identity_n == 0`), with a
+per-date resumable closure checkpoint (`r3-roster-closure-progress-v073.json`).
 
-```text
-cne delisted discover --config config/cnequity.toml --limit 1000
-```
+**SUPERSEDED BY V07.4 (approved upstream alignment):**
+- SH/SZ historical identity AUTHORITY = Baostock `query_stock_basic`
+  (`fetch_instrument_basics`), SH/SZ stock+CDR, one query returns the listed +
+  delisted identity (symbol / list_date / delist_date / status-derived). The
+  Stage-A formal drift check (`missing_n == 0`, `extra_n == 0`,
+  `date_mismatch_n == 0`, else `FORMAL_IDENTITY_DRIFT`) is unchanged.
+- Roster = QUARTERLY AUDIT / CROSSCHECK ONLY. Deterministic sample dates: per
+  `(year, quarter)` take the LAST trading day present in the AS_OF-bounded
+  trading-day list (`2016 Q1 .. 2026 Q3`, ~43 samples) — every sample is a real
+  trading day, so weekend/holiday ambiguity and blind `month=28` picks are
+  excluded by construction.
+- Hard gates: `successful_sample_n == sample_dates_n`, `failed_sample_n == 0`,
+  `roster_extra_vs_formal_n == 0` (`QUARTERLY_ROSTER_AUTHORITY_CONFLICT`
+  otherwise), `roster_span_conflict_n == 0` (`ROSTER_SPAN_CONFLICT` otherwise),
+  and the superseded V07.3 partial union must be a subset of the V07.4 formal
+  identity with a valid historical span (`AUTHORITY_CONFLICT` otherwise).
+- `formal_not_seen_in_quarterly_sample_n` is an OBSERVATION / CROSSCHECK only
+  and never blocks Stage B.
+- Execution: single shared Baostock session, no concurrent connections;
+  per-sample `roster_on(day, bs=shared, login=False)` with in-place retry
+  (force-close → relogin → bounded backoff), max 3 attempts; an exhausted date
+  persists `blocked_sample_date` and stops fail-closed
+  (`ROSTER_DATE_RETRY_EXHAUSTED`). Progress checkpointed atomically per sample
+  in the NEW file `r3-quarterly-roster-audit-progress-v074.json` (the V07.3
+  closure checkpoint is preserved as superseded-execution evidence and never
+  reused as the V07.4 pointer). The V07.3 → V07.4 same-stage transition is
+  recorded in `r3-b-v074-transition-receipt.json`.
 
-Repeat until returned `complete=true`, `failed=0`, and `remaining=0`. Each chunk
-is a full-market operation but bounded in time and checkpointed by upstream
-every 100 probes. A failed probe remains pending. Require monotonic progress;
-after three consecutive chunks with no decrease in remaining scope, stop
-`BLOCKED_SOURCE_DISCOVERY` with all evidence preserved. Never relabel a failed
-probe as never-issued.
+**Rationale:** pinned CNEquity upstream itself uses quarterly roster sampling
+(its delisted recovery comment: "40 roster queries beat 2,500"); Baostock
+`query_stock_basic` is the formal historical identity authority; the roster is
+an audit, not identity discovery; and the 2,580-date scan adds large runtime
+cost without adding any formal identity authority.
 
-Discovery is a current observation because the pinned API has no as-of
-parameter. Capture its actual UTC completion time, the exact internal reference
-date, catalog hash, classified live/recent hash, and formal-delisted hash. Do
-not label this snapshot `as_of=2026-08-17`; use it only to build the current
-security master and then reconstruct the separate daily-as-of universe from
-verified identity dates.
+Stage B final identity receipt uses `route =
+V07.4_stock_basic_plus_quarterly_roster_audit`, `identity_authority =
+BAOSTOCK_QUERY_STOCK_BASIC`, `audit_method = QUARTERLY_LAST_TRADING_DAY`, and no
+longer claims a 2,580-date closure. BJ policy is unchanged.
 
 ### Stage C — Merge BSE/live-missing identities
 

@@ -819,22 +819,25 @@ def _stage_b_runner(tmp_path, monkeypatch, *, close=True) -> "object":
     return runner
 
 
-def test_stage_b_not_closed_no_final_receipt(monkeypatch, tmp_path):
-    runner = _stage_b_runner(tmp_path, monkeypatch, close=False)
+def test_stage_b_roster_extra_authority_conflict_no_final_receipt(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    # a roster symbol unknown to the formal authority => hard gate fail-closed
     monkeypatch.setattr(
-        r3, "known_delisted_instruments",
-        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        lambda day, **kw: {"600000.SH", "999999.SH"},
     )
-    with pytest.raises(R3Error, match="NOT_CLOSED"):
+    monkeypatch.setattr(r3, "known_delisted_instruments", lambda cfg, asof: {})
+    with pytest.raises(R3Error, match="QUARTERLY_ROSTER_AUTHORITY_CONFLICT"):
         runner._identity_completion_v072()
     receipt_path = runner.meta / "r3-identity-receipt.json"
-    # Sol review gate: closure not closed => final identity receipt MUST NOT exist.
+    # V07.4 hard gate: authority conflict => final identity receipt MUST NOT exist.
     assert not receipt_path.exists()
-    ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    ckpt = json.loads(
+        (runner.meta / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text()
+    )
     assert ckpt["terminal_status"] == "blocked"
-    assert ckpt["closure_summary"]["closed"] is False
-    assert ckpt["closure_summary"]["identity_not_in_roster_n"] == 1
-    assert ckpt["closure_summary"]["roster_not_in_identity_n"] == 0
+    assert ckpt["audit_summary"]["roster_extra_vs_formal_n"] == 1
+    assert ckpt["roster_extra_vs_formal_n"] == 1
 
 
 def test_stage_b_formal_identity_drift_no_final_receipt(monkeypatch, tmp_path):
@@ -848,7 +851,9 @@ def test_stage_b_formal_identity_drift_no_final_receipt(monkeypatch, tmp_path):
         runner._identity_completion_v072()
     # Sol review gate: formal drift != 0 => final identity receipt MUST NOT exist.
     assert not (runner.meta / "r3-identity-receipt.json").exists()
-    ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    ckpt = json.loads(
+        (runner.meta / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text()
+    )
     assert ckpt["terminal_status"] == "blocked"
     drift = ckpt["formal_drift_summary"]
     assert drift["extra_n"] >= 1 or drift["missing_n"] >= 1
@@ -1423,7 +1428,7 @@ def test_cdr_roster_not_observable_not_blocking(monkeypatch, tmp_path):
     assert receipt["shsz_closure"]["closed"] is True  # CDR not a false blocker
 
 
-def test_common_stock_missing_still_blocks(monkeypatch, tmp_path):
+def test_v074_common_stock_missing_in_sample_is_observation_only(monkeypatch, tmp_path):
     runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
     basics = pl.DataFrame(
         {
@@ -1431,8 +1436,8 @@ def test_common_stock_missing_still_blocks(monkeypatch, tmp_path):
             "name": ["A", "B"],
             "exchange": ["SH", "SH"],
             "asset_type": ["stock", "stock"],
-            "list_date": [date(2000, 1, 1), date(2000, 1, 1)],
-            "delist_date": [None, None],
+            "list_date": [date(2000, 1, 1), date(2019, 2, 1)],  # 600001 delists in-window
+            "delist_date": [None, date(2019, 12, 31)],
             "prev_symbol": [None, None],
         }
     )
@@ -1444,9 +1449,15 @@ def test_common_stock_missing_still_blocks(monkeypatch, tmp_path):
         "cnequity.adapters.baostock.delisted_bars.roster_on",
         lambda day, **kw: {"600000.SH"},
     )
-    monkeypatch.setattr(r3, "known_delisted_instruments", lambda cfg, asof: {})
-    with pytest.raises(R3Error, match="NOT_CLOSED"):
-        runner._identity_completion_v072()
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+    # V07.4: a formal symbol never observed in the quarterly sample is an
+    # OBSERVATION (formal_not_seen), not a Stage-B failure.
+    receipt = runner._identity_completion_v072()
+    assert receipt["shsz_closure"]["closed"] is True
+    assert receipt["formal_not_seen_in_quarterly_sample_n"] == 1
 
 
 def test_c2_controller_terminal_only_after_postproof_failure(monkeypatch, tmp_path):
@@ -2668,11 +2679,15 @@ def test_v073_b_happy_path_writes_receipt_and_terminal_checkpoint(monkeypatch, t
     assert receipt["shsz_closure"]["closed"] is True
     assert (runner.meta / "r3-identity-receipt.json").exists()
     assert any(
-        rec.get("v07_2_identity") is True and rec.get("stage") == "B_discovery"
+        rec.get("v07_4_identity") is True and rec.get("stage") == "B_discovery"
         for rec in runner.ledger.calls
     )
-    ckpt = json.loads((runner.meta / r3.ROSTER_CHECKPOINT_FILENAME).read_text())
+    ckpt = json.loads(
+        (runner.meta / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text()
+    )
     assert ckpt["terminal_status"] == "success"
+    assert ckpt["route"] == r3.V074_ROUTE
+    assert ckpt["successful_sample_n"] == ckpt["sample_dates_n"]
     receipt_path = runner.meta / "r3-identity-receipt.json"
     # the checkpoint must carry the ACTUAL file SHA (not a re-serialization hash)
     assert ckpt["final_identity_receipt_sha"] == r3.sha256_file(receipt_path)
@@ -2704,6 +2719,506 @@ def test_v073_approved_callables_extended():
     assert contract["count"] == 15
 
 
+# ============================================================================
+# V07.4 upstream-aligned Stage B (query_stock_basic authority + quarterly audit)
+# ============================================================================
+
+
+def _v074_hash(obj) -> str:
+    return r3.sha256_bytes(json.dumps(obj, separators=(",", ":")).encode())
+
+
+def _v074_sample_dates_hash(samples) -> str:
+    return _v074_hash(sorted(d.isoformat() for d in samples))
+
+
+def _v074_ctx(
+    monkeypatch,
+    tmp_path,
+    *,
+    samples=None,
+    roster_impl=None,
+    pre_state=None,
+    v073_checkpoint=None,
+    quarterly_checkpoint=None,
+    identity_receipt=False,
+    formal=None,
+    formal_list_map=None,
+):
+    import types
+
+    samples = samples or [date(2016, 3, 31), date(2016, 6, 30)]
+    formal = formal if formal is not None else {"600000.SH", "600001.SH"}
+    if formal_list_map is None:
+        formal_list_map = {
+            "600000.SH": (date(2000, 1, 1), None),
+            "600001.SH": (date(2000, 1, 1), date(2019, 12, 31)),
+        }
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True, exist_ok=True)
+
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.plan_sha = PLAN_SHA
+    runner.cfg = types.SimpleNamespace(rate_limit=lambda key: None)
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save(
+        pre_state
+        or {"status": "running", "current": "B_discovery", "completed": ["A_instruments"]}
+    )
+
+    class FakeBS:
+        def logout(self):
+            return None
+
+    seen = {"login": 0, "relogin": 0}
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session.import_baostock",
+        lambda: FakeBS(),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._login",
+        lambda *a, **k: seen.update(login=seen["login"] + 1),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._relogin",
+        lambda *a, **k: seen.update(relogin=seen["relogin"] + 1),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._ensure_socket_timeout",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock._session._force_close_baostock_socket",
+        lambda: None,
+    )
+
+    calls = []
+    if roster_impl is None:
+        def _ok(day, *, bs=None, login=False):
+            calls.append({"day": day, "bs": bs, "login": login})
+            return {"600000.SH", "600001.SH"}
+
+        roster_impl = _ok
+    else:
+        _orig = roster_impl
+
+        def _wrapped(day, *, bs=None, login=False):
+            calls.append({"day": day, "bs": bs, "login": login})
+            return _orig(day, bs=bs, login=login)
+
+        roster_impl = _wrapped
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        roster_impl,
+    )
+
+    if v073_checkpoint is not None:
+        (meta / r3.ROSTER_CHECKPOINT_FILENAME).write_text(json.dumps(v073_checkpoint))
+    if quarterly_checkpoint is not None:
+        (meta / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).write_text(
+            json.dumps(quarterly_checkpoint)
+        )
+    if identity_receipt:
+        (meta / "r3-identity-receipt.json").write_text(json.dumps({"ok": True}))
+
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    ctrl = {
+        "meta": meta,
+        "calls": calls,
+        "seen": seen,
+        "sleeps": sleeps,
+        "formal": formal,
+        "formal_list_map": formal_list_map,
+    }
+    return runner, ctrl, samples, fake_sleep
+
+
+def test_v074_quarter_sample_deterministic_last_trading_day():
+    days = [date(2016, 1, 4), date(2016, 1, 29), date(2016, 3, 31),
+            date(2016, 4, 1), date(2016, 6, 30)]
+    s1 = r3.quarterly_last_trading_day_samples(days)
+    s2 = r3.quarterly_last_trading_day_samples(days)
+    assert s1 == s2  # deterministic
+    assert s1 == [date(2016, 3, 31), date(2016, 6, 30)]  # LAST trading day/quarter
+    assert all(d in days for d in s1)  # samples are real trading days
+    assert all(d.weekday() < 5 for d in s1)  # never a weekend
+
+
+def test_v074_quarter_sample_2016_2026_count_43():
+    days = []
+    y, m = 2016, 1
+    while (y, m) <= (2026, 8):
+        days.append(date(y, m, 28))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    samples = r3.quarterly_last_trading_day_samples(days)
+    assert len(samples) == 43  # 2016Q1..2026Q3 (AS_OF-bounded)
+    assert samples[0] == date(2016, 3, 28)
+    assert samples[-1] == date(2026, 8, 28)
+
+
+def test_v074_audit_roster_subset_formal_pass(monkeypatch, tmp_path):
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)]
+    )
+    formal = ctrl["formal"]
+    out = runner._quarterly_roster_audit_v074(
+        samples,
+        formal_authority=formal,
+        formal_list_map=ctrl["formal_list_map"],
+        formal_identity_hash=_v074_hash(sorted(formal)),
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        sleep=sleep,
+    )
+    assert out["successful_sample_n"] == 1
+    assert out["extra_vs_formal"] == set()
+    assert out["span_conflicts"] == set()
+    assert out["roster_union"] == {"600000.SH", "600001.SH"}
+
+
+def test_v074_audit_roster_extra_detected(monkeypatch, tmp_path):
+    def bad(day, *, bs=None, login=False):
+        return {"600000.SH", "999999.SH"}
+
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], roster_impl=bad
+    )
+    out = runner._quarterly_roster_audit_v074(
+        samples,
+        formal_authority=ctrl["formal"],
+        formal_list_map=ctrl["formal_list_map"],
+        formal_identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        sleep=sleep,
+    )
+    assert out["extra_vs_formal"] == {"999999.SH"}
+
+
+def test_v074_audit_span_conflict_list_after_sample(monkeypatch, tmp_path):
+    fmap = {"600001.SH": (date(2020, 1, 1), None)}
+
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], formal_list_map=fmap
+    )
+    out = runner._quarterly_roster_audit_v074(
+        samples,
+        formal_authority=ctrl["formal"],
+        formal_list_map=fmap,
+        formal_identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        sleep=sleep,
+    )
+    assert out["span_conflicts"] == {"600001.SH"}  # listed after the sample date
+
+
+def test_v074_audit_span_conflict_delist_before_sample(monkeypatch, tmp_path):
+    fmap = {"600001.SH": (date(2000, 1, 1), date(2015, 12, 31))}
+
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], formal_list_map=fmap
+    )
+    out = runner._quarterly_roster_audit_v074(
+        samples,
+        formal_authority=ctrl["formal"],
+        formal_list_map=fmap,
+        formal_identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        sleep=sleep,
+    )
+    assert out["span_conflicts"] == {"600001.SH"}  # delisted before the sample date
+
+
+def test_v074_audit_empty_roster_retry_same_sample(monkeypatch, tmp_path):
+    state = {"hits": 0}
+
+    def flaky(day, *, bs=None, login=False):
+        state["hits"] += 1
+        if state["hits"] == 1:
+            return set()
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], roster_impl=flaky
+    )
+    out = runner._quarterly_roster_audit_v074(
+        samples,
+        formal_authority=ctrl["formal"],
+        formal_list_map=ctrl["formal_list_map"],
+        formal_identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        sleep=sleep,
+    )
+    assert len(ctrl["calls"]) == 2  # empty attempt then success on the SAME sample
+    assert ctrl["seen"]["relogin"] == 1
+    assert ctrl["sleeps"] == [1.0]
+    assert out["successful_sample_n"] == 1
+
+
+def test_v074_audit_empty_roster_three_times_exhausts(monkeypatch, tmp_path):
+    samples = [date(2016, 3, 31), date(2016, 6, 30), date(2016, 9, 30)]
+
+    def empty(day, *, bs=None, login=False):
+        if day >= samples[1]:
+            return set()
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, samples2, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=samples, roster_impl=empty
+    )
+    with pytest.raises(R3Error, match="ROSTER_DATE_RETRY_EXHAUSTED"):
+        runner._quarterly_roster_audit_v074(
+            samples,
+            formal_authority=ctrl["formal"],
+            formal_list_map=ctrl["formal_list_map"],
+            formal_identity_hash=_v074_hash(sorted(ctrl["formal"])),
+            sample_dates_hash=_v074_sample_dates_hash(samples),
+            sleep=sleep,
+        )
+    blocked_calls = [c for c in ctrl["calls"] if c["day"] == samples[1]]
+    assert len(blocked_calls) == 3
+    assert all(c["day"] < samples[2] for c in ctrl["calls"])  # later samples untouched
+    assert ctrl["sleeps"] == [1.0, 3.0]
+    ckpt = json.loads((ctrl["meta"] / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text())
+    assert ckpt["blocked_sample_date"] == samples[1].isoformat()
+    assert ckpt["next_sample_index"] == 1
+    assert ckpt["last_error_summary"] == "EMPTY_ROSTER"
+
+
+def test_v074_audit_exact_checkpoint_resume(monkeypatch, tmp_path):
+    samples = [date(2016, 3, 31), date(2016, 6, 30), date(2016, 9, 30)]
+    state = {"boom": True}
+
+    def flaky(day, *, bs=None, login=False):
+        if state["boom"] and day == samples[1]:
+            raise RuntimeError("down")
+        return {"600000.SH", "600001.SH"}
+
+    runner, ctrl, samples2, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=samples, roster_impl=flaky
+    )
+    with pytest.raises(R3Error, match="ROSTER_DATE_RETRY_EXHAUSTED"):
+        runner._quarterly_roster_audit_v074(
+            samples,
+            formal_authority=ctrl["formal"],
+            formal_list_map=ctrl["formal_list_map"],
+            formal_identity_hash=_v074_hash(sorted(ctrl["formal"])),
+            sample_dates_hash=_v074_sample_dates_hash(samples),
+            sleep=sleep,
+        )
+    ctrl["calls"].clear()  # reset for the resume episode
+    state["boom"] = False
+    runner2, ctrl2, _, sleep2 = _v074_ctx(
+        monkeypatch, tmp_path, samples=samples,
+        quarterly_checkpoint=json.loads(
+            (ctrl["meta"] / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text()
+        ),
+    )
+    out = runner2._quarterly_roster_audit_v074(
+        samples,
+        formal_authority=ctrl2["formal"],
+        formal_list_map=ctrl2["formal_list_map"],
+        formal_identity_hash=_v074_hash(sorted(ctrl2["formal"])),
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        sleep=sleep2,
+    )
+    assert [c["day"] for c in ctrl2["calls"]] == samples[1:]  # exact next_index resume
+    assert out["successful_sample_n"] == 3
+
+
+def test_v074_transition_keeps_v073_checkpoint_bytes(monkeypatch, tmp_path):
+    v073 = {
+        "route": "V07.3_resumable_roster_closure",
+        "plan_sha": PLAN_SHA,
+        "next_index": 3,
+        "expected_dates_n": 2580,
+        "union_symbols": ["600000.SH", "600001.SH"],
+    }
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], v073_checkpoint=v073
+    )
+    before = (ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_bytes()
+    runner._v074_transition(
+        sample_dates=samples,
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        formal_identity_symbols=ctrl["formal"],
+        formal_list_map=ctrl["formal_list_map"],
+        identity_hash=_v074_hash(sorted(ctrl["formal"])),
+    )
+    after = (ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME).read_bytes()
+    assert before == after  # V07.3 checkpoint bytes NEVER modified
+    tr = json.loads(
+        (ctrl["meta"] / r3.V074_TRANSITION_RECEIPT_FILENAME).read_text()
+    )
+    assert tr["prior_checkpoint_sha"] == r3.sha256_file(
+        ctrl["meta"] / r3.ROSTER_CHECKPOINT_FILENAME
+    )
+    assert tr["from_route"] == "V07.3_resumable_roster_closure"
+    assert tr["to_route"] == r3.V074_ROUTE
+    assert tr["decision"] == "USER_ARCHITECT_APPROVED_UPSTREAM_ALIGNMENT"
+
+
+def test_v074_transition_v073_union_subset_formal_allowed(monkeypatch, tmp_path):
+    v073 = {
+        "route": "V07.3_resumable_roster_closure",
+        "plan_sha": PLAN_SHA,
+        "next_index": 3,
+        "expected_dates_n": 2580,
+        "union_symbols": ["600000.SH"],  # subset of formal -> allowed
+    }
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], v073_checkpoint=v073
+    )
+    tr = runner._v074_transition(
+        sample_dates=samples,
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        formal_identity_symbols=ctrl["formal"],
+        formal_list_map=ctrl["formal_list_map"],
+        identity_hash=_v074_hash(sorted(ctrl["formal"])),
+    )
+    assert tr["prior_next_index"] == 3
+
+
+def test_v074_transition_v073_union_unknown_blocks(monkeypatch, tmp_path):
+    v073 = {
+        "route": "V07.3_resumable_roster_closure",
+        "plan_sha": PLAN_SHA,
+        "next_index": 3,
+        "expected_dates_n": 2580,
+        "union_symbols": ["600000.SH", "999999.SH"],  # unknown to formal
+    }
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], v073_checkpoint=v073
+    )
+    with pytest.raises(R3Error, match="AUTHORITY_CONFLICT"):
+        runner._v074_transition(
+            sample_dates=samples,
+            sample_dates_hash=_v074_sample_dates_hash(samples),
+            formal_identity_symbols=ctrl["formal"],
+            formal_list_map=ctrl["formal_list_map"],
+            identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        )
+
+
+def test_v074_transition_current_b_no_receipt_allowed(monkeypatch, tmp_path):
+    v073 = {
+        "route": "V07.3_resumable_roster_closure",
+        "plan_sha": PLAN_SHA,
+        "next_index": 10,
+        "expected_dates_n": 2580,
+        "union_symbols": ["600000.SH"],
+    }
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], v073_checkpoint=v073
+    )
+    runner._v074_transition(
+        sample_dates=samples,
+        sample_dates_hash=_v074_sample_dates_hash(samples),
+        formal_identity_symbols=ctrl["formal"],
+        formal_list_map=ctrl["formal_list_map"],
+        identity_hash=_v074_hash(sorted(ctrl["formal"])),
+    )
+    state = runner.machine.load()
+    assert state["current"] == "B_discovery"  # same-stage; never cleared
+    assert "B_discovery" not in state["completed"]
+    assert state["resumes"][-1]["route"] == r3.V074_ROUTE
+
+
+def test_v074_transition_identity_receipt_blocks(monkeypatch, tmp_path):
+    runner, ctrl, samples, sleep = _v074_ctx(
+        monkeypatch, tmp_path, samples=[date(2016, 3, 31)], identity_receipt=True
+    )
+    with pytest.raises(R3Error, match="B_RESUME_FINAL_RECEIPT_PRESENT"):
+        runner._v074_transition(
+            sample_dates=samples,
+            sample_dates_hash=_v074_sample_dates_hash(samples),
+            formal_identity_symbols=ctrl["formal"],
+            formal_list_map=ctrl["formal_list_map"],
+            identity_hash=_v074_hash(sorted(ctrl["formal"])),
+        )
+
+
+def test_v074_receipt_fields_and_no_2580_claim(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+    receipt = runner._identity_completion_v072()
+    assert receipt["route"] == r3.V074_ROUTE
+    assert receipt["identity_authority"] == "BAOSTOCK_QUERY_STOCK_BASIC"
+    assert receipt["identity_authority_scope"] == "SH_SZ_STOCK_CDR"
+    assert receipt["audit_method"] == "QUARTERLY_LAST_TRADING_DAY"
+    # the receipt must NOT claim a 2580-day full-daily closure
+    assert "expected_dates_n" not in receipt
+    assert receipt["sample_dates_n"] == 1
+    assert receipt["shsz_closure"]["closed"] is True
+    # BJ policy unchanged and still blocking DAILY_READY
+    assert receipt["bj_historical_authority"] == BJ_HISTORICAL_AUTHORITY_VERDICT
+    assert receipt["bj_historical_delisted"] == HISTORICAL_DELISTED_BJ_LABEL
+    assert receipt["bj_historical_resolved"] is False
+    assert receipt["bj_current_authority"] == "EastMoney_clist"
+
+
+def test_v074_formal_not_seen_is_observation_only(monkeypatch, tmp_path):
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.roster_on",
+        lambda day, **kw: {"600000.SH"},  # 600001 never observed in the sample
+    )
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600001.SH": date(2019, 12, 31)},
+    )
+    receipt = runner._identity_completion_v072()
+    assert receipt["shsz_closure"]["closed"] is True  # observation does NOT fail Stage B
+    assert receipt["formal_not_seen_in_quarterly_sample_n"] == 1
+    assert receipt["roster_extra_vs_formal_n"] == 0
+
+
+def test_v074_no_sina_tdx_single_session_source():
+    src = inspect.getsource(r3.R3Runner._identity_completion_v072)
+    src += inspect.getsource(r3.R3Runner._quarterly_roster_audit_v074)
+    src += inspect.getsource(r3.R3Runner._v074_transition)
+    for forbidden in (
+        "discover_delisted",
+        "fetch_daily_bars_sina",
+        "fetch_bars_via_sina",
+        "sina.bars",
+        "quotes_service",
+        "fetch_daily_bars_parallel",
+        "ThreadPoolExecutor",
+        "ProcessPoolExecutor",
+        "concurrent.futures",
+    ):
+        assert forbidden not in src
+    assert "import_baostock" in src
+    assert "_login" in src
+
+
+def test_v074_final_receipt_only_after_all_gates(monkeypatch, tmp_path):
+    # drift gate blocks even though the quarterly audit itself is complete
+    runner = _stage_b_runner(tmp_path, monkeypatch, close=True)
+    monkeypatch.setattr(
+        r3, "known_delisted_instruments",
+        lambda cfg, asof: {"600002.SH": date(2020, 6, 30)},
+    )
+    with pytest.raises(R3Error, match="FORMAL_IDENTITY_DRIFT"):
+        runner._identity_completion_v072()
+    assert not (runner.meta / "r3-identity-receipt.json").exists()
+    qckpt = json.loads(
+        (runner.meta / r3.QUARTERLY_ROSTER_CHECKPOINT_FILENAME).read_text()
+    )
+    assert qckpt["terminal_status"] == "blocked"
+    assert qckpt["formal_drift_summary"]["extra_n"] >= 1
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================

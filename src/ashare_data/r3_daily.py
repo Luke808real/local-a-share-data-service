@@ -247,6 +247,18 @@ ROSTER_SWEEP_BACKOFF = (1.0, 3.0, 8.0)  # seconds; injectable/skipped in tests
 ROSTER_PROACTIVE_RELOGIN_EVERY = 300
 ROSTER_PROGRESS_LOG_EVERY = 25
 
+# V07.4 (user/architect-approved upstream alignment): Baostock query_stock_basic
+# is the SH/SZ historical identity AUTHORITY; the roster is a QUARTERLY AUDIT /
+# CROSSCHECK only (~43 last-trading-day samples), never identity discovery and
+# never a 2580-day per-date closure.
+QUARTERLY_ROSTER_CHECKPOINT_FILENAME = "r3-quarterly-roster-audit-progress-v074.json"
+V074_TRANSITION_RECEIPT_FILENAME = "r3-b-v074-transition-receipt.json"
+V074_ROUTE = "V07.4_stock_basic_plus_quarterly_roster_audit"
+V074_IDENTITY_AUTHORITY = "BAOSTOCK_QUERY_STOCK_BASIC"
+V074_IDENTITY_AUTHORITY_SCOPE = "SH_SZ_STOCK_CDR"
+V074_HISTORICAL_IDENTITY_START = "BAOSTOCK_2015_PLUS"
+V074_AUDIT_METHOD = "QUARTERLY_LAST_TRADING_DAY"
+
 
 class R3Error(RuntimeError):
     """Fail-closed R3 error carrying a stable code."""
@@ -261,6 +273,22 @@ class _EmptyRosterError(RuntimeError):
     never a success (frozen closure semantics: a trading-day empty roster can
     not count as observed). Raised inside the date attempt loop so the sweep
     force-closes, relogins, backs off and retries the SAME date."""
+
+
+def quarterly_last_trading_day_samples(days: Iterable[date]) -> list[date]:
+    """Deterministic quarterly roster-audit sample dates (V07.4).
+
+    Exactly mirrors pinned CNEquity's belief that "40 roster queries beat 2,500":
+    group the (AS_OF-bounded) trading-day list by (year, quarter) and take the
+    LAST trading day present in each quarter. Because every sample IS a real
+    trading day, weekend/holiday ambiguity is excluded by construction (no blind
+    ``date(year, month, 28)`` pick). Expected 2016Q1..2026Q3 ~= 43 samples.
+    """
+    groups: dict[tuple[int, int], date] = {}
+    for d in days:
+        quarter = (d.month - 1) // 3 + 1
+        groups[(d.year, quarter)] = d  # ascending input => last day per quarter wins
+    return [groups[key] for key in sorted(groups)]
 
 
 # --- Git / runtime helpers --------------------------------------------------
@@ -1235,18 +1263,19 @@ class R3Runner:
         return receipt
 
     def stage_discovery(self) -> dict[str, Any]:
-        """V07.2 identity completion + V07.3 resumable roster closure.
+        """Stage-B identity completion (V07.4 upstream-aligned route).
 
-        No Sina issued-code sweep: SH/SZ identity/closure come from Baostock via
-        a single shared session with an atomic progress checkpoint; BJ current
-        identity from EastMoney clist; BJ historical is UNPROVABLE_BOUNDED_RESEARCH
-        -> HISTORICAL_DELISTED_BJ = UNKNOWN_CARRIED.
+        No Sina issued-code sweep: SH/SZ historical identity is Baostock
+        query_stock_basic (authority), the roster is a quarterly last-trading-day
+        audit / crosscheck only; BJ current identity from EastMoney clist; BJ
+        historical remains UNPROVABLE_BOUNDED_RESEARCH -> UNKNOWN_CARRIED.
 
-        Re-entry is same-stage resume: when the interrupted V07.2/V07.3 run
+        Re-entry is same-stage resume/transition: when the interrupted run
         already left current=B_discovery running on the exact A prefix, we do not
         call StageMachine.enter again (it would raise STAGE_IN_PROGRESS); the
-        orchestration records the resume lineage and continues from the
-        checkpoint (or boots from zero for the legacy no-checkpoint incident).
+        orchestration records the V07.4 resume lineage and transitions from the
+        preserved V07.3 checkpoint (superseded execution evidence) without
+        reusing it as V07.4 progress.
         """
         state = self.machine.load()
         if state.get("current") != "B_discovery":
@@ -1256,6 +1285,18 @@ class R3Runner:
         return receipt
 
     def _identity_completion_v072(self) -> dict[str, Any]:
+        """Stage-B identity completion — V07.4 upstream-aligned route.
+
+        Baostock query_stock_basic / fetch_instrument_basics is the SH/SZ
+        historical identity AUTHORITY (listed + delisted, stock+CDR). The roster
+        is only a QUARTERLY last-trading-day audit / CROSSCHECK (~43 samples),
+        guarded by hard gates (every sample must succeed non-empty, every roster
+        symbol must be inside the formal authority, and every observed symbol
+        must have a valid historical span). The old 2580-day full-daily roster
+        closure is superseded by the approved contract revision, recorded in
+        r3-b-v074-transition-receipt.json (the V07.3 checkpoint is preserved,
+        never reused as V07.4 progress).
+        """
         self._prepare_network_env()
         from cnequity.adapters.baostock.instruments import fetch_instrument_basics
         from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
@@ -1273,16 +1314,20 @@ class R3Runner:
                 )
             )
             formal_identity_symbols = set(formal_identity_df["symbol"].to_list())
-            # ROSTER_CLOSURE_SCOPE: only common-stock names the pinned roster can
-            # actually observe. CDRs (e.g. 689xxx SH) stay in FORMAL_IDENTITY_SCOPE
-            # and are recorded as roster_not_observable, never a false NOT_CLOSED.
             roster_closure_df = formal_identity_df.filter(
                 pl.col("asset_type").eq("stock")
             )
             roster_closure_symbols = set(roster_closure_df["symbol"].to_list())
+            formal_list_map = {
+                row["symbol"]: (row["list_date"], row["delist_date"])
+                for row in formal_identity_df.select(
+                    "symbol", "list_date", "delist_date"
+                ).iter_rows(named=True)
+            }
         else:
             formal_identity_symbols = set()
             roster_closure_symbols = set()
+            formal_list_map = {}
         identity_hash = sha256_bytes(
             json.dumps(sorted(formal_identity_symbols), separators=(",", ":")).encode()
         )
@@ -1301,13 +1346,31 @@ class R3Runner:
         dates = list_trading_dates(self.cfg, self.history_start, self.daily_as_of)
         if not dates:
             raise R3Error("NO_TRADING_DATES", "no trading dates in R3 window")
-        sweep = self._resumable_roster_sweep(
-            dates,
-            roster_closure_symbols=roster_closure_symbols,
-            formal_identity_hash=identity_hash,
-            roster_expected_hash=roster_expected_hash,
+        sample_dates = quarterly_last_trading_day_samples(dates)
+        sample_dates_hash = sha256_bytes(
+            json.dumps(
+                sorted(d.isoformat() for d in sample_dates),
+                separators=(",", ":"),
+            ).encode()
         )
-        closure = sweep["closure"]
+
+        # V07.3 -> V07.4 same-stage transition (V07.3 checkpoint preserved as
+        # superseded-execution evidence; its union is crosschecked below).
+        transition = self._v074_transition(
+            sample_dates=sample_dates,
+            sample_dates_hash=sample_dates_hash,
+            formal_identity_symbols=formal_identity_symbols,
+            formal_list_map=formal_list_map,
+            identity_hash=identity_hash,
+        )
+
+        audit = self._quarterly_roster_audit_v074(
+            sample_dates,
+            formal_authority=formal_identity_symbols,
+            formal_list_map=formal_list_map,
+            formal_identity_hash=identity_hash,
+            sample_dates_hash=sample_dates_hash,
+        )
 
         # SH/SZ formal delisted map (Baostock stock_basic, in-window scope)
         shsz_formal_delisted: dict[str, str] = {}
@@ -1377,8 +1440,39 @@ class R3Runner:
             json.dumps(bj_current, separators=(",", ":")).encode()
         )
 
+        sample_dates_n = len(sample_dates)
+        successful_sample_n = int(audit["successful_sample_n"])
+        failed_sample_n = int(audit["failed_sample_n"])
+        roster_extra_vs_formal_n = len(audit["extra_vs_formal"])
+        roster_span_conflict_n = len(audit["span_conflicts"])
+        formal_not_seen_in_quarterly_sample_n = len(
+            formal_identity_symbols - audit["roster_union"]
+        )
+        audit_ok = bool(
+            successful_sample_n == sample_dates_n
+            and failed_sample_n == 0
+            and roster_extra_vs_formal_n == 0
+            and roster_span_conflict_n == 0
+        )
+        shsz_closure = {
+            "closed": audit_ok,
+            "route": V074_ROUTE,
+            "sample_dates_n": sample_dates_n,
+            "successful_sample_n": successful_sample_n,
+            "failed_sample_n": failed_sample_n,
+            "roster_extra_vs_formal_n": roster_extra_vs_formal_n,
+            "roster_span_conflict_n": roster_span_conflict_n,
+            "union_symbol_n": len(audit["roster_union"]),
+            "union_symbol_hash": self._roster_union_hash(audit["roster_union"]),
+            "formal_not_seen_in_quarterly_sample_n": formal_not_seen_in_quarterly_sample_n,
+        }
+
         receipt = {
-            "route": "V07.2_identity_completion",
+            "route": V074_ROUTE,
+            "identity_authority": V074_IDENTITY_AUTHORITY,
+            "identity_authority_scope": V074_IDENTITY_AUTHORITY_SCOPE,
+            "historical_identity_start": V074_HISTORICAL_IDENTITY_START,
+            "identity_authority_verify": "stock_basic_fresh_query_succeeded",
             "shsz_identity_authority": "Baostock_stock_basic",
             "shsz_identity_symbols": len(formal_identity_symbols),
             "shsz_identity_hash": identity_hash,
@@ -1391,6 +1485,20 @@ class R3Runner:
             "roster_not_observable_identity_n": len(roster_not_observable),
             "roster_not_observable_identity_hash": roster_not_observable_hash,
             "roster_not_observable_identity_sample": sorted(roster_not_observable)[:200],
+            "audit_method": V074_AUDIT_METHOD,
+            "sample_dates_n": sample_dates_n,
+            "sample_dates_hash": sample_dates_hash,
+            "first_sample_date": (sample_dates[0].isoformat() if sample_dates else None),
+            "last_sample_date": (sample_dates[-1].isoformat() if sample_dates else None),
+            "successful_sample_n": successful_sample_n,
+            "failed_sample_n": failed_sample_n,
+            "roster_union_symbol_n": len(audit["roster_union"]),
+            "roster_union_symbol_hash": self._roster_union_hash(audit["roster_union"]),
+            "roster_extra_vs_formal_n": roster_extra_vs_formal_n,
+            "roster_extra_vs_formal_sample": sorted(audit["extra_vs_formal"])[:200],
+            "roster_span_conflict_n": roster_span_conflict_n,
+            "roster_span_conflict_sample": sorted(audit["span_conflicts"])[:200],
+            "formal_not_seen_in_quarterly_sample_n": formal_not_seen_in_quarterly_sample_n,
             "shsz_formal_delisted": shsz_formal_delisted,
             "shsz_formal_delisted_n": len(shsz_formal_delisted),
             "shsz_formal_delisted_hash": shsz_formal_delisted_hash,
@@ -1408,7 +1516,9 @@ class R3Runner:
                 "extra_n": len(drift_extra),
                 "date_mismatch_n": len(drift_date_mismatch),
             },
-            "shsz_closure": closure,
+            "shsz_closure": shsz_closure,
+            "prior_v073_checkpoint_sha": transition.get("prior_checkpoint_sha"),
+            "prior_v073_next_index": transition.get("prior_next_index"),
             "bj_current_authority": "EastMoney_clist",
             "bj_current_symbols": len(bj_current),
             "bj_current_hash": bj_current_hash,
@@ -1418,32 +1528,44 @@ class R3Runner:
             "bj_historical_resolved": False,
             "observed_at_utc": datetime.now(timezone.utc).isoformat(),
         }
-        # Fail-closed final gate (Sol review): the final identity receipt is
-        # written ONLY after closure.closed AND zero formal drift. On failure
-        # the roster checkpoint carries a bounded terminal=blocked summary,
-        # r3-identity-receipt.json MUST NOT exist, and B stays current/running
-        # (no machine.complete).
-        if not closure["closed"]:
-            self._update_roster_checkpoint_terminal(
+
+        # Fail-closed final gate: the final identity receipt is written ONLY
+        # after the V07.4 hard gates pass (quarterly audit complete, zero
+        # roster-extra / span conflicts, zero formal drift). On failure the
+        # quarterly checkpoint carries a bounded terminal=blocked summary,
+        # r3-identity-receipt.json MUST NOT exist, and B stays current/running.
+        if not audit_ok:
+            self._update_quarterly_checkpoint_terminal(
                 {
                     "terminal_status": "blocked",
-                    "closure_summary": {
-                        "closed": closure["closed"],
-                        "unresolved_n": closure["unresolved_n"],
-                        "identity_not_in_roster_n": closure["identity_not_in_roster_n"],
-                        "roster_not_in_identity_n": closure["roster_not_in_identity_n"],
+                    "audit_summary": {
+                        "successful_sample_n": successful_sample_n,
+                        "sample_dates_n": sample_dates_n,
+                        "failed_sample_n": failed_sample_n,
+                        "roster_extra_vs_formal_n": roster_extra_vs_formal_n,
+                        "roster_span_conflict_n": roster_span_conflict_n,
                     },
                 }
             )
+            if roster_extra_vs_formal_n:
+                raise R3Error(
+                    "QUARTERLY_ROSTER_AUTHORITY_CONFLICT",
+                    f"{roster_extra_vs_formal_n} roster symbol(s) outside the "
+                    f"formal authority: {sorted(audit['extra_vs_formal'])[:20]}",
+                )
+            if roster_span_conflict_n:
+                raise R3Error(
+                    "ROSTER_SPAN_CONFLICT",
+                    f"{roster_span_conflict_n} roster symbol(s) outside their "
+                    f"formal historical span: {sorted(audit['span_conflicts'])[:20]}",
+                )
             raise R3Error(
-                "NOT_CLOSED",
-                f"roster not closed: {closure['unresolved_n']} unresolved "
-                f"(failed_dates={closure['failed_dates_n']}, "
-                f"identity_not_in_roster={closure['identity_not_in_roster_n']}, "
-                f"roster_not_in_identity={closure['roster_not_in_identity_n']})",
+                "ROSTER_AUDIT_INCOMPLETE",
+                f"quarterly audit not complete: {successful_sample_n}/{sample_dates_n} "
+                f"successful samples",
             )
         if drift_missing or drift_extra or drift_date_mismatch:
-            self._update_roster_checkpoint_terminal(
+            self._update_quarterly_checkpoint_terminal(
                 {
                     "terminal_status": "blocked",
                     "formal_drift_summary": {
@@ -1460,17 +1582,376 @@ class R3Runner:
                 f"date_mismatch={len(drift_date_mismatch)}",
             )
         # Both gates pass: only now persist the final identity receipt and mark
-        # the checkpoint terminal=success with the ACTUAL receipt file SHA.
+        # the quarterly checkpoint terminal=success with the ACTUAL file SHA.
         identity_path = self.meta / "r3-identity-receipt.json"
         atomic_write_json(identity_path, receipt)
-        ckpt_path = self.meta / ROSTER_CHECKPOINT_FILENAME
-        if ckpt_path.exists():
-            ck = json.loads(ckpt_path.read_text(encoding="utf-8"))
+        qckpt_path = self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME
+        if qckpt_path.exists():
+            ck = json.loads(qckpt_path.read_text(encoding="utf-8"))
             ck["terminal_status"] = "success"
             ck["final_identity_receipt_sha"] = sha256_file(identity_path)
-            self._write_roster_checkpoint(ck)
-        self.ledger.append({"stage": "B_discovery", "v07_2_identity": True, "receipt": receipt})
+            self._write_quarterly_checkpoint(ck)
+        self.ledger.append(
+            {"stage": "B_discovery", "v07_4_identity": True, "receipt": receipt}
+        )
         return receipt
+
+    # --- V07.4 transition + quarterly roster audit --------------------------
+
+    def _load_v073_checkpoint_evidence(self) -> dict[str, Any]:
+        """Read the SUPERSEDED V07.3 closure checkpoint bytes (read-only)."""
+        p = self.meta / ROSTER_CHECKPOINT_FILENAME
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - never let stale evidence block audit
+            return {}
+
+    def _load_quarterly_checkpoint(self) -> dict[str, Any]:
+        p = self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME
+        if not p.exists():
+            return {}
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def _write_quarterly_checkpoint(self, payload: dict[str, Any]) -> None:
+        atomic_write_json(self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME, payload)
+
+    def _update_quarterly_checkpoint_terminal(self, summary: dict[str, Any]) -> None:
+        """Atomically merge a bounded terminal summary into the QUARTERLY
+        checkpoint (fail-closed failure evidence on V07.4 path)."""
+        ckpt_path = self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME
+        ck: dict[str, Any] = {}
+        if ckpt_path.exists():
+            try:
+                ck = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - never make failure evidence depend
+                ck = {}
+        ck.update(summary)
+        ck.setdefault("updated_at_utc", datetime.now(timezone.utc).isoformat())
+        self._write_quarterly_checkpoint(ck)
+
+    def _v074_transition(
+        self,
+        *,
+        sample_dates: list[date],
+        sample_dates_hash: str,
+        formal_identity_symbols: set[str],
+        formal_list_map: dict[str, tuple[date | None, date | None]],
+        identity_hash: str,
+    ) -> dict[str, Any]:
+        """Record the approved V07.3 -> V07.4 same-stage transition.
+
+        The V07.3 checkpoint is PRESERVED (bytes never modified) as superseded-
+        execution evidence. Its roster union is a read-only CROSSCHECK against
+        the V07.4 formal authority: any old roster symbol that is unknown to
+        query_stock_basic, or that has no valid historical span on any sample
+        date, is an AUTHORITY_CONFLICT fail-closed. The V07.3 next_index is
+        NEVER used as the V07.4 quarterly pointer.
+        """
+        if (self.meta / "r3-identity-receipt.json").exists():
+            raise R3Error(
+                "B_RESUME_FINAL_RECEIPT_PRESENT",
+                "r3-identity-receipt.json already exists; an approved V07.4 "
+                "same-stage transition is forbidden on a completed Stage B.",
+            )
+        prior_path = self.meta / ROSTER_CHECKPOINT_FILENAME
+        prior = self._load_v073_checkpoint_evidence()
+        if prior_path.exists():
+            prior_sha = sha256_file(prior_path)
+            prior_next_index = prior.get("next_index")
+            prior_expected_dates_n = prior.get("expected_dates_n")
+            prior_union = set(prior.get("union_symbols") or [])
+        else:
+            prior_sha = None
+            prior_next_index = None
+            prior_expected_dates_n = None
+            prior_union = set()
+
+        unknown = sorted(prior_union - formal_identity_symbols)
+        span_bad: list[str] = []
+        for sym in sorted(prior_union):
+            if sym in unknown:
+                continue
+            lst, dlst = formal_list_map.get(sym, (None, None))
+            ok = any(
+                (lst is None or lst <= sd) and (dlst is None or dlst >= sd)
+                for sd in sample_dates
+            )
+            if not ok:
+                span_bad.append(sym)
+        if unknown or span_bad:
+            raise R3Error(
+                "AUTHORITY_CONFLICT",
+                f"V07.3 historical roster contains symbols outside the V07.4 "
+                f"baostock formal authority or its historical span: "
+                f"unknown={unknown[:20]} span_bad={span_bad[:20]}",
+            )
+
+        qckpt_exists = (self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME).exists()
+        next_sample = 0
+        resume_count = 0
+        if qckpt_exists:
+            qc = self._load_quarterly_checkpoint()
+            next_sample = int(qc.get("next_sample_index", 0))
+            resume_count = int(qc.get("resume_count", 0)) + 1
+        self.machine.resume_current(
+            "B_discovery",
+            route=V074_ROUTE,
+            checkpoint_present=qckpt_exists,
+            resume_from_index=next_sample,
+            resume_count=resume_count,
+        )
+
+        transition = {
+            "schema_version": 1,
+            "from_route": "V07.3_resumable_roster_closure",
+            "to_route": V074_ROUTE,
+            "decision": "USER_ARCHITECT_APPROVED_UPSTREAM_ALIGNMENT",
+            "superseded_reason": (
+                "FULL_DAILY_ROSTER_REPLACED_BY_STOCK_BASIC_AUTHORITY_PLUS_QUARTERLY_AUDIT"
+            ),
+            "prior_checkpoint_path": (
+                str(prior_path) if prior_path.exists() else None
+            ),
+            "prior_checkpoint_sha": prior_sha,
+            "prior_next_index": prior_next_index,
+            "prior_expected_dates_n": prior_expected_dates_n,
+            "prior_union_symbol_hash": (
+                self._roster_union_hash(prior_union) if prior_union else None
+            ),
+            "new_sample_dates_n": len(sample_dates),
+            "new_sample_dates_hash": sample_dates_hash,
+            "formal_identity_hash": identity_hash,
+            "transitioned_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_write_json(self.meta / V074_TRANSITION_RECEIPT_FILENAME, transition)
+        return transition
+
+    def _quarterly_roster_audit_v074(
+        self,
+        sample_dates: list[date],
+        *,
+        formal_authority: set[str],
+        formal_list_map: dict[str, tuple[date | None, date | None]],
+        formal_identity_hash: str,
+        sample_dates_hash: str,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> dict[str, Any]:
+        """V07.4 quarterly roster audit (CROSSCHECK only), single shared session.
+
+        Uses the NEW checkpoint file (r3-quarterly-roster-audit-progress-v074.json);
+        never reads/writes the superseded V07.3 closure checkpoint as progress.
+        Per sampled date: roster_on(day, bs=shared, login=False); empty/error is
+        retried in place up to ROSTER_SWEEP_MAX_ATTEMPTS; an exhausted date
+        persists a blocked checkpoint then raises ROSTER_DATE_RETRY_EXHAUSTED.
+        Extra roster symbols (outside the formal authority) and span conflicts
+        are accumulated so Stage B fails closed on them after the sweep.
+        """
+        from cnequity.adapters.baostock._session import (
+            _ensure_socket_timeout,
+            _force_close_baostock_socket,
+            _login,
+            _relogin,
+            import_baostock,
+        )
+        from cnequity.adapters.baostock.delisted_bars import roster_on
+
+        checkpoint_path = self.meta / QUARTERLY_ROSTER_CHECKPOINT_FILENAME
+        sample_dates_n = len(sample_dates)
+        ckpt_present = checkpoint_path.exists()
+        if ckpt_present:
+            ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            expect = {
+                "plan_sha": self.plan_sha,
+                "history_start": self.history_start.isoformat(),
+                "daily_as_of": self.daily_as_of.isoformat(),
+                "formal_identity_hash": formal_identity_hash,
+                "sample_dates_n": sample_dates_n,
+                "sample_dates_hash": sample_dates_hash,
+            }
+            for key, val in expect.items():
+                if ckpt.get(key) != val:
+                    raise R3Error(
+                        "ROSTER_CHECKPOINT_PROVENANCE_MISMATCH",
+                        f"quarterly checkpoint {key} changed: {ckpt.get(key)!r} != {val!r}",
+                    )
+            next_sample_index = int(ckpt.get("next_sample_index", -1))
+            if not (0 <= next_sample_index <= sample_dates_n):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"next_sample_index {next_sample_index} out of range "
+                    f"[0, {sample_dates_n}]",
+                )
+            union = set(ckpt.get("roster_union_symbols") or [])
+            if self._roster_union_hash(union) != ckpt.get("roster_union_symbol_hash"):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    "quarterly roster_union_symbol_hash inconsistent with symbols",
+                )
+            successful_sample_n = int(ckpt.get("successful_sample_n", -1))
+            extra_vs_formal = set(ckpt.get("roster_extra_vs_formal") or [])
+            span_conflicts = set(ckpt.get("roster_span_conflicts") or [])
+            last_completed = ckpt.get("last_completed_sample_date")
+            if successful_sample_n != next_sample_index:
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"successful_sample_n {successful_sample_n} "
+                    f"!= next_sample_index {next_sample_index}",
+                )
+            if next_sample_index == 0 and last_completed is not None:
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    "next_sample_index 0 must have last_completed_sample_date null",
+                )
+            if next_sample_index > 0 and (
+                last_completed != sample_dates[next_sample_index - 1].isoformat()
+            ):
+                raise R3Error(
+                    "ROSTER_CHECKPOINT_CORRUPT",
+                    f"last_completed_sample_date {last_completed!r} != "
+                    f"samples[{next_sample_index - 1}]",
+                )
+            resume_count = int(ckpt.get("resume_count", 0)) + 1
+            episode = int(ckpt.get("execution_episode", 0)) + 1
+        else:
+            next_sample_index = 0
+            successful_sample_n = 0
+            union = set()
+            extra_vs_formal = set()
+            span_conflicts = set()
+            last_completed = None
+            resume_count = 0
+            episode = 1
+
+        blocked_date: str | None = None
+        last_error_summary: str | None = None
+        bs = None
+        rate_limit = getattr(self.cfg, "rate_limit", None)
+        episode_retry_n = 0
+
+        def _write_ckpt() -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "schema_version": ROSTER_CHECKPOINT_SCHEMA_VERSION,
+                "route": V074_ROUTE,
+                "plan_sha": self.plan_sha,
+                "history_start": self.history_start.isoformat(),
+                "daily_as_of": self.daily_as_of.isoformat(),
+                "formal_identity_hash": formal_identity_hash,
+                "sample_dates_n": sample_dates_n,
+                "sample_dates_hash": sample_dates_hash,
+                "next_sample_index": next_sample_index,
+                "last_completed_sample_date": last_completed,
+                "successful_sample_n": successful_sample_n,
+                "roster_union_symbols": sorted(union),
+                "roster_union_symbol_n": len(union),
+                "roster_union_symbol_hash": self._roster_union_hash(union),
+                "roster_extra_vs_formal": sorted(extra_vs_formal),
+                "roster_extra_vs_formal_n": len(extra_vs_formal),
+                "roster_span_conflicts": sorted(span_conflicts),
+                "roster_span_conflict_n": len(span_conflicts),
+                "blocked_sample_date": blocked_date,
+                "last_error_summary": last_error_summary,
+                "execution_episode": episode,
+                "resume_count": resume_count,
+                "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            self._write_quarterly_checkpoint(payload)
+            return payload
+
+        logger.info(
+            "V07.4 quarterly roster audit %s: %d/%d samples done, union=%d",
+            "resume-from-checkpoint" if ckpt_present else "start",
+            next_sample_index,
+            sample_dates_n,
+            len(union),
+        )
+        try:
+            i = next_sample_index
+            while i < sample_dates_n:
+                day = sample_dates[i]
+                last_err: str | None = None
+                ok = False
+                for attempt in range(1, ROSTER_SWEEP_MAX_ATTEMPTS + 1):
+                    if bs is None:
+                        bs = import_baostock()
+                        _login(bs)
+                        _ensure_socket_timeout()
+                    if rate_limit is not None:
+                        rate_limit("baostock")
+                    try:
+                        roster = roster_on(day, bs=bs, login=False)
+                        if not roster:
+                            raise _EmptyRosterError(day.isoformat())
+                        ok = True
+                        break
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - network/parse errors
+                        last_err = (
+                            "EMPTY_ROSTER"
+                            if isinstance(exc, _EmptyRosterError)
+                            else f"{type(exc).__name__}: {exc}"
+                        )
+                        episode_retry_n += 1
+                        _force_close_baostock_socket()
+                        if attempt < ROSTER_SWEEP_MAX_ATTEMPTS:
+                            _relogin(bs)
+                            sleep(
+                                ROSTER_SWEEP_BACKOFF[
+                                    min(attempt - 1, len(ROSTER_SWEEP_BACKOFF) - 1)
+                                ]
+                            )
+                if not ok:
+                    # fail-fast: persist progress + blocked date, then STOP.
+                    blocked_date = day.isoformat()
+                    last_error_summary = last_err
+                    _write_ckpt()
+                    raise R3Error(
+                        "ROSTER_DATE_RETRY_EXHAUSTED",
+                        f"blocked_sample_date={day.isoformat()} "
+                        f"attempts={ROSTER_SWEEP_MAX_ATTEMPTS} "
+                        f"last_error={last_err}",
+                    )
+                union |= set(roster)
+                for sym in set(roster):
+                    if sym not in formal_authority:
+                        extra_vs_formal.add(sym)
+                    else:
+                        lst, dlst = formal_list_map.get(sym, (None, None))
+                        lst_ok = lst is None or lst <= day
+                        dlst_ok = dlst is None or day <= dlst
+                        if not (lst_ok and dlst_ok):
+                            span_conflicts.add(sym)
+                last_completed = day.isoformat()
+                successful_sample_n += 1
+                next_sample_index = i + 1
+                _write_ckpt()
+                logger.info(
+                    "quarterly roster progress %d/%d last_sample=%s union_symbol_n=%d",
+                    next_sample_index,
+                    sample_dates_n,
+                    day,
+                    len(union),
+                )
+                i += 1
+        finally:
+            if bs is not None:
+                try:
+                    bs.logout()
+                except Exception:  # noqa: BLE001 - best-effort logout
+                    pass
+
+        _write_ckpt()
+        return {
+            "sample_dates_n": sample_dates_n,
+            "successful_sample_n": successful_sample_n,
+            "failed_sample_n": 0,
+            "roster_union": union,
+            "extra_vs_formal": extra_vs_formal,
+            "span_conflicts": span_conflicts,
+            "checkpoint": _write_ckpt(),
+        }
 
     # --- V07.3 resumable roster closure ------------------------------------
 
