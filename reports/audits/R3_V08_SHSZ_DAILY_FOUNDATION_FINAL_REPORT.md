@@ -32,19 +32,23 @@ without_positive_volume=0 · out_of_effective_span=0
 
 ## E. F recovery history summary
 
-- First F attempt: 136 of 5215 SH/SZ active symbols failed. Diagnostic singleton
-  probes showed 128 were batch collateral (valid as singletons) and 8 were
-  persistent transport failures.
-- Fix: failed-run staging reuse with singleton TDX recovery (one symbol per
-  batch) instead of a whole-market refetch.
-- Prelisting contamination: the 8 persistent symbols had NULL curated list_date
-  and were pre-listing as of 2026-08-17 (Baostock proves 688826 listed
-  2026-08-18; the other 7 absent from the ASOF formal identity and roster).
-- Fix: F ASOF scope planner binds NULL-list-date candidates to the frozen
-  Stage-B authority; they are resolved or excluded (never 2016 full-window).
-- Fix: safe reuse of the failed run — copy 1626 successful staging batches,
-  drop 7 authoritative expected_no_data, singleton scope 0, zero TDX calls.
-- Final F: PASS (F run fe498fbb-8a00-480c-8ac5-a715cd02200b, 10,325,794 rows).
+1. First diagnostic: 136 of 5215 SH/SZ active symbols failed. Singleton probes
+   showed 128 were batch collateral (valid as singletons) and 8 were singleton
+   TDX source failures: 300449.SZ, 301655.SZ, 301688.SZ, 301697.SZ, 601123.SH,
+   688826.SH, 688835.SH, 688836.SH.
+2. First singleton recovery: 136 singleton scope -> 129 success, 7 persistent
+   failures. 300449.SZ recovered successfully.
+3. Prelisting diagnostic: the remaining 7 persistent symbols were 301655.SZ,
+   301688.SZ, 301697.SZ, 601123.SH, 688826.SH, 688835.SH, 688836.SH. Of these,
+   688826.SH had Baostock list_date 2026-08-18 > ASOF (PRELISTING_CONFIRMED);
+   the other 6 were absent from the verified ASOF formal identity
+   (NOT_TRADING_ASOF / expected-no-data) and carry no F historical obligation.
+   PRELISTING_SCOPE_CONTAMINATION_N = 7 (not 8).
+4. Fix: F ASOF scope planner binds NULL-list-date candidates to the frozen
+   Stage-B authority; they are resolved or excluded (never 2016 full-window).
+5. Fix: safe reuse of the failed run — copy 1626 successful staging batches,
+   drop 7 authoritative expected_no_data, singleton scope 0, zero TDX calls.
+6. Final F: PASS (F run fe498fbb-8a00-480c-8ac5-a715cd02200b, 10,325,794 rows).
 
 ## F. G authority decision
 
