@@ -1,6 +1,7 @@
-# R4 PRICE-LIMIT RULE AUTHORITY RESEARCH — V01.1
+# R4 PRICE-LIMIT RULE AUTHORITY RESEARCH — V01.2
 
 STATUS: AUTHOR_ONLY_PENDING_SOL_REAUDIT
+VERSION: V01.2 (binding of Sol-verified official anchors; no new research)
 RESEARCH_DATE: 2026-08-19
 SCOPE: SH/SZ price-limit basis for R4 stable_market_facts, window
 2016-01-01..2026-08-17. BJ recorded for completeness in the rule table only;
@@ -25,13 +26,20 @@ it is explicitly marked REBIND_AT_R4D — the rule content is frozen per the
 V01.1 contract, and the exact official citation must be re-pinned during R4D
 implementation verification. No authority is fabricated.
 
+V01.2 citation binding: three official anchors independently verified by Sol
+are bound below, replacing the respective REBIND_AT_R4D markers:
+深证会〔2014〕54号 (SZ pre-2023 main-board IPO valid order range), 深证上〔2026〕551号
+and 上证发〔2026〕41号 (SSE/SZSE 2026 Trading Rules, effective 2026-07-06).
+No new rule research was performed in V01.2 and no secondary authority is
+introduced (SECONDARY_AUTHORITY_SOURCES_N = 0).
+
 ## 2. Rule table (SH/SZ, window 2016-01-01 .. 2026-08-17)
 
 | Segment | Period (trading effective) | Limit | Authority |
 |---|---|---|---|
 | SH/SZ main board normal stocks | full window | 10% | SSE/SZSE Trading Rules |
 | SH/SZ main board risk-warning (ST / *ST) | until 2026-07-05 | 5% | SSE/SZSE pre-2026 rules |
-| SH/SZ main board risk-warning (ST / *ST) | from 2026-07-06 | 10% | SSE/SZSE 2026 Trading Rules revision (effective 2026-07-06) |
+| SH/SZ main board risk-warning (ST / *ST) | from 2026-07-06 | 10% | SSE 上证发〔2026〕41号 / SZSE 深证上〔2026〕551号 (2026 Trading Rules, effective 2026-07-06; Sol-verified) |
 | ChiNext 300xxx normal stocks | until 2020-08-21 | 10% | Pre-reform SZSE ChiNext rules |
 | ChiNext 300xxx normal stocks | from 2020-08-24 | 20% | SZSE ChiNext Special Provisions (2020-08-24 effective) |
 | ChiNext risk-warning | until 2020-08-21 | 5% | Pre-reform SZSE ChiNext risk-warning rule |
@@ -42,7 +50,7 @@ implementation verification. No authority is fabricated.
 | Main board delisting-arrangement | after first day | 10% | SSE/SZSE rules |
 | IPO first 5 trading days (STAR/ChiNext) | from board launch | NO LIMIT | SSE/SZSE rules |
 | IPO first 5 trading days (main board) | from 2023-04-10 | NO LIMIT | CSRC full-registration reform |
-| Main board IPO first day (pre-2023) | until 2023-04-07 | PRICE_LIMIT=NONE; valid order range edge | SZ frozen per 2014 SZSE rule; SH open (REBIND/SH_PRE_2023_IPO_ORDER_RANGE_OPEN) |
+| Main board IPO first day (pre-2023) | until 2023-04-07 | PRICE_LIMIT=NONE; valid order range edge | SZ frozen per 深证会〔2014〕54号 (Sol-verified); SH open (OPEN_NONBLOCKING_EDGE: SH_PRE_2023_IPO_ORDER_RANGE_OPEN) |
 | BSE | (recorded for completeness only) | 30%; first day no limit | BJ deferred; no BSE source carried in V01.1 |
 
 ## 3. Effective dates and official sources
@@ -90,9 +98,13 @@ implementation verification. No authority is fabricated.
 - SSE technical notice requiring front-end price checks at the 10% limit for
   main-board risk-warning stocks (implementation evidence).
   - https://www.sse.com.cn/services/tradingtech/notice/c/10783253/files/27d16cba23f847f6a9c9dd7320e5b20c.pdf
-- Effective date frozen: 2026-07-06. SZSE official counterpart notice
-  REBIND_AT_R4D (SZSE 2026 Trading Rules revision; exact page to be pinned
-  during R4D verification).
+- Effective date frozen: 2026-07-06.
+- SZSE 2026 Trading Rules — 深证上〔2026〕551号, effective 2026-07-06
+  (Sol-verified authority):
+  https://www.szse.cn/lawrules/rule/trade/current/t20260424_620190.html
+- SSE 2026 Trading Rules — 上证发〔2026〕41号, effective 2026-07-06
+  (Sol-verified authority):
+  https://www.sse.com.cn/lawandrules/sselawsrules2025/trade/universal/c/c_20260424_10816492.shtml
 
 ### 3.5 Delisting arrangement (退市整理期)
 
@@ -106,17 +118,20 @@ implementation verification. No authority is fabricated.
 
 ### 3.6 Pre-2023 main-board IPO first day — order range vs price limit
 
-- SZ (frozen): SZSE official 2014 rule — full-day valid order range
-  64%..144% of issue price, rounded half-up to tick; PRICE_LIMIT = NONE.
-  REBIND_AT_R4D — exact 2014 notice number/URL to be re-pinned at R4D
-  verification. Rule content is frozen per the V01.1 contract.
-- SH: bounded SSE official-source research required. In V01.1 the SSE
-  official source was not captured in this pass (search infrastructure
-  rate-limited), so the edge remains:
-  - SH_PRE_2023_IPO_ORDER_RANGE_OPEN
-  This is NON-BLOCKING for price-limit facts (PRICE_LIMIT = NONE on those
-  days); it affects only valid-order-range facts and must not be silently
-  assumed to be the same 64%..144% as SZ without an SSE official source.
+- SZ (frozen): SZSE official 2014 rule — 深证会〔2014〕54号 (Sol-verified
+  authority): full-day valid order range 64%..144% of issue price, rounded
+  half-up to tick; PRICE_LIMIT = NONE.
+  https://www.szse.cn/www/disclosure/notice/company/t20140613_508770.html
+- SH: bounded SSE official-source research required. In V01.2 the SSE
+  official source is still not captured, so the edge remains:
+  SH_PRE_2023_IPO_ORDER_RANGE_OPEN
+  This is an OPEN_NONBLOCKING_EDGE, not a hard blocker: PRICE_LIMIT = NONE on
+  those days is a resolved row (limit_applicable=false, high_limit=NULL,
+  low_limit=NULL, no_limit_reason=<enum>), so it produces zero
+  unresolved_required_price_limit_rows and does not block
+  PRICE_LIMIT_COMPLETE. It affects only future VALID_ORDER_PRICE_RANGE facts
+  and must not be silently assumed to be the same 64%..144% as SZ without an
+  SSE official source.
 
 ## 4. Minimum tick and rounding (R4D contract)
 
@@ -145,9 +160,10 @@ R4D must:
 ## 6. Known edges and uncertainties (do NOT silently assume)
 
 1. PRE_2023_MAIN_BOARD_IPO_ORDER_RANGE
-   - SZ frozen at 64%..144% (2014 SZSE official rule).
-   - SH open (SH_PRE_2023_IPO_ORDER_RANGE_OPEN) — bounded SSE official
-     research still required; non-blocking for price limits.
+   - SZ frozen at 64%..144% (深证会〔2014〕54号, Sol-verified).
+   - SH open (SH_PRE_2023_IPO_ORDER_RANGE_OPEN) — OPEN_NONBLOCKING_EDGE;
+     bounded SSE official research still required; does not block
+     PRICE_LIMIT_COMPLETE (those days resolve to PRICE_LIMIT = NONE).
 2. STAR_ST_HISTORICAL_SPLIT
    - Baostock `st_history` is binary isST; it does not distinguish ST from
      *ST. Historical subtype split is NOT_PROVIDED by pinned sources ->
@@ -156,8 +172,9 @@ R4D must:
    - R3 formal delisted map provides delist_date but not arrangement start;
      pinned feeds provide no delisting-arrangement flag. CONFIRMED_BLOCKER;
      affected price-limit rows UNKNOWN/PARTIAL; cannot back-derive.
-4. 2026 MAIN-BOARD RISK-WARNING SZSE OFFICIAL PAGE
-   - SZSE counterpart of the 2026 revision is REBIND_AT_R4D.
+4. RESOLVED_IN_V01_2 — 2026 main-board risk-warning official pages are bound:
+   SZSE 深证上〔2026〕551号 and SSE 上证发〔2026〕41号 (both effective
+   2026-07-06). No remaining open edge here.
 
 ## 7. Boundary
 
@@ -166,6 +183,11 @@ R4D must:
   - sse.com.cn
   - szse.cn
   - csrc.gov.cn
+- SOL_VERIFIED_OFFICIAL_ANCHORS_BOUND_N = 3
+  - 深证会〔2014〕54号 (SZ pre-2023 main-board IPO valid order range)
+  - 深证上〔2026〕551号 (SZSE 2026 Trading Rules, effective 2026-07-06)
+  - 上证发〔2026〕41号 (SSE 2026 Trading Rules, effective 2026-07-06)
+- CITATION_BINDING_ONLY = YES (no new rule research in V01.2)
 - SECONDARY_AUTHORITY_SOURCES_N = 0
 - CODE_FILES_CHANGED = 0
 - MARKET_DATA_CHANGED = NO

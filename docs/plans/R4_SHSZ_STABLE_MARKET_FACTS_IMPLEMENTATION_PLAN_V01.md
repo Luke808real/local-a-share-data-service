@@ -1,9 +1,9 @@
-# R4 SH/SZ STABLE MARKET FACTS — IMPLEMENTATION PLAN V01.1
+# R4 SH/SZ STABLE MARKET FACTS — IMPLEMENTATION PLAN V01.2
 
 PLAN_STATUS: AUTHOR_ONLY_PENDING_SOL_REAUDIT
-VERSION: V01.1 (contract / authority correction of V01)
+VERSION: V01.2 (plan-contract closure of Sol V01.1 re-audit findings)
 AS_OF: 2026-08-19 (data AS_OF 2026-08-17)
-BASE: 1b45fa791a436763e31023e23a6751233043b0e8
+BASE: e9e164d593cae1f31b82454c1f6a0debfe84b6c4 (V01.1; V01 base = 1b45fa791a436763e31023e23a6751233043b0e8)
 UPSTREAM_CNEQUITY: v0.7.2 @ a18ee0484dfb0801650175471724def3228b8a17
 R3_BASIS: R3 SH/SZ MVP CLOSEOUT FROZEN (R3_SHSZ_DAILY_FOUNDATION = PASS)
 
@@ -183,18 +183,24 @@ VALID_ORDER_PRICE_RANGE fact. It is NEVER written as high_limit/low_limit
 
 ### 6.3 Pre-2023 main-board IPO order range
 
-SZ (frozen): SZSE official 2014 rule — full-day valid order range
-64%..144% of issue price, rounded half-up to tick. PRICE_LIMIT = NONE.
-(Exact official notice number/URL to be re-bound at R4D verification; rule
-content is frozen per this task.)
+SZ (frozen): SZSE official 2014 rule — 深证会〔2014〕54号 (Sol-verified
+authority): full-day valid order range 64%..144% of issue price, rounded
+half-up to tick. PRICE_LIMIT = NONE.
+URL: https://www.szse.cn/www/disclosure/notice/company/t20140613_508770.html
 
 SH: bounded SSE official-source research required. If it cannot be closed with
 an SSE official source, keep:
 
 SH_PRE_2023_IPO_ORDER_RANGE_OPEN
 
-This is NON-BLOCKING for price-limit facts: those days have PRICE_LIMIT = NONE
-regardless of the order-range edge.
+SH_PRE_2023_IPO_ORDER_RANGE_OPEN is an OPEN_NONBLOCKING_EDGE, not a hard
+blocker. It does not block PRICE_LIMIT_COMPLETE: for those first listing days
+the rule engine still emits a fully resolved PRICE_LIMIT = NONE row
+(limit_applicable=false, high_limit=NULL, low_limit=NULL,
+no_limit_reason=<enum>), so they contribute zero
+unresolved_required_price_limit_rows. The edge affects only the future
+VALID_ORDER_PRICE_RANGE facts and must not be silently assumed to equal the SZ
+64%..144% range without an SSE official source.
 
 ### 6.4 Rule table (SH/SZ, window 2016-01-01..2026-08-17)
 
@@ -202,7 +208,7 @@ regardless of the order-range edge.
 |---|---|---|---|
 | SH/SZ main board normal | full window | 10% | exchange trading rules |
 | SH/SZ main board risk-warning | until 2026-07-05 | 5% | SSE/SZSE pre-2026 rules |
-| SH/SZ main board risk-warning | from 2026-07-06 | 10% | SSE/SZSE 2026 revised rules (effective 2026-07-06) |
+| SH/SZ main board risk-warning | from 2026-07-06 | 10% | SSE 上证发〔2026〕41号 / SZSE 深证上〔2026〕551号 (effective 2026-07-06; Sol-verified) |
 | ChiNext 300xxx normal | until 2020-08-21 | 10% | pre-reform SZSE rules |
 | ChiNext 300xxx normal | from 2020-08-24 | 20% | SZSE ChiNext Special Provisions (2020-08-24) |
 | ChiNext risk-warning | until 2020-08-21 | 5% | pre-reform SZSE risk-warning rule |
@@ -213,18 +219,22 @@ regardless of the order-range edge.
 | Main board delisting-arrangement | after first day | 10% | SSE/SZSE rules |
 | IPO first 5 trading days (STAR/ChiNext) | from board launch | NO LIMIT | SSE/SZSE rules |
 | IPO first 5 trading days (main board) | from 2023-04-10 | NO LIMIT | CSRC full registration |
-| Main board IPO first day (pre-2023) | until 2023-04-07 | PRICE_LIMIT NONE; order range edge per 6.3 | SZ frozen / SH open |
+| Main board IPO first day (pre-2023) | until 2023-04-07 | PRICE_LIMIT NONE; order range edge per 6.3 | SZ frozen (深证会〔2014〕54号, Sol-verified) / SH open (OPEN_NONBLOCKING_EDGE) |
 
 ### 6.5 Delisting-arrangement interval
 
-DELISTING_ARRANGEMENT_INTERVAL = CONFIRMED_BLOCKER.
+DELISTING_ARRANGEMENT_INTERVAL = CONFIRMED_BLOCKER (hard blocker).
 
 - Never back-derive arrangement start from delist_date.
 - If the interval is not authoritatively resolved, the affected historical
-  price-limit rows are classified UNKNOWN / PARTIAL and PRICE_LIMIT_GATE
-  cannot PASS for those rows.
-- The plan must later run bounded authority discovery OR explicitly accept
-  FACTS_READY = PARTIAL. No guessing.
+  price-limit rows carry coverage_status = UNKNOWN/PARTIAL. coverage_status
+  is a COVERAGE label only: it means the row is NOT resolved, and it can
+  NEVER be interpreted as satisfying PRICE_LIMIT_COMPLETE.
+- For any affected rows: unresolved_required_price_limit_rows > 0 →
+  PRICE_LIMIT_COMPLETE = false → FACTS_READY = false.
+- The plan must later run bounded authority discovery to resolve the interval.
+  Until then the affected rows keep PRICE_LIMIT_COMPLETE = false. No guessing,
+  no PARTIAL-to-READY promotion (FACTS_READY stays boolean true/false).
 
 ## 7. Row universe (R4E)
 
@@ -249,11 +259,14 @@ Explicit scopes:
 3. R4B trading_status enum enrichment + historical ST exact-scope backfill +
    suspension reconstruction verification
 4. R4C turnover_rate dataset (Baostock thin wrapper + crosscheck)
-5. R4D price-limit rule engine (versioned table + research doc V01.1)
+5. R4D price-limit rule engine (versioned table + research doc V01.2)
 6. R4E stable_market_facts assembly
 7. R4F FACTS_READY verifier (read-only)
 
 ## 9. FACTS_READY formula
+
+FACTS_READY ∈ {true, false}. FACTS_READY is boolean-only; a PARTIAL value is
+not a valid FACTS_READY state and FACTS_READY is never set to PARTIAL.
 
 FACTS_READY =
   PRECLOSE_COMPLETE
@@ -263,15 +276,24 @@ FACTS_READY =
   AND ASSEMBLY_COMPLETE
   AND ASOF_SAFE
 
+FACTS_COVERAGE_STATUS ∈ {COMPLETE, PARTIAL, UNKNOWN} expresses partial or
+unknown coverage separately when needed. FACTS_COVERAGE_STATUS != COMPLETE →
+FACTS_READY = false. Any PARTIAL → READY promotion is forbidden.
+
 - PRECLOSE_COMPLETE: corporate_actions gate PASS; every required symbol-day
   has a preclose (no-limit days included); ex-date parity sample PASS.
 - TRADING_STATUS_COMPLETE: full grid covered; ST backfill scope complete;
   suspension reconstruction verified; UNKNOWN only in accepted buckets.
 - TURNOVER_COMPLETE: rows == actual traded sessions; unresolved == 0;
   current-day EM crosscheck within tolerance.
-- PRICE_LIMIT_COMPLETE: rule table version pinned + hash; limits present for
-  every limit-applicable day; no-limit days explicit NULL + reason;
-  delisting-afflicted rows resolved or explicitly classified UNKNOWN/PARTIAL.
+- PRICE_LIMIT_COMPLETE (hard fail-closed):
+  rule_table_pinned
+  AND every required price-limit row resolved
+  AND unresolved_required_price_limit_rows == 0
+  A row classified coverage_status = UNKNOWN/PARTIAL is an unresolved required
+  price-limit row; it can never satisfy PRICE_LIMIT_COMPLETE.
+  unresolved_required_price_limit_rows > 0 → PRICE_LIMIT_COMPLETE = false →
+  FACTS_READY = false.
 - ASSEMBLY_COMPLETE: row-scope matches section 7; no dup/null PK; no invalid
   OHLC; no negative volume/amount; no post-ASOF.
 - ASOF_SAFE: no fact uses data after 2026-08-17; rule effective dates correct.
@@ -284,26 +306,41 @@ Non-blocking by default:
 
 Blocking:
 
-- DELISTING arrangement interval unknown IS a blocker for the affected
-  historical limit rows (PRICE_LIMIT_COMPLETE cannot pass for them).
+- DELISTING arrangement interval unknown: affected historical limit rows keep
+  coverage_status = UNKNOWN/PARTIAL, so unresolved_required_price_limit_rows
+  > 0 → PRICE_LIMIT_COMPLETE = false → FACTS_READY = false. DELISTING coverage
+  gaps can never be promoted to COMPLETE or READY.
 
 ## 10. Blocker / decision table
 
-CONFIRMED_BLOCKERS:
+HARD_BLOCKERS (block PRICE_LIMIT_COMPLETE / FACTS_READY as specified):
 1. DELISTING_ARRANGEMENT_INTERVAL — no pinned source; not derivable from
-   delist_date; blocks PRICE_LIMIT_COMPLETE for affected rows.
+   delist_date; affected rows keep coverage_status = UNKNOWN/PARTIAL →
+   unresolved_required_price_limit_rows > 0 → PRICE_LIMIT_COMPLETE = false →
+   FACTS_READY = false.
 2. corporate_actions availability unproven on real root — R4A0 gate is a
    precondition; must pass before preclose derivation.
 3. turnover_rate dataset absent (Baostock `turn` not persisted).
 4. Ex-date preclose parity unvalidated.
 5. Price-limit rule engine absent (new thin code; authority now documented).
 6. Historical suspension is reconstruction — verification scope required.
-7. SH_PRE_2023_IPO_ORDER_RANGE_OPEN — non-blocking for price limits, but
-   open for valid-order-range facts (bounded SSE official research needed).
+
+HARD_BLOCKER_N = 6
+
+OPEN_NONBLOCKING_EDGES (do not count as hard blockers; do not block
+PRICE_LIMIT_COMPLETE):
+1. SH_PRE_2023_IPO_ORDER_RANGE_OPEN — those first listing days resolve to
+   PRICE_LIMIT = NONE (resolved rows, zero
+   unresolved_required_price_limit_rows contribution); the edge affects only
+   future VALID_ORDER_PRICE_RANGE facts. Bounded SSE official research is a
+   later-stage follow-up, not an R4 gate.
+
+OPEN_NONBLOCKING_EDGE_N = 1
 
 OPEN_QUESTIONS (design decisions for Sol):
-1. FACTS_READY = PARTIAL acceptance vs. bounded delisting-arrangement
-   discovery (formal authority decision).
+1. Delisting-arrangement interval: bounded authority discovery vs. explicit
+   UNKNOWN/PARTIAL coverage acceptance (expressed via FACTS_COVERAGE_STATUS;
+   FACTS_READY stays boolean; PARTIAL → READY promotion remains forbidden).
 2. Preclose parity sample design and tolerance.
 3. turnover_rate denominator validation (before freezing exact free-float
    contract).
@@ -325,6 +362,19 @@ RESOLVED_IN_V01_1:
    with no new provider.
 8. Source policy: only sse/szse/csrc for rule authority; secondary sources
    removed; BSE research dropped (BJ deferred).
+
+RESOLVED_IN_V01_2 (this revision, Sol V01.1 re-audit closure):
+1. PRICE_LIMIT_COMPLETE frozen as a hard fail-closed formula; delisting-
+   afflicted UNKNOWN/PARTIAL rows can never satisfy PRICE_LIMIT_COMPLETE.
+2. FACTS_READY frozen as boolean {true,false}; FACTS_COVERAGE_STATUS
+   {COMPLETE,PARTIAL,UNKNOWN} carries coverage nuance; any PARTIAL → READY
+   promotion is forbidden.
+3. Blocker taxonomy split into HARD_BLOCKERS (n=6) and OPEN_NONBLOCKING_EDGES
+   (n=1); SH_PRE_2023_IPO_ORDER_RANGE_OPEN is an OPEN_NONBLOCKING_EDGE
+   (PRICE_LIMIT = NONE on those days).
+4. Official anchors verified by Sol are bound: 深证会〔2014〕54号 (SZ pre-2023
+   IPO order range), 深证上〔2026〕551号 and 上证发〔2026〕41号 (2026 Trading
+   Rules, effective 2026-07-06). No new rule research, no secondary sources.
 
 ## 11. Explicitly out of scope
 
