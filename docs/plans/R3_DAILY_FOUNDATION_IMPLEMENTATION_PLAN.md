@@ -574,6 +574,53 @@ old failed manifest / ledger / staging evidence preserved. Stage-F compact
 merges staged daily rows with existing curated daily rows (including the
 Stage-E recovered delisted rows), so E existing rows are preserved.
 
+#### F recovery — explicit failed-run reuse + singleton retry (`--f-reuse-run-id`)
+
+For a terminal F failure (F1_STRICT_DECREASE / F1_FAILED_AFTER) that happened
+after a large successful TDX backfill, the operator may give the controller a
+very narrow, explicit recovery capability via
+`--stage F_daily --f-reuse-run-id <RUN_ID>`. Normal `--stage F_daily` semantics
+are unchanged; the flag is rejected with any other stage, with `--preflight-only`,
+or with `--recover-interrupted-control-plane`.
+
+Before any new manifest run is created the controller enforces, in order:
+
+1. **Persisted-state eligibility** (checked before `enter("F_daily")`): the
+   control-plane state must be `pending` / `current=null` / completed through
+   `E_delisted` with an `F_daily` abandon whose replacement is
+   `F_daily_operator_retry`. Anything else fails closed with
+   `F_REUSE_NOT_ELIGIBLE`.
+2. **Source-run eligibility**: the source run must be an `r3_daily_bars` run in
+   terminal `failed` status whose error is `F1_STRICT_DECREASE` or
+   `F1_FAILED_AFTER`. Success/running/other-job runs are rejected.
+3. **Plan-parity gate**: the source run's final daily_bars batch scope
+   (`symbol` + `window_start` + `window_end`) must exactly equal the current F
+   planned SH/SZ scope; otherwise `F_REUSE_PLAN_MISMATCH` (no guessing reuse).
+4. **Staging-completeness gate**: every final-success source batch must have a
+   non-empty staging parquet file and no failed source batch may have one;
+   otherwise `F_REUSE_STAGING_INCOMPLETE`.
+
+All gates pass on a brand-new `r3_daily_bars` run (the source run is NEVER
+mutated). The source run's final-success batches are copied byte-for-byte into
+the new run's staging (mkstemp -> copy2 -> atomic replace), restored as
+`start_batch`/`finish_batch(success)` with their original symbols/window/rows,
+and recorded in the service ledger as `REUSED_SUCCESS_BATCH` (source/new run,
+batch id, rows, file bytes) — no provider call. The source run's failed scope
+is expanded into one-batch-per-symbol `f-recovery-single-<hash>` batches using
+each symbol's current effective span, and refetched through the pinned
+`fetch_daily_bars_parallel` with 1 symbol per batch, `failover_enabled=false`,
+≤3 attempts and strict decrease on the singleton failed-symbol set. Compact
+only after reused + all singletons succeed with zero blocking incomplete
+batches; `finish_run("success")` then reports the SUM of the new run's final
+successful daily_bars batches. Any run-scoped failure (including a blocked
+compact gate `F_INCOMPLETE_BEFORE_COMPACT`) goes through the same `_fail_f_run`
+contract: confirmed failed manifest terminalization -> append-only abandon ->
+explicit operator retry on a new run id; the old and new failed runs, all
+staging and ledger evidence are preserved. Chained recovery is supported: a
+later `--f-reuse-run-id` may point at the latest failed F recovery run so only
+the still-missing singleton scope is refetched. The route never reaches
+EastMoney or Sina.
+
 Do not call the pinned generic `step_daily_bars` or its unbounded expected-date
 logic. The controller fetches daily bars separately per exchange route and
 keeps `config.failover_enabled=false` so no EastMoney/source backup is written

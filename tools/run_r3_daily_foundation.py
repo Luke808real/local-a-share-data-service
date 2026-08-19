@@ -53,6 +53,14 @@ def main() -> int:
         help="Run the fail-closed interrupted-state recovery (mutually "
         "exclusive with --stage / --preflight-only).",
     )
+    parser.add_argument(
+        "--f-reuse-run-id",
+        default=None,
+        help="Explicit operator F recovery: reuse the given FAILED r3_daily_bars "
+        "run's successful staging (no provider refetch), isolate its failed scope "
+        "into singleton symbol batches and refetch only those. ONLY valid with "
+        "--stage F_daily.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -61,6 +69,14 @@ def main() -> int:
             "--recover-interrupted-control-plane is mutually exclusive with "
             "--stage and --preflight-only"
         )
+    if args.f_reuse_run_id:
+        if args.stage != "F_daily":
+            parser.error("--f-reuse-run-id is only valid with --stage F_daily")
+        if args.preflight_only:
+            parser.error("--f-reuse-run-id cannot be combined with --preflight-only")
+        if args.recover_interrupted_control_plane:
+            parser.error("--f-reuse-run-id is mutually exclusive with "
+                         "--recover-interrupted-control-plane")
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
@@ -72,6 +88,7 @@ def main() -> int:
         Path(args.config),
         repo_root=REPO_ROOT,
         plan_sha=args.plan_sha,
+        f_reuse_run_id=args.f_reuse_run_id,
     )
     try:
         if args.recover_interrupted_control_plane:

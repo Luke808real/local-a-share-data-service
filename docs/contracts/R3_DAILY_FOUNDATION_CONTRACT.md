@@ -132,6 +132,28 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   auto-abandons or blind-restarts. Operator retry is explicit with a new run_id
   and old failed evidence preserved. F compact merges staged rows into existing
   curated daily rows, preserving Stage-E recovered delisted bars.
+- Explicit failed-run recovery (`--stage F_daily --f-reuse-run-id <RUN_ID>`) is
+  a narrow operator capability on a brand-new run; normal `--stage F_daily` is
+  unchanged and the flag is rejected elsewhere. Before the new run: persisted
+  state must be pending/current=null/through E_delisted with an
+  `F_daily_operator_retry` abandon (checked before enter); the source run must
+  be a failed `r3_daily_bars` run whose error is `F1_STRICT_DECREASE` or
+  `F1_FAILED_AFTER`; its batch scope must exactly equal the current F planned
+  scope (`F_REUSE_PLAN_MISMATCH` otherwise); every final-success batch must have
+  a non-empty staging file and no failed batch may (`F_REUSE_STAGING_INCOMPLETE`
+  otherwise). The source run is never mutated. Successful source batches are
+  copied to the new run's staging with zero provider calls and recorded in the
+  ledger as `REUSED_SUCCESS_BATCH`; the failed scope is expanded to one
+  batch-per-symbol `f-recovery-single-<hash>` TDX singletons using the current
+  effective span, ≤3 attempts, strict-decrease on the singleton failed set,
+  `failover_enabled=false`. Compact only when reused + singletons all succeed
+  and blocking incomplete batches == 0 (`F_INCOMPLETE_BEFORE_COMPACT` otherwise,
+  treated as a run-scoped terminal failure through `_fail_f_run`); success
+  totals = SUM of the new run's final successful daily_bars batches. Failed
+  recovery runs end terminal-failed with safe abandon so an explicit operator
+  retry (new run id) is available; chained recovery may point at the latest
+  failed F recovery run so only the still-missing singleton scope is refetched.
+  This route never calls EastMoney or Sina.
 - Coverage requires at least one positive-volume in-window row. Zero-volume
   placeholder rows are not coverage evidence.
 

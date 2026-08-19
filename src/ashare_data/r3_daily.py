@@ -34,6 +34,7 @@ import inspect
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -817,12 +818,14 @@ class R3Runner:
         plan_sha: str = PLAN_SHA,
         history_start: date = R3_HISTORY_START,
         daily_as_of: date = R3_DAILY_AS_OF,
+        f_reuse_run_id: str | None = None,
     ) -> None:
         self.config_path = config_path.resolve()
         self.repo_root = repo_root.resolve()
         self.plan_sha = plan_sha
         self.history_start = history_start
         self.daily_as_of = daily_as_of
+        self.f_reuse_run_id = f_reuse_run_id
         if plan_sha != PLAN_SHA:
             raise R3Error("PLAN_SHA_UNKNOWN", f"unknown reviewed plan SHA {plan_sha}")
         if not has_ancestor(self.repo_root, PLAN_SHA):
@@ -2880,10 +2883,52 @@ class R3Runner:
 
     def stage_daily(self) -> dict[str, Any]:
         self._prepare_network_env()
+        reuse = getattr(self, "f_reuse_run_id", None)
+        if reuse:
+            # Reuse eligibility must be judged against the PERSISTED pre-enter
+            # state (pending / current=null / completed through E_delisted +
+            # F_daily_operator_retry abandon evidence). After ``enter("F_daily")``
+            # the persisted current is F_daily running, which would wrongly fail
+            # the gate; checking before enter keeps a plain operator retry the
+            # only legal way into the recovery path.
+            self._assert_f_reuse_state_eligible()
         self.machine.enter("F_daily")
-        receipt = self._fetch_daily_bars_per_route()
+        if reuse:
+            receipt = self._fetch_daily_bars_reuse_route(reuse)
+        else:
+            receipt = self._fetch_daily_bars_per_route()
         self.machine.complete("F_daily", receipt)
         return receipt
+
+    def _assert_f_reuse_state_eligible(self) -> None:
+        """Persisted-state gate for explicit FAILED_RUN_REUSE_SINGLETON recovery.
+
+        The operator may only recover when the control-plane state is an exact
+        F fallback point: pending / current=null / completed through E_delisted
+        with an `F_daily` abandon that set `F_daily_operator_retry` as its
+        replacement. Anything else fails closed (no recovery from a running
+        stage, a success state, or a state that has not first abandoned F).
+        """
+        st = self.machine.load()
+        expected_prefix = [
+            "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+            "D_calendar", "E_delisted",
+        ]
+        if (
+            st.get("status") != "pending"
+            or st.get("current") is not None
+            or st.get("completed") != expected_prefix
+            or not any(
+                a.get("stage") == "F_daily"
+                and a.get("replacement") == "F_daily_operator_retry"
+                for a in st.get("abandoned", [])
+            )
+        ):
+            raise R3Error(
+                "F_REUSE_NOT_ELIGIBLE",
+                "state is not pending/current=null/through E_delisted with "
+                "F_daily_operator_retry abandon evidence",
+            )
 
     def _effective_active(self) -> pl.DataFrame:
         """SH/SZ MVP active planning set (V08).
@@ -3025,6 +3070,309 @@ class R3Runner:
                 rows_read += int(row["rows_read"] or 0)
                 rows_written += int(row["rows_written"] or 0)
         return rows_read, rows_written
+
+    def _fetch_daily_bars_reuse_route(self, reuse_run_id: str) -> dict[str, Any]:
+        """Explicit operator F recovery (FAILED_RUN_REUSE_SINGLETON).
+
+        Reuses the specified FAILED `r3_daily_bars` run's final-successful
+        daily_bars staging batches (NO provider refetch of those), isolates the
+        source run's failed scope into one-batch-per-symbol singleton TDX
+        recovery, and compacts on a brand-new run. The source run is NEVER
+        mutated. The persisted-state part of the eligibility gate is checked in
+        ``stage_daily`` against the pre-enter state (pending / current=null /
+        through E_delisted + F_daily_operator_retry abandon). Every remaining
+        eligibility / plan-parity / staging-completeness gate runs BEFORE the
+        new manifest run is created (pre-run failures: no run, no abandon,
+        current stays F_daily). Run-scoped failures reuse `_fail_f_run`
+        (confirmed failed terminalization -> append-only abandon -> re-raise).
+        """
+        manifest = Manifest(self.cfg.manifest_path)
+        src = manifest.get_run(reuse_run_id)
+        src_run = dict(src) if src is not None else None
+
+        # --- reuse eligibility gate (before any new run) ---
+        if src_run is None:
+            raise R3Error("F_REUSE_NOT_ELIGIBLE", f"source run {reuse_run_id} not found")
+        src_err = src_run.get("error_message") or ""
+        if (
+            src_run.get("job_name") != "r3_daily_bars"
+            or src_run.get("status") != "failed"
+            or not ("F1_STRICT_DECREASE" in src_err or "F1_FAILED_AFTER" in src_err)
+        ):
+            raise R3Error(
+                "F_REUSE_NOT_ELIGIBLE",
+                f"source run {reuse_run_id} is not a failed F1 r3_daily_bars run "
+                f"(job={src_run.get('job_name')} status={src_run.get('status')})",
+            )
+        src_batches = manifest.get_batches_for_run(reuse_run_id)
+
+        def _norm_row(b):
+            return {
+                "batch_id": b["batch_id"],
+                "dataset": b["dataset"],
+                "status": b["status"],
+                "symbols": json.loads(b["symbols_json"] or "[]"),
+                "window_start": b["window_start"],
+                "window_end": b["window_end"],
+                "rows_read": int(b["rows_read"] or 0),
+                "rows_written": int(b["rows_written"] or 0),
+            }
+
+        rows = [_norm_row(b) for b in src_batches if b["dataset"] == "daily_bars"]
+        src_success = [r for r in rows if r["status"] == "success"]
+        src_failed = [r for r in rows if r["status"] == "failed"]
+
+        # --- current plan parity gate ---
+        current_spans: dict[str, tuple[date, date]] = {}
+        expect_no_data: list[str] = []
+        for row in self._effective_active().iter_rows(named=True):
+            span = effective_span(row["list_date"], row["delist_date"])
+            if span is None:
+                expect_no_data.append(row["symbol"])
+            else:
+                current_spans[row["symbol"]] = span
+        cur_scope = {
+            (sym, w0.isoformat(), w1.isoformat())
+            for sym, (w0, w1) in current_spans.items()
+        }
+        src_scope = {
+            (sym, r["window_start"], r["window_end"])
+            for r in rows
+            for sym in r["symbols"]
+        }
+        if cur_scope != src_scope:
+            missing = sorted(cur_scope - src_scope)
+            extra = sorted(src_scope - cur_scope)
+            raise R3Error(
+                "F_REUSE_PLAN_MISMATCH",
+                f"source run batch scope != current F planned scope: "
+                f"missing={missing[:5]} extra={extra[:5]}",
+            )
+
+        # --- source staging completeness gate ---
+        staging_root_dir = (
+            Path(self.cfg.staging_root) / "daily_bars" / f"run_id={reuse_run_id}"
+        )
+        for r in src_success:
+            p = staging_root_dir / f"part-{r['batch_id']}.parquet"
+            if not p.exists() or p.stat().st_size <= 0:
+                raise R3Error(
+                    "F_REUSE_STAGING_INCOMPLETE",
+                    f"source success batch {r['batch_id']} has no staging file",
+                )
+        for r in src_failed:
+            if (staging_root_dir / f"part-{r['batch_id']}.parquet").exists():
+                raise R3Error(
+                    "F_REUSE_STAGING_INCOMPLETE",
+                    f"source failed batch {r['batch_id']} unexpectedly has staging",
+                )
+
+        # source scope -> singleton recovery spans (current effective span per symbol)
+        instruments = load_curated_instruments(self.cfg)
+        list_map = {
+            row["symbol"]: (row["list_date"], row["delist_date"])
+            for row in instruments.iter_rows(named=True)
+        }
+        failed_symbols: list[str] = []
+        for r in src_failed:
+            failed_symbols.extend(r["symbols"])
+        singleton_span: dict[str, tuple[date, date]] = {}
+        for sym in sorted(set(failed_symbols)):
+            lst, dlt = list_map.get(sym, (None, None))
+            span = effective_span(lst, dlt)
+            if span is None:
+                raise R3Error(
+                    "F_REUSE_PLAN_MISMATCH",
+                    f"failed symbol {sym} has no current effective span",
+                )
+            singleton_span[sym] = span
+
+        # all gates pass: create a brand-new run (source run immutable)
+        new_run_id = self._new_run("r3_daily_bars")
+        new_staging_dir = (
+            Path(self.cfg.staging_root) / "daily_bars" / f"run_id={new_run_id}"
+        )
+        reused_batch_n = 0
+        reused_rows = 0
+        reused_bytes = 0
+        try:
+            new_staging_dir.mkdir(parents=True, exist_ok=True)
+            # --- reuse successful batches (NO provider call) ---
+            for r in src_success:
+                src_p = staging_root_dir / f"part-{r['batch_id']}.parquet"
+                dst_p = new_staging_dir / f"part-{r['batch_id']}.parquet"
+                fd, tmp = tempfile.mkstemp(
+                    dir=new_staging_dir, prefix=".reuse-", suffix=".tmp"
+                )
+                os.close(fd)
+                shutil.copy2(src_p, tmp)
+                os.replace(tmp, dst_p)
+                file_bytes = dst_p.stat().st_size
+                manifest.start_batch(
+                    new_run_id, r["batch_id"], task_id="daily_bars",
+                    dataset="daily_bars", symbols=r["symbols"],
+                    window_start=r["window_start"], window_end=r["window_end"],
+                    blocks_compaction=True,
+                )
+                manifest.finish_batch(
+                    new_run_id, r["batch_id"], "success",
+                    rows_read=r["rows_read"], rows_written=r["rows_written"],
+                )
+                self.ledger.append(
+                    {
+                        "stage": "F", "event": "REUSED_SUCCESS_BATCH",
+                        "source_run_id": reuse_run_id, "source_batch_id": r["batch_id"],
+                        "new_run_id": new_run_id, "batch_id": r["batch_id"],
+                        "rows": r["rows_written"], "file_bytes": file_bytes,
+                    }
+                )
+                reused_batch_n += 1
+                reused_rows += r["rows_written"]
+                reused_bytes += file_bytes
+
+            # --- singleton recovery (1 symbol / batch, TDX only) ---
+            f1 = self._singleton_recovery_route(new_run_id, manifest, singleton_span)
+
+            # --- compact gate on the NEW run ---
+            incomplete = manifest.incomplete_batch_counts_by_dataset(new_run_id) or {}
+            blocking = {ds: n for ds, n in incomplete.items() if n > 0}
+            if blocking:
+                raise R3Error(
+                    "F_INCOMPLETE_BEFORE_COMPACT",
+                    f"incomplete manifest batches before compact: {blocking}",
+                )
+            compact = self._compact(new_run_id)
+        except R3Error as exc:
+            self._fail_f_run(
+                new_run_id, manifest, f"{exc.code}: {str(exc)[:300]}", exc
+            )
+
+        rows_read, rows_written = self._f_run_success_rows(manifest, new_run_id)
+        try:
+            manifest.finish_run(
+                new_run_id, "success", rows_read=rows_read, rows_written=rows_written
+            )
+        except Exception as exc:
+            raise R3Error(
+                "F_MANIFEST_SUCCESS_TERMINALIZATION_FAILED",
+                f"F reuse manifest success-terminalization failed: "
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        return {
+            "run_id": new_run_id,
+            "scope": "SH_SZ_MVP",
+            "manifest_run_status": "success",
+            "recovery_mode": "FAILED_RUN_REUSE_SINGLETON",
+            "reuse_source_run_id": reuse_run_id,
+            "reused_success_batch_n": reused_batch_n,
+            "reused_success_rows": reused_rows,
+            "reused_success_bytes": reused_bytes,
+            "singleton_symbol_n": len(singleton_span),
+            "f1_recovery": f1,
+            "sh_sz_symbols": len(current_spans),
+            "expected_no_data": len(expect_no_data),
+            "bj_scope": "DEFERRED_EXTENSION",
+            "bj_execution": "NOT_RUN",
+            "f2_em_primary": {
+                "status": "DEFERRED",
+                "reason": "BJ_EXTENSION_OUTSIDE_CURRENT_MVP",
+            },
+            "compact": compact,
+        }
+
+    def _singleton_recovery_route(
+        self,
+        run_id: str,
+        manifest: Any,
+        singleton_span: dict[str, tuple[date, date]],
+    ) -> dict[str, Any]:
+        """TDX singleton recovery: one symbol per batch, retry ONLY failed
+        singleton symbols, strict-decrease on the singleton symbol set."""
+        symbols = sorted(singleton_span)
+        if not symbols:
+            return {
+                "singleton_symbols": 0, "attempts": 0,
+                "failed_after": 0, "rows_written_total": 0,
+            }
+        self.cfg.failover_enabled = False
+
+        def _specs(syms):
+            out = []
+            for sym in sorted(syms):
+                w0, w1 = singleton_span[sym]
+                bid = "f-recovery-single-" + sha256_bytes(sym.encode())[:12]
+                out.append((bid, [sym], w0, w1))
+            return out
+
+        attempt = 0
+        prev_failed: set[str] = set()
+        failed: set[str] = set()
+        rows_total = 0
+        while True:
+            attempt += 1
+            specs = _specs(failed) if attempt > 1 else _specs(symbols)
+            if not specs:
+                break
+            scoped = [s for _b, syms, _w0, _w1 in specs for s in syms]
+            self.ledger.append(
+                {
+                    "stage": "F1R",
+                    "event": "ATTEMPT_START",
+                    "attempt": attempt,
+                    "batch_ids": [b for b, _s, _w0, _w1 in specs],
+                    "symbols": scoped,
+                    "symbol_hash": sha256_bytes(
+                        json.dumps(sorted(scoped), separators=(",", ":")).encode()
+                    ),
+                    "window_start": self.history_start.isoformat(),
+                    "window_end": self.daily_as_of.isoformat(),
+                    "adapter": "tdx",
+                    "status": "running",
+                }
+            )
+            result = fetch_daily_bars_parallel(
+                self.cfg, [], self.history_start, self.daily_as_of, run_id,
+                batch_specs=specs,
+            )
+            failed = set(result.get("failed_symbols") or [])
+            rows_total += int(result.get("rows_written") or 0)
+            self.ledger.append(
+                {
+                    "stage": "F1R",
+                    "event": "ATTEMPT_END",
+                    "attempt": attempt,
+                    "adapter": "tdx",
+                    "status": "success" if not failed else "failed",
+                    "failed_symbols": sorted(failed)[:200],
+                    "failed_after": len(failed),
+                    "rows_written": rows_total,
+                }
+            )
+            if not failed:
+                break
+            if attempt > 1 and len(failed) >= len(prev_failed):
+                raise R3Error(
+                    "F1_STRICT_DECREASE",
+                    f"singleton failed set did not strictly decrease "
+                    f"(attempt {attempt}: {len(prev_failed)} -> {len(failed)}); "
+                    f"fail-closed",
+                )
+            prev_failed = failed
+            if attempt >= 3:
+                break
+
+        if failed:
+            raise R3Error(
+                "F1_FAILED_AFTER",
+                f"singleton symbols still failed after retries: "
+                f"{sorted(failed)[:20]}",
+            )
+        return {
+            "singleton_symbols": len(symbols),
+            "attempts": attempt,
+            "failed_after": 0,
+            "rows_written_total": rows_total,
+        }
 
     def _tdx_route(self, run_id: str, spans: dict[str, tuple[date, date]]) -> dict[str, Any]:
         """Stage F1 (V07.3): SH/SZ via pinned fetch_daily_bars_parallel.

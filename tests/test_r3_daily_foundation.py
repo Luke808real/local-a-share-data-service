@@ -300,13 +300,20 @@ class FakeManifest:
                     "status": status,
                     "rows_read": kwargs.get("rows_read", 0),
                     "rows_written": kwargs.get("rows_written", 0),
+                    "symbols_json": kwargs.get("symbols_json")
+                    or json.dumps(kwargs.get("symbols") or []),
+                    "window_start": kwargs.get("window_start"),
+                    "window_end": kwargs.get("window_end"),
                 }
             )
         self.calls.append(("finish", args, kwargs))
 
     def finish_run(self, run_id, status, rows_read=0, rows_written=0, error_message=None):
         self.run_status = status
+        job = self.runs.get(run_id, {}).get("job_name", "r3_daily_bars")
         self.runs[run_id] = {
+            "run_id": run_id,
+            "job_name": job,
             "status": status,
             "rows_read": rows_read,
             "rows_written": rows_written,
@@ -315,6 +322,40 @@ class FakeManifest:
 
     def get_batches_for_run(self, run_id):
         return [b for b in self.batches if b["run_id"] == run_id]
+
+    def get_run(self, run_id):
+        return self.runs.get(run_id)
+
+    def seed_run(self, run_id, *, job_name="r3_daily_bars", status="failed",
+                 error_message=None, rows_read=0, rows_written=0):
+        """Seed an immutable source run (recovery input) without touching state."""
+        self.runs[run_id] = {
+            "run_id": run_id,
+            "job_name": job_name,
+            "status": status,
+            "rows_read": rows_read,
+            "rows_written": rows_written,
+            "error_message": error_message,
+            "finished_at": "2026-01-01T00:00:00Z",
+        }
+
+    def seed_batch(self, run_id, batch_id, *, status, dataset="daily_bars",
+                   symbols=None, window_start=None, window_end=None,
+                   rows_read=0, rows_written=0):
+        """Seed a source-run manifest batch (symbols/window persisted)."""
+        self.batches.append(
+            {
+                "run_id": run_id,
+                "batch_id": batch_id,
+                "dataset": dataset,
+                "status": status,
+                "rows_read": rows_read,
+                "rows_written": rows_written,
+                "symbols_json": json.dumps(symbols or []),
+                "window_start": window_start,
+                "window_end": window_end,
+            }
+        )
 
     def supersede_batches(self, run_id, batch_ids, *, superseded_by):
         count = 0
@@ -4479,6 +4520,517 @@ def test_v08_f_e_existing_rows_preserved_by_compact_merge():
     assert "600001.SH" in syms  # E_EXISTING_ROWS_PRESERVED = true
     assert "600000.SH" in syms
     assert merged.height == 2
+
+
+# ============================================================================
+# V08 F FAILED-RUN REUSE + SINGLETON RECOVERY (--f-reuse-run-id)
+# ============================================================================
+
+
+def _src_batch(batch_id, symbols, *, status="success", rows=10):
+    """One source-run batch descriptor (identical effective window)."""
+    return {
+        "batch_id": batch_id,
+        "symbols": symbols,
+        "window_start": R3_HISTORY_START.isoformat(),
+        "window_end": R3_DAILY_AS_OF.isoformat(),
+        "status": status,
+        "rows_read": rows,
+        "rows_written": rows,
+    }
+
+
+def _v08_f_reuse_ctx(
+    monkeypatch,
+    tmp_path,
+    *,
+    src_success,
+    src_failed,
+    singleton_fetch_impl,
+    instruments_df=None,
+    compact_impl=None,
+    source_run_id="src-fail-1",
+    src_error="F1_STRICT_DECREASE (attempt 3: 2 -> 2)",
+    seed_f_retry_abandon=True,
+):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.f_reuse_run_id = source_run_id
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+        batch_size=1,
+        failover_enabled=False,
+    )
+    runner.history_start = R3_HISTORY_START
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    state = {
+        "status": "pending",
+        "current": None,
+        "completed": [
+            "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+            "D_calendar", "E_delisted",
+        ],
+    }
+    if seed_f_retry_abandon:
+        state["abandoned"] = [
+            {
+                "stage": "F_daily",
+                "reason": "F_TERMINAL_FAILURE:F1_STRICT_DECREASE:field",
+                "replacement": "F_daily_operator_retry",
+                "abandoned_at": "2026-01-01T00:00:00Z",
+                "prior_started_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    runner.machine.save(state)
+
+    runs = {"n": 0}
+
+    def _new_run(job):
+        runs["n"] += 1
+        return f"new-rid-{runs['n']}"
+
+    runner._new_run = _new_run
+    compacts = {"n": 0}
+    if compact_impl is None:
+        compact_impl = lambda rid: {"status": "success"}
+
+    def _compact(rid):
+        compacts["n"] += 1
+        return compact_impl(rid)
+
+    runner._compact = _compact
+
+    class Led:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, rec):
+            self.calls.append(rec)
+
+    ledger = Led()
+    runner.ledger = ledger
+
+    manifest = FakeManifest([])
+    manifest.seed_run(
+        source_run_id, job_name="r3_daily_bars", status="failed",
+        error_message=src_error,
+    )
+    staging_root = tmp_path / "staging"
+    src_staging = staging_root / "daily_bars" / f"run_id={source_run_id}"
+    for b in src_success:
+        manifest.seed_batch(
+            source_run_id, b["batch_id"], status="success",
+            symbols=b["symbols"],
+            window_start=b["window_start"], window_end=b["window_end"],
+            rows_read=b["rows_read"], rows_written=b["rows_written"],
+        )
+        src_staging.mkdir(parents=True, exist_ok=True)
+        (src_staging / f"part-{b['batch_id']}.parquet").write_bytes(b"00")
+    for b in src_failed:
+        manifest.seed_batch(
+            source_run_id, b["batch_id"], status="failed",
+            symbols=b["symbols"],
+            window_start=b["window_start"], window_end=b["window_end"],
+            rows_read=0, rows_written=0,
+        )
+
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
+    if instruments_df is None:
+        all_syms = []
+        for b in src_success + src_failed:
+            all_syms.extend(b["symbols"])
+        instruments_df = _v08_instruments(
+            *[
+                (s, "", "stock", date(2000, 1, 1), None)
+                for s in sorted(set(all_syms))
+            ]
+        )
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: instruments_df)
+
+    calls = {"n": 0, "specs_by_attempt": {}}
+
+    def wrapped_fetch(config, symbols, start, end, run_id, batch_specs=None):
+        calls["n"] += 1
+        calls["specs_by_attempt"][calls["n"]] = list(batch_specs or [])
+        result = singleton_fetch_impl(calls["n"])
+        failed = set(result.get("failed_symbols") or [])
+        rows = int(result.get("rows_written") or 0)
+        for spec in (batch_specs or []):
+            batch_id = spec[0]
+            # symbol-accurate: only the actually-failed singleton is marked failed
+            status = "failed" if any(s in failed for s in spec[1]) else "success"
+            manifest.finish_batch(
+                run_id, batch_id, status,
+                dataset="daily_bars", rows_read=rows, rows_written=rows,
+            )
+        return result
+
+    monkeypatch.setattr(r3, "fetch_daily_bars_parallel", wrapped_fetch)
+    return runner, manifest, runs, compacts, calls, ledger, staging_root
+
+
+def test_f_reuse_success_reuses_staging_no_refetch_compact_once(monkeypatch, tmp_path):
+    # A (eligible) + B (plan parity PASS) + C (staging complete) + D (no
+    # refetch of success scope) + F (single compact, manifest success, F done).
+    src_success = [
+        _src_batch("b1", ["600000.SH", "600001.SH"], status="success", rows=20)
+    ]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+    )
+    src_run_before = dict(manifest.get_run("src-fail-1"))
+    src_file_before = (staging_root / "daily_bars" / "run_id=src-fail-1"
+                       / "part-b1.parquet").read_bytes()
+
+    receipt = runner.stage_daily()
+
+    assert receipt["recovery_mode"] == "FAILED_RUN_REUSE_SINGLETON"
+    assert receipt["reuse_source_run_id"] == "src-fail-1"
+    assert receipt["reused_success_batch_n"] == 1
+    assert receipt["reused_success_rows"] == 20
+    assert receipt["singleton_symbol_n"] == 1
+    assert receipt["f1_recovery"]["attempts"] == 1
+    assert receipt["f2_em_primary"]["status"] == "DEFERRED"
+    assert "daily_ready" not in {k.lower() for k in receipt}
+    state = runner.machine.load()
+    assert "F_daily" in state["completed"]
+    assert state["current"] is None and state["status"] == "pending"
+
+    # provider invoked only for the singleton scope (1 attempt), never the
+    # reused success symbols
+    assert calls["n"] == 1
+    requested = []
+    for specs in calls["specs_by_attempt"].values():
+        for _bid, syms, _w0, _w1 in specs:
+            requested.extend(syms)
+    assert "600000.SH" not in requested and "600001.SH" not in requested
+    assert "000001.SZ" in requested
+
+    # singlesuccess batches copied into the NEW run staging dir
+    new_staging = staging_root / "daily_bars" / "run_id=new-rid-1"
+    assert (new_staging / "part-b1.parquet").read_bytes() == src_file_before
+
+    # manifest totals = reused rows + singleton rows
+    rid = "new-rid-1"
+    assert manifest.runs[rid]["status"] == "success"
+    assert manifest.runs[rid]["rows_written"] == 25
+    assert compacts["n"] == 1
+
+    # reused batch was recorded in the new run's batches without provider call
+    reused_events = [c for c in ledger.calls
+                     if c.get("event") == "REUSED_SUCCESS_BATCH"]
+    assert len(reused_events) == 1
+    assert reused_events[0]["source_run_id"] == "src-fail-1"
+    assert reused_events[0]["new_run_id"] == rid
+
+    # preservation: source run + staging untouched
+    assert dict(manifest.get_run("src-fail-1")) == src_run_before
+    assert (staging_root / "daily_bars" / "run_id=src-fail-1"
+            / "part-b1.parquet").read_bytes() == src_file_before
+
+
+def test_f_reuse_rejects_success_source_run(monkeypatch, tmp_path):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+        src_error=None,
+    )
+    manifest.get_run("src-fail-1")["status"] = "success"
+    with pytest.raises(R3Error, match="F_REUSE_NOT_ELIGIBLE"):
+        runner.stage_daily()
+    assert runs["n"] == 0  # rejected before any new manifest run
+    state = runner.machine.load()
+    assert state["current"] == "F_daily" and "F_daily" not in state["completed"]
+    # pre-run failure: no NEW abandon was added (the seeded operator-retry
+    # abandon record from the fallback state still exists but is unchanged)
+    assert len(state.get("abandoned", [])) == 1
+
+
+def test_f_reuse_rejects_wrong_job(monkeypatch, tmp_path):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+    )
+    manifest.get_run("src-fail-1")["job_name"] = "r3_instruments"
+    with pytest.raises(R3Error, match="F_REUSE_NOT_ELIGIBLE"):
+        runner.stage_daily()
+    assert runs["n"] == 0
+    assert manifest.get_run("src-fail-1")["job_name"] == "r3_instruments"
+
+
+def test_f_reuse_rejects_missing_operator_retry_abandon(monkeypatch, tmp_path):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+        seed_f_retry_abandon=False,
+    )
+    with pytest.raises(R3Error, match="F_REUSE_NOT_ELIGIBLE"):
+        runner.stage_daily()
+    # persisted state gate runs BEFORE enter -> F_daily never entered
+    state = runner.machine.load()
+    assert state["current"] is None and state["status"] == "pending"
+    assert "F_daily" not in state["completed"]
+    assert runs["n"] == 0
+
+
+def test_f_reuse_plan_mismatch_fails_closed(monkeypatch, tmp_path):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+    )
+    # add a symbol to the CURRENT plan that is absent from the source scope
+    extra = _v08_instruments(
+        ("600000.SH", "", "stock", date(2000, 1, 1), None),
+        ("000001.SZ", "", "stock", date(2000, 1, 1), None),
+        ("600888.SH", "", "stock", date(2000, 1, 1), None),
+    )
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: extra)
+    with pytest.raises(R3Error, match="F_REUSE_PLAN_MISMATCH"):
+        runner.stage_daily()
+    assert runs["n"] == 0
+    assert calls["n"] == 0
+    assert compacts["n"] == 0
+
+
+def test_f_reuse_staging_incomplete_fails_closed(monkeypatch, tmp_path):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+    )
+    # delete the source success staging file -> completeness gate must block
+    (staging_root / "daily_bars" / "run_id=src-fail-1"
+     / "part-b1.parquet").unlink()
+    with pytest.raises(R3Error, match="F_REUSE_STAGING_INCOMPLETE"):
+        runner.stage_daily()
+    assert runs["n"] == 0
+    assert calls["n"] == 0
+    assert compacts["n"] == 0
+
+
+def test_f_reuse_failed_batch_expands_to_singleton_batches(monkeypatch, tmp_path):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [
+        _src_batch("b44", ["000001.SZ", "000002.SZ", "000003.SZ"],
+                   status="failed", rows=0)
+    ]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 3}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+    )
+    receipt = runner.stage_daily()
+    assert calls["n"] == 1
+    specs1 = calls["specs_by_attempt"][1]
+    assert len(specs1) == 3  # 3 singleton batches, not one multi-symbol batch
+    for _bid, syms, _w0, _w1 in specs1:
+        assert len(syms) == 1
+    assert receipt["singleton_symbol_n"] == 3
+    assert receipt["f1_recovery"]["singleton_symbols"] == 3
+
+
+def test_f_reuse_one_singleton_failure_isolates_and_successful_sibling_safe(
+    monkeypatch, tmp_path
+):
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [
+        _src_batch("b44", ["000001.SZ", "000002.SZ", "000003.SZ"],
+                   status="failed", rows=0)
+    ]
+
+    def flaky(attempt):
+        if attempt == 1:
+            return {"failed_symbols": ["000002.SZ"], "rows_written": 2}
+        return {"failed_symbols": [], "rows_written": 1}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=flaky,
+    )
+    receipt = runner.stage_daily()
+    assert receipt["manifest_run_status"] == "success"
+    assert calls["n"] == 2
+    attempt1_syms = {s for _b, syms, _w0, _w1 in calls["specs_by_attempt"][1]
+                     for s in syms}
+    attempt2_syms = {s for _b, syms, _w0, _w1 in calls["specs_by_attempt"][2]
+                     for s in syms}
+    assert attempt1_syms == {"000001.SZ", "000002.SZ", "000003.SZ"}
+    # retry ONLY the failed singleton; successful siblings never re-requested
+    assert attempt2_syms == {"000002.SZ"}
+    # the successful sibling batch stays success (no collateral failure)
+    statuses = [
+        b["status"]
+        for b in manifest.get_batches_for_run("new-rid-1")
+        if b["batch_id"] == "f-recovery-single-" + r3.sha256_bytes(b"000001.SZ")[:12]
+    ]
+    assert statuses == ["success"]
+
+
+def test_f_reuse_remaining_failure_no_compact_terminal_failed(monkeypatch, tmp_path):
+    # G: singleton scope 3 symbols, strictly-decreasing failures that never hit
+    # zero by attempt 3 -> F1_FAILED_AFTER -> compact=0 -> manifest failed ->
+    # safe abandon (explicit operator retry available again).
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [
+        _src_batch("b44", ["000001.SZ", "000002.SZ", "000003.SZ"],
+                   status="failed", rows=0)
+    ]
+
+    def failing(attempt):
+        if attempt == 1:
+            return {"failed_symbols": ["000001.SZ", "000002.SZ", "000003.SZ"],
+                    "rows_written": 0}
+        if attempt == 2:
+            return {"failed_symbols": ["000001.SZ", "000002.SZ"], "rows_written": 0}
+        return {"failed_symbols": ["000001.SZ"], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=failing,
+    )
+    with pytest.raises(R3Error, match="F1_FAILED_AFTER"):
+        runner.stage_daily()
+    assert calls["n"] == 3  # only in-invocation attempts; no whole-stage auto retry
+    assert compacts["n"] == 0
+    state = runner.machine.load()
+    assert state["status"] == "pending" and state["current"] is None
+    assert "F_daily" not in state["completed"]
+    assert any(
+        a.get("stage") == "F_daily" and a.get("replacement") == "F_daily_operator_retry"
+        for a in state.get("abandoned", [])
+    )
+    rid = "new-rid-1"
+    assert manifest.runs[rid]["status"] == "failed"
+
+
+def test_f_reuse_incomplete_before_compact_terminal_failure(monkeypatch, tmp_path):
+    # Recovery run reaches the compact gate with a blocking incomplete batch:
+    # fail closed via F_INCOMPLETE_BEFORE_COMPACT, manifest failed, safe abandon.
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("b2", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+    )
+
+    def blocked_incomplete(run_id):
+        return {"daily_bars": 1}
+
+    monkeypatch.setattr(
+        manifest, "incomplete_batch_counts_by_dataset", blocked_incomplete
+    )
+    with pytest.raises(R3Error, match="F_INCOMPLETE_BEFORE_COMPACT"):
+        runner.stage_daily()
+    assert compacts["n"] == 0
+    assert manifest.runs["new-rid-1"]["status"] == "failed"
+    state = runner.machine.load()
+    assert state["current"] is None and "F_daily" not in state["completed"]
+
+
+def test_f_reuse_chain_recovery_latest_failed_run(monkeypatch, tmp_path):
+    # CHAINED_RECOVERY_SUPPORTED: a later operator recovery can target the
+    # LATEST failed F run (1497+128 style), not the original run id. The source
+    # carries full batch metadata exactly as the real manifest persists it.
+    src_success = [
+        _src_batch("b1", ["600000.SH"], status="success", rows=10),
+        _src_batch("b2", ["600001.SH"], status="success", rows=10),
+    ]
+    src_failed = [_src_batch("b3", ["000001.SZ"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 5}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root = _v08_f_reuse_ctx(
+        monkeypatch, tmp_path,
+        src_success=src_success, src_failed=src_failed,
+        singleton_fetch_impl=ok_fetch,
+        source_run_id="reuse-rid-1",  # the LATEST failed run, not the original
+        src_error="F1_FAILED_AFTER (singleton symbols still failed)",
+    )
+    receipt = runner.stage_daily()
+    assert receipt["reuse_source_run_id"] == "reuse-rid-1"
+    assert receipt["reused_success_batch_n"] == 2
+    assert receipt["singleton_symbol_n"] == 1
+    assert runs["n"] == 1  # strictly one new run created
+    assert calls["n"] == 1
+    requested = []
+    for specs in calls["specs_by_attempt"].values():
+        for _b, syms, _w0, _w1 in specs:
+            requested.extend(syms)
+    # only the still-missing symbol is refetched; all prior-success is reused
+    assert requested == ["000001.SZ"]
+    assert "600000.SH" not in requested and "600001.SH" not in requested
+
+
+def test_f_reuse_surface_never_reaches_em_or_sina():
+    src = inspect.getsource(r3.R3Runner._fetch_daily_bars_reuse_route) + (
+        inspect.getsource(r3.R3Runner._singleton_recovery_route)
+    )
+    for banned in (
+        "em_daily_tristate", "fetch_daily_bars_sina", "fetch_bars_via_sina",
+        "sina", "eastmoney", "EastMoney", "failover_route",
+    ):
+        assert banned.lower() not in src.lower()
+
+
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================
