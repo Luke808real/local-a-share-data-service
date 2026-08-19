@@ -8,6 +8,7 @@ SPEC_VERSION: V1.0 FROZEN
 CURRENT_PHASE: R3 SH/SZ MVP COMPLETE — R4 SH/SZ PLANNING NEXT
 
 - R3_SHSZ_DAILY_FOUNDATION = PASS
+- R3_SHSZ_CLOSEOUT = FROZEN
 - ALL_A_DAILY_READY = FALSE
 - DAILY_READY = FALSE
 - BJ_EXTENSION = DEFERRED
@@ -141,10 +142,15 @@ independently reviewed by GPT-5.6 Terra/max and adjudicated by the GPT-5.6 Sol r
 R2 AUDIT_PASS — exact pushed commit
 e354f59297cc2cf9722304f39a315712761d4b91
 independently reviewed by GPT-5.6 Terra/max and adjudicated by the GPT-5.6 Sol root on 2026-08-18.
+R3 SH/SZ MVP CLOSEOUT AUDIT_PASS — exact pushed commit
+15f1960e3cfb0ec6bda82052828e4dcf31e935c1
+independently reviewed via GitHub by GPT-5.6 Sol on 2026-08-19
+(R3_V08_SHSZ_CLOSEOUT_FACT_FIX01; exact single child of 1d52ace9;
+ F-history correction PASS; R3_SHSZ_CLOSEOUT = FROZEN).
 
 R3 SH/SZ MVP runtime/author: staged executions were completed on the real root;
-G PASS is author status. A formal independent audit of the exact pushed R3
-closeout commit remains pending with GPT-5.6 Sol.
+G PASS was author status and has since received the independent audit PASS
+recorded above. R3_SHSZ_CLOSEOUT is FROZEN at the audited exact commit.
 
 ## LINEAGE (R3 SH/SZ MVP)
 
