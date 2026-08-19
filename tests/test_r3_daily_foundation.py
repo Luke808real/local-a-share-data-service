@@ -5625,6 +5625,331 @@ def test_f_asof_source_run_immutable_after_safe_contraction(monkeypatch, tmp_pat
 
 
 # ============================================================================
+# V08 G COVERAGE: formal authority survivorship + terminal lifecycle + wedged
+# G control-plane recovery
+# ============================================================================
+
+
+_G_PREFIX = [
+    "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+    "D_calendar", "E_delisted", "F_daily",
+]
+
+
+def _g_ctx(monkeypatch, tmp_path, *, idr=None, er=None, upstream=None):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    formal_delisted = {"600001.SH": "2019-12-31", "600002.SH": "2020-06-30"}
+    target_hash = r3.sha256_bytes(
+        json.dumps(sorted(formal_delisted), separators=(",", ":")).encode()
+    )
+    idr = idr if idr is not None else {
+        "scope": "SH_SZ_MVP",
+        "shsz_identity_complete": True,
+        "formal_identity_hash": "a1" * 32,
+        "formal_identity_n": 2,
+        "shsz_formal_delisted": formal_delisted,
+        "shsz_formal_delisted_n": 2,
+        "shsz_formal_delisted_hash": "b2" * 32,
+    }
+    er = er if er is not None else {
+        "scope": "SH_SZ_MVP",
+        "e_shsz_complete": True,
+        "targets": 2,
+        "recover": 2,
+        "recovered": 2,
+        "unresolved": 0,
+        "target_set_sha": target_hash,
+    }
+    (meta / "r3-identity-receipt.json").write_text(json.dumps(idr))
+    (meta / "r3-delisted-recovery.json").write_text(json.dumps(er))
+    upstream = upstream if upstream is not None else {
+        "window": {"start": "2016-01-01", "end": "2026-08-17"},
+        "claim": "catalog_terminal_survivorship_coverage",
+        "discovery_complete": False,
+        "known_coverage_complete": True,
+        "verified": False,
+        "counts": {
+            "pending_probe": 30582,
+            "missing_bars": 0, "unknown_overlap": 0, "terminal_mismatch": 0,
+            "recent_quarantined": 0, "formal_unresolved": 0,
+            "missing_instrument": 0, "invalid_delist_date": 0,
+            "terminal_nonprinting": 0, "formal_no_overlap": 0,
+        },
+    }
+    seen = {"upstream": 0}
+
+    def _fake_upstream(*a, **k):
+        seen["upstream"] += 1
+        return upstream
+
+    monkeypatch.setattr(r3, "delisted_coverage_report", _fake_upstream)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.state_path = meta / "execution-state.json"
+    runner.ledger = r3.ServiceLedger(meta / "service-ledger.jsonl")
+    runner.machine = r3.StageMachine(runner.state_path)
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+        meta_root=tmp_path / "meta",
+    )
+    runner.plan_sha = PLAN_SHA
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    return runner, meta, seen
+
+
+def test_g_report_current_incident_verified_despite_legacy_deferred(monkeypatch, tmp_path):
+    # Legacy Sina discovery incomplete (30582 pending) + authoritative formal/
+    # E/known-coverage complete -> r3_shsz_verified=True, legacy preserved.
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    report = runner._r3_shsz_survivorship_report()
+    assert report["r3_shsz_verified"] is True
+    assert report["formal_identity_authority_complete"] is True
+    assert report["formal_recovery_complete"] is True
+    assert report["known_coverage_complete"] is True
+    assert report["claim"] == "formal_identity_survivorship_coverage"
+    assert report["scope"] == "SH_SZ_MVP"
+    assert report["authority"] == "BAOSTOCK_QUERY_STOCK_BASIC"
+    assert report["formal_delisted_n"] == 2
+    assert report["e_recovered_n"] == 2
+    assert report["e_unresolved_n"] == 0
+    assert report["legacy_discovery_complete"] is False
+    assert report["legacy_pending_probe"] == 30582
+    assert report["legacy_discovery_status"] == "DEFERRED_NON_AUTHORITY"
+    # upstream verdict preserved untouched (verified stays False)
+    assert report["upstream_report"]["verified"] is False
+    assert report["upstream_report"]["discovery_complete"] is False
+
+
+def test_g_report_identity_missing_fails(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    (meta / "r3-identity-receipt.json").unlink()
+    with pytest.raises(R3Error, match="G_FORMAL_AUTHORITY_UNAVAILABLE"):
+        runner._r3_shsz_survivorship_report()
+
+
+def test_g_report_identity_incomplete_fails(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(
+        monkeypatch, tmp_path,
+        idr={"scope": "SH_SZ_MVP", "shsz_identity_complete": False},
+    )
+    with pytest.raises(R3Error, match="G_FORMAL_AUTHORITY_UNAVAILABLE"):
+        runner._r3_shsz_survivorship_report()
+
+
+def test_g_report_formal_e_mismatch_fails(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(
+        monkeypatch, tmp_path,
+        er={"scope": "SH_SZ_MVP", "e_shsz_complete": True, "targets": 1,
+            "recover": 1, "recovered": 1, "unresolved": 0, "target_set_sha": "x"},
+    )
+    with pytest.raises(R3Error, match="G_FORMAL_E_RECOVERY_MISMATCH"):
+        runner._r3_shsz_survivorship_report()
+
+
+def test_g_report_e_unresolved_fails(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(
+        monkeypatch, tmp_path,
+        er={
+            "scope": "SH_SZ_MVP", "e_shsz_complete": True, "targets": 2,
+            "recover": 2, "recovered": 2, "unresolved": 1,
+            "target_set_sha": r3.sha256_bytes(
+                json.dumps(["600001.SH", "600002.SH"], separators=(",", ":")).encode()
+            ),
+        },
+    )
+    with pytest.raises(R3Error, match="G_FORMAL_E_RECOVERY_MISMATCH"):
+        runner._r3_shsz_survivorship_report()
+
+
+def test_g_report_missing_bars_hard_blocker_fails(monkeypatch, tmp_path):
+    upstream = {
+        "window": {}, "claim": "c", "discovery_complete": False,
+        "known_coverage_complete": True, "verified": False,
+        "counts": {"missing_bars": 1, "pending_probe": 0},
+    }
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path, upstream=upstream)
+    report = runner._r3_shsz_survivorship_report()
+    assert report["r3_shsz_verified"] is False
+    assert report["hard_blockers"]["missing_bars"] == 1
+
+
+def test_g_report_formal_unresolved_hard_blocker_fails(monkeypatch, tmp_path):
+    upstream = {
+        "window": {}, "claim": "c", "discovery_complete": False,
+        "known_coverage_complete": True, "verified": False,
+        "counts": {"formal_unresolved": 3, "pending_probe": 0},
+    }
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path, upstream=upstream)
+    report = runner._r3_shsz_survivorship_report()
+    assert report["r3_shsz_verified"] is False
+
+
+def test_g_report_known_coverage_incomplete_fails(monkeypatch, tmp_path):
+    upstream = {
+        "window": {}, "claim": "c", "discovery_complete": False,
+        "known_coverage_complete": False, "verified": False,
+        "counts": {"pending_probe": 0},
+    }
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path, upstream=upstream)
+    report = runner._r3_shsz_survivorship_report()
+    assert report["r3_shsz_verified"] is False
+
+
+def test_g_stage_success_writes_report_and_completes(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    runner.machine.save(
+        {"status": "pending", "current": None, "completed": list(_G_PREFIX)}
+    )
+    report = runner.stage_coverage()
+    assert report["r3_shsz_verified"] is True
+    assert (meta / "r3-delisted-coverage.json").exists()
+    persisted = json.loads((meta / "r3-delisted-coverage.json").read_text())
+    assert persisted["r3_shsz_verified"] is True
+    assert persisted["legacy_discovery_status"] == "DEFERRED_NON_AUTHORITY"
+    state = runner.machine.load()
+    assert "G_coverage" in state["completed"]
+    assert state["current"] is None and state["status"] == "pending"
+    assert seen["upstream"] == 1
+
+
+def test_g_stage_validation_fail_abandons_for_operator_retry(monkeypatch, tmp_path):
+    upstream = {
+        "window": {}, "claim": "c", "discovery_complete": False,
+        "known_coverage_complete": True, "verified": False,
+        "counts": {"missing_bars": 2, "pending_probe": 0},
+    }
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path, upstream=upstream)
+    runner.machine.save(
+        {"status": "pending", "current": None, "completed": list(_G_PREFIX)}
+    )
+    with pytest.raises(R3Error, match="R3_SHSZ_COVERAGE_UNVERIFIED"):
+        runner.stage_coverage()
+    assert not (meta / "r3-delisted-coverage.json").exists()
+    state = runner.machine.load()
+    assert state["status"] == "pending" and state["current"] is None
+    assert "G_coverage" not in state["completed"]
+    assert state["completed"] == _G_PREFIX
+    assert any(
+        a.get("stage") == "G_coverage"
+        and a.get("replacement") == "G_coverage_operator_retry"
+        for a in state.get("abandoned", [])
+    )
+    assert seen["upstream"] == 1  # no automatic G retry
+
+
+def test_g_stage_abandon_failure_fails_closed(monkeypatch, tmp_path):
+    upstream = {
+        "window": {}, "claim": "c", "discovery_complete": False,
+        "known_coverage_complete": True, "verified": False,
+        "counts": {"missing_bars": 2, "pending_probe": 0},
+    }
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path, upstream=upstream)
+    runner.machine.save(
+        {"status": "pending", "current": None, "completed": list(_G_PREFIX)}
+    )
+
+    def boom_abandon(self, stage, **kw):
+        raise RuntimeError("abandon boom")
+
+    monkeypatch.setattr(r3.StageMachine, "abandon_current", boom_abandon)
+    with pytest.raises(R3Error, match="G_FAILURE_TERMINALIZATION_FAILED"):
+        runner.stage_coverage()
+    state = runner.machine.load()
+    assert state["status"] == "running" and state["current"] == "G_coverage"
+    assert "G_coverage" not in state["completed"]
+
+
+def test_g_recover_interrupted_current_incident(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    runner.machine.save(
+        {
+            "status": "running",
+            "current": "G_coverage",
+            "completed": list(_G_PREFIX),
+            "evidence": {"F_daily": {"manifest_run_status": "success"}},
+        }
+    )
+    result = runner.recover_interrupted_control_plane()
+    assert result["RECOVERED_G_CONTROL_PLANE"] is True
+    assert result["state_after"] == {
+        "status": "pending", "current": None, "completed": _G_PREFIX,
+    }
+    after = runner.machine.load()
+    assert after["current"] is None and after["status"] == "pending"
+    assert "G_coverage" not in after["completed"]
+    assert any(
+        a.get("stage") == "G_coverage"
+        and a.get("replacement") == "G_coverage_operator_retry"
+        for a in after.get("abandoned", [])
+    )
+    ledger = (meta / "service-ledger.jsonl").read_text()
+    assert "RECOVER_INTERRUPTED_G_COVERAGE" in ledger
+    assert runner.service_lock_active() is False
+
+
+def test_g_recover_wrong_state_rejected(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    runner.machine.save(
+        {"status": "running", "current": "C_merge", "completed": ["A_instruments", "B_discovery"]}
+    )
+    with pytest.raises(R3Error, match="B_RECOVERY_NOT_SAFE"):
+        runner.recover_interrupted_control_plane()
+
+
+def test_g_recover_g_not_f_success_rejected(monkeypatch, tmp_path):
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    runner.machine.save(
+        {
+            "status": "running",
+            "current": "G_coverage",
+            "completed": list(_G_PREFIX),
+            "evidence": {},  # no F_daily success evidence
+        }
+    )
+    with pytest.raises(R3Error, match="G_RECOVERY_NOT_SAFE"):
+        runner.recover_interrupted_control_plane()
+
+
+def test_g_recover_live_writer_lock_rejected(monkeypatch, tmp_path):
+    import fcntl
+
+    runner, meta, seen = _g_ctx(monkeypatch, tmp_path)
+    runner.machine.save(
+        {
+            "status": "running",
+            "current": "G_coverage",
+            "completed": list(_G_PREFIX),
+            "evidence": {"F_daily": {"manifest_run_status": "success"}},
+        }
+    )
+    lock_path = meta / "runner.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(R3Error, match="WRITER_LOCKED"):
+            runner.recover_interrupted_control_plane()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_g_wrapper_only_reads_no_market_write():
+    src = inspect.getsource(r3.R3Runner.stage_coverage) + (
+        inspect.getsource(r3.R3Runner._r3_shsz_survivorship_report)
+    )
+    for banned in (
+        "_compact", "staging", "fetch_daily_bars", "fetch_delisted_bars",
+        "with_provenance",
+    ):
+        assert banned not in src
+
+
+# ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================
 

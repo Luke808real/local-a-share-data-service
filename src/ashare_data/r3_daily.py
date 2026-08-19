@@ -1193,6 +1193,8 @@ class R3Runner:
         try:
             state = self.machine.load()
             current = state.get("current")
+            if current == "G_coverage":
+                return self._recover_interrupted_g_coverage(state)
             completed = list(state.get("completed") or [])
             if current != "B_discovery" or completed != ["A_instruments"]:
                 raise R3Error(
@@ -1265,6 +1267,78 @@ class R3Runner:
             return receipt
         finally:
             self._release_lock(fd)
+
+    def _recover_interrupted_g_coverage(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Strict G incident control-plane recovery (append-only, no rerun).
+
+        Exact incident: status=running, current=G_coverage, completed exactly
+        through F_daily, G not completed, and the F_daily completion evidence
+        confirms a successful F manifest run. The writer lock is already held by
+        the caller (non-blocking acquire proves no live holder), no market data
+        is touched, no G re-verification or success report is written. A single
+        append-only ``abandon_current("G_coverage", ...)`` with replacement
+        ``G_coverage_operator_retry`` makes `--stage G_coverage` again eligible
+        for an explicit operator retry. Anything else fails closed with
+        ``G_RECOVERY_NOT_SAFE``.
+        """
+        current = state.get("current")
+        completed = list(state.get("completed") or [])
+        expected_prefix = [
+            "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+            "D_calendar", "E_delisted", "F_daily",
+        ]
+        if (
+            state.get("status") != "running"
+            or current != "G_coverage"
+            or completed != expected_prefix
+            or "G_coverage" in completed
+        ):
+            raise R3Error(
+                "G_RECOVERY_NOT_SAFE",
+                f"incident must be running/current=G_coverage completed "
+                f"through F_daily; got status={state.get('status')} "
+                f"current={current} completed={completed}",
+            )
+        f_evidence = (state.get("evidence") or {}).get("F_daily") or {}
+        if f_evidence.get("manifest_run_status") != "success":
+            raise R3Error(
+                "G_RECOVERY_NOT_SAFE",
+                "F_daily completion evidence does not confirm a success run",
+            )
+        prior_hash = (
+            sha256_file(self.state_path)
+            if self.state_path.exists()
+            else "0" * 64
+        )
+        self.ledger.append(
+            {
+                "stage": "CTRL_RECOVERY",
+                "event": "INTERRUPTED_G_ABANDONED",
+                "reason": "RECOVER_INTERRUPTED_G_COVERAGE",
+                "replacement": "G_coverage_operator_retry",
+                "state_before_hash": prior_hash,
+            }
+        )
+        self.machine.abandon_current(
+            "G_coverage",
+            reason="RECOVER_INTERRUPTED_G_COVERAGE",
+            replacement="G_coverage_operator_retry",
+        )
+        after = self.machine.load()
+        return {
+            "RECOVERED_G_CONTROL_PLANE": True,
+            "state_before": {
+                "status": state.get("status"),
+                "current": current,
+                "completed": completed,
+            },
+            "state_after": {
+                "status": after["status"],
+                "current": after.get("current"),
+                "completed": after["completed"],
+            },
+            "replacement": "G_coverage_operator_retry",
+        }
 
     # --- stages ------------------------------------------------------------
 
@@ -3918,15 +3992,171 @@ class R3Runner:
         }
 
     def stage_coverage(self) -> dict[str, Any]:
+        """Stage G_coverage — R3 SH/SZ survivorship gate (V08 formal authority).
+
+        The R3 SH/SZ completion authority is the frozen Stage-B Baostock
+        stock_basic formal identity + the Stage-E recovery closure, NOT the
+        legacy Sina issued-code discovery (which is preserved only as a
+        DEFERRED_NON_AUTHORITY observation). The upstream
+        ``delisted_coverage_report`` is still invoked once and never mutated;
+        its known-coverage checks and hard blockers gate R3 SH/SZ, while its
+        ``discovery_complete``/``pending_probe`` no longer block SH/SZ.
+
+        Any expected R3Error after ``enter("G_coverage")`` goes through the
+        confirmed terminal-failure lifecycle: append-only ``abandon_current``
+        (replacement ``G_coverage_operator_retry``) then re-raise — never an
+        automatic retry. If the abandon itself fails, ``current`` stays
+        G_coverage/running with ``G_FAILURE_TERMINALIZATION_FAILED``.
+        """
         self.machine.enter("G_coverage")
-        report = delisted_coverage_report(
-            self.cfg, self.history_start, self.daily_as_of, sample=20
+        try:
+            report = self._r3_shsz_survivorship_report()
+            if not report.get("r3_shsz_verified"):
+                raise R3Error("R3_SHSZ_COVERAGE_UNVERIFIED", str(report))
+            atomic_write_json(self.meta / "r3-delisted-coverage.json", report)
+            self.machine.complete(
+                "G_coverage",
+                {"verified": True, "r3_shsz_verified": True, "report": report},
+            )
+            return report
+        except R3Error as exc:
+            self._fail_g_coverage(exc)
+
+    def _r3_shsz_survivorship_report(self, sample: int = 20) -> dict[str, Any]:
+        """R3/V08 SH/SZ survivorship report bound to the frozen formal authority.
+
+        Completion authority = Stage-B Baostock stock_basic formal identity +
+        Stage-E recovery closure + upstream known-coverage checks. The legacy
+        Sina issued-code discovery (upstream ``discovery_complete`` /
+        ``pending_probe``) is preserved as an observation
+        (``LEGACY_DISCOVERY_DEFERRED_OBSERVATION`` / ``DEFERRED_NON_AUTHORITY``)
+        and is NOT a V08 identity authority, so it does not gate R3 SH/SZ. The
+        upstream verdict is never mutated; both verdicts are stored separately.
+        """
+        identity_path = self.meta / "r3-identity-receipt.json"
+        if not identity_path.exists():
+            raise R3Error(
+                "G_FORMAL_AUTHORITY_UNAVAILABLE",
+                "r3-identity-receipt.json missing; cannot run G survivorship",
+            )
+        idr = json.loads(identity_path.read_text(encoding="utf-8"))
+        if (
+            idr.get("scope") != "SH_SZ_MVP"
+            or idr.get("shsz_identity_complete") is not True
+            or not idr.get("formal_identity_hash")
+        ):
+            raise R3Error(
+                "G_FORMAL_AUTHORITY_UNAVAILABLE",
+                "r3-identity-receipt is not a completed SH_SZ_MVP identity",
+            )
+        formal_identity_hash = idr["formal_identity_hash"]
+        formal_identity_n = int(idr.get("formal_identity_n") or 0)
+        formal_delisted_raw = idr.get("shsz_formal_delisted") or {}
+        formal_delisted_syms = sorted(formal_delisted_raw.keys())
+        formal_delisted_n = len(formal_delisted_syms)
+
+        e_path = self.meta / "r3-delisted-recovery.json"
+        if not e_path.exists():
+            raise R3Error(
+                "G_FORMAL_E_RECOVERY_MISMATCH",
+                "r3-delisted-recovery.json missing; cannot close formal/E recovery",
+            )
+        er = json.loads(e_path.read_text(encoding="utf-8"))
+        if er.get("scope") != "SH_SZ_MVP" or er.get("e_shsz_complete") is not True:
+            raise R3Error(
+                "G_FORMAL_E_RECOVERY_MISMATCH",
+                "E receipt is not a completed SH_SZ_MVP recovery",
+            )
+        e_targets = int(er.get("targets") or 0)
+        e_recovered = int(er.get("recovered") or 0)
+        e_unresolved = int(er.get("unresolved") or 0)
+        e_target_hash = er.get("target_set_sha")
+        recomputed_target_hash = sha256_bytes(
+            json.dumps(formal_delisted_syms, separators=(",", ":")).encode()
         )
-        if not report.get("verified"):
-            raise R3Error("DELISTED_COVERAGE_UNVERIFIED", str(report))
-        atomic_write_json(self.meta / "r3-delisted-coverage.json", report)
-        self.machine.complete("G_coverage", {"verified": True, "report": report})
-        return report
+        formal_recovery_complete = bool(
+            formal_delisted_n == e_targets
+            and e_recovered == e_targets
+            and e_unresolved == 0
+            and recomputed_target_hash == e_target_hash
+        )
+        if not formal_recovery_complete:
+            raise R3Error(
+                "G_FORMAL_E_RECOVERY_MISMATCH",
+                f"formal delisted {formal_delisted_n} vs E targets {e_targets} "
+                f"recovered {e_recovered} unresolved {e_unresolved}; target hash "
+                f"{recomputed_target_hash} != {e_target_hash}",
+            )
+
+        upstream = delisted_coverage_report(
+            self.cfg, self.history_start, self.daily_as_of, sample=sample
+        )
+        up_counts = upstream.get("counts") or {}
+        formal_identity_authority_complete = True
+        known_coverage_complete = upstream.get("known_coverage_complete") is True
+        hard = {
+            "missing_bars": int(up_counts.get("missing_bars") or 0),
+            "unknown_overlap": int(up_counts.get("unknown_overlap") or 0),
+            "terminal_mismatch": int(up_counts.get("terminal_mismatch") or 0),
+            "recent_quarantined": int(up_counts.get("recent_quarantined") or 0),
+            "formal_unresolved": int(up_counts.get("formal_unresolved") or 0),
+            "missing_instrument": int(up_counts.get("missing_instrument") or 0),
+            "invalid_delist_date": int(up_counts.get("invalid_delist_date") or 0),
+        }
+        r3_shsz_verified = bool(
+            formal_identity_authority_complete
+            and formal_recovery_complete
+            and known_coverage_complete
+            and all(v == 0 for v in hard.values())
+        )
+        return {
+            "scope": "SH_SZ_MVP",
+            "claim": "formal_identity_survivorship_coverage",
+            "window": {
+                "start": self.history_start.isoformat(),
+                "end": self.daily_as_of.isoformat(),
+            },
+            "authority": "BAOSTOCK_QUERY_STOCK_BASIC",
+            "formal_identity_hash": formal_identity_hash,
+            "formal_identity_n": formal_identity_n,
+            "formal_delisted_n": formal_delisted_n,
+            "e_recovered_n": e_recovered,
+            "e_unresolved_n": e_unresolved,
+            "formal_identity_authority_complete": formal_identity_authority_complete,
+            "formal_recovery_complete": formal_recovery_complete,
+            "known_coverage_complete": known_coverage_complete,
+            "r3_shsz_verified": r3_shsz_verified,
+            "legacy_discovery_complete": upstream.get("discovery_complete"),
+            "legacy_pending_probe": int(up_counts.get("pending_probe") or 0),
+            "legacy_discovery_status": "DEFERRED_NON_AUTHORITY",
+            "hard_blockers": hard,
+            "terminal_nonprinting": int(up_counts.get("terminal_nonprinting") or 0),
+            "formal_no_overlap": int(up_counts.get("formal_no_overlap") or 0),
+            "upstream_report": upstream,
+        }
+
+    def _fail_g_coverage(self, original: R3Error) -> None:
+        """Centralized confirmed terminal-G-failure path (never returns).
+
+        After ``enter("G_coverage")`` an expected R3Error is only recoverable by
+        an explicit operator retry: append-only ``abandon_current`` with
+        replacement ``G_coverage_operator_retry``, then re-raise. If the abandon
+        itself fails, ``current`` stays G_coverage/running (fail closed) with
+        ``G_FAILURE_TERMINALIZATION_FAILED``.
+        """
+        try:
+            self.machine.abandon_current(
+                "G_coverage",
+                reason=f"G_TERMINAL_FAILURE:{original.code}:{str(original)[:180]}",
+                replacement="G_coverage_operator_retry",
+            )
+        except Exception as exc:
+            raise R3Error(
+                "G_FAILURE_TERMINALIZATION_FAILED",
+                f"G abandon failed while finalizing {original.code}: "
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        raise original
 
 
 # --- target root snapshot --------------------------------------------------

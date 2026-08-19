@@ -768,17 +768,35 @@ author report must state how many symbols (if any) were classified this way.
 
 ### Stage G — Read-only delisted coverage gate
 
-After writers exit, call pinned
+After writers exit, Stage G runs the R3/V08 wrapper
+`_r3_shsz_survivorship_report()` — the pinned upstream
 `delisted_coverage_report(config, R3_HISTORY_START, R3_DAILY_AS_OF, sample=20)`
-directly. The equivalent CLI shape is:
+is still invoked exactly once, unmodified, and its verdict is preserved
+verbatim (never rewritten to true). The R3 SH/SZ completion authority is the
+frozen Stage-B Baostock `stock_basic` formal identity + the Stage-E recovery
+closure, NOT the legacy Sina issued-code discovery: `legacy_discovery_complete`
+and `legacy_pending_probe` (e.g., 30582) are kept as a
+`DEFERRED_NON_AUTHORITY` observation and do not gate R3 SH/SZ.
 
-```text
-cne delisted coverage --config config/cnequity.toml \
-  --start 2016-01-01 --end 2026-08-17 --sample 20
-```
+`r3_shsz_verified = formal_identity_authority_complete AND
+formal_recovery_complete AND known_coverage_complete AND all hard blockers == 0`
+where the hard blockers are upstream `missing_bars`, `unknown_overlap`,
+`terminal_mismatch`, `recent_quarantined`, `formal_unresolved`,
+`missing_instrument`, `invalid_delist_date`; `terminal_nonprinting` stays an
+observation and `formal_no_overlap` is allowed. Stage-B identity must be a
+completed `SH_SZ_MVP` receipt and the formal delisted symbol set/hash must
+close exactly against the E receipt targets/recovered/unresolved (else
+`G_FORMAL_AUTHORITY_UNAVAILABLE` / `G_FORMAL_E_RECOVERY_MISMATCH`). On success
+the report is written to `r3-delisted-coverage.json` and G completes; on any
+expected R3Error after enter, G abandons append-only (replacement
+`G_coverage_operator_retry`, else `G_FAILURE_TERMINALIZATION_FAILED`) — no
+automatic retry.
 
-Require `verified=true`. This command must receive a before/after target-tree
-snapshot; any change is a verifier defect and blocks R3.
+The current wedged `running/current=G_coverage` control-plane incident is
+recovered by `--recover-interrupted-control-plane` (strict G branch): running /
+current=G_coverage / completed exactly through F_daily / F run success / no
+live writer -> append-only abandon (replacement `G_coverage_operator_retry`);
+no market data is touched and no G report is written.
 
 ## Task 4 — Daily quality, gap map, and `DAILY_READY` gate
 

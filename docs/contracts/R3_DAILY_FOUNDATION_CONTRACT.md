@@ -198,6 +198,34 @@ coverage classifier (after exact retries/fallback/reconciliation only):
 The two enums are never mixed; `UNEXPLAINED_MISSING` is produced only by the
 classifier.
 
+## Stage G survivorship gate (V08 formal authority)
+
+```text
+r3_shsz_verified =
+  formal_identity_authority_complete     # Stage-B receipt: SH_SZ_MVP + identity_complete
+  AND formal_recovery_complete           # formal delisted set/hash == E targets/recovered, unresolved==0
+  AND known_coverage_complete            # upstream known_coverage_complete
+  AND all upstream hard blockers == 0    # missing_bars/unknown_overlap/terminal_mismatch/
+                                         # recent_quarantined/formal_unresolved/
+                                         # missing_instrument/invalid_delist_date
+```
+
+The pinned upstream `delisted_coverage_report` is invoked once, never modified,
+and its verdict (e.g., `verified=false`) is preserved verbatim in
+`upstream_report`. The legacy Sina issued-code discovery
+(`legacy_discovery_complete` / `legacy_pending_probe`, e.g., 30582) is a
+`DEFERRED_NON_AUTHORITY` observation and does NOT gate R3 SH/SZ;
+`terminal_nonprinting` is observation-only and `formal_no_overlap` is allowed.
+On success (`r3_shsz_verified=true`) the report is written to
+`r3-delisted-coverage.json` and G completes; any expected R3Error after
+`enter("G_coverage")` abandons append-only (replacement
+`G_coverage_operator_retry`; abandon failure -> `G_FAILURE_TERMINALIZATION_FAILED`
+with current stays G_coverage/running). No automatic G retry.
+
+Wedged `running/current=G_coverage` (completed through F_daily) is recovered by
+`--recover-interrupted-control-plane` with an append-only abandon (replacement
+`G_coverage_operator_retry`); no market-data write, no G re-verification.
+
 ## Daily-close gate (V07.2)
 
 ```text
