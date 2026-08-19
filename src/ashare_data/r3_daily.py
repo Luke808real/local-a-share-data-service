@@ -2508,25 +2508,52 @@ class R3Runner:
 
     def stage_delisted(self) -> dict[str, Any]:
         self.machine.enter("E_delisted")
+        # Abandon is NOT decided here. It is ONLY performed inside
+        # `self._fail_e_run()` after a CONFIRMED `Manifest.finish_run("failed")`,
+        # so the E marker is never cleared on a failure that was not explicitly
+        # terminalized (and never on crash / kill / interruption).
+        receipt = self._recover_delisted_daily()
+        self.machine.complete("E_delisted", receipt)
+        return receipt
+
+    def _fail_e_run(
+        self,
+        run_id: str,
+        manifest: Any,
+        reason: str,
+        original: R3Error,
+    ) -> None:
+        """Centralized confirmed terminal-E-failure path (never returns).
+
+        1. `Manifest.finish_run(run_id, "failed", error_message=reason)` MUST
+           succeed — a confirmed failed terminalization is the ONLY proof that
+           abandoning current=E_delisted is safe.
+        2. Only then perform the append-only `abandon_current` so an OPERATOR can
+           explicitly re-run `--stage E_delisted` (no automatic retry).
+        3. Re-raise the original E failure.
+
+        If `finish_run("failed")` itself raises, the failure is NOT terminalized:
+        keep current=E_delisted (fail closed), do NOT abandon, and raise
+        ``E_MANIFEST_FAILURE_TERMINALIZATION_FAILED``.
+        """
         try:
-            receipt = self._recover_delisted_daily()
-        except R3Error as exc:
-            # In-process explicit terminal E failure whose manifest run has
-            # already been terminalized (success/failed inside the recovery):
-            # safely abandon the E_delisted marker so an OPERATOR can explicitly
-            # re-run `--stage E_delisted`. Never abandon on crash / kill /
-            # interruption, and never auto-retry here.
+            manifest.finish_run(run_id, "failed", error_message=reason[:400])
+        except Exception as exc:
+            raise R3Error(
+                "E_MANIFEST_FAILURE_TERMINALIZATION_FAILED",
+                f"E manifest run failed-terminalization failed when finalizing "
+                f"{original.code}: {type(exc).__name__}: {exc}",
+            ) from exc
+        if getattr(self, "machine", None) is not None:
             try:
                 self.machine.abandon_current(
                     "E_delisted",
-                    reason=f"E_TERMINAL_FAILURE:{exc.code}:{str(exc)[:180]}",
+                    reason=f"E_TERMINAL_FAILURE:{original.code}:{str(original)[:180]}",
                     replacement="E_delisted_operator_retry",
                 )
             except Exception:  # noqa: BLE001 - abandon must never mask the failure
                 pass
-            raise
-        self.machine.complete("E_delisted", receipt)
-        return receipt
+        raise original
 
     def _recover_delisted_daily(self) -> dict[str, Any]:
         """R3-safe delisted recovery; never touches backfill_delisted_bars.
@@ -2577,15 +2604,6 @@ class R3Runner:
         unresolved: list[str] = []
         recovered_spans: dict[str, tuple[date, date]] = {}
         total_rows = 0
-
-        def _terminal_failed(reason: str) -> None:
-            """Terminalize the E manifest run as failed (fail closed)."""
-            try:
-                manifest.finish_run(
-                    run_id, "failed", error_message=reason[:400]
-                )
-            except Exception:  # noqa: BLE001 - never mask the original failure
-                pass
 
         # EXPECTED_NO_DATA_BEFORE_WINDOW: explicit terminal evidence, no fetch
         for symbol in no_data:
@@ -2677,12 +2695,16 @@ class R3Runner:
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
-            _terminal_failed(f"E_BULK_FETCH_FAILURE: {type(exc).__name__}: {exc}")
-            raise R3Error(
-                "E_BULK_FETCH_FAILURE",
-                f"pinned fetch_delisted_bars bulk invocation raised: "
-                f"{type(exc).__name__}: {exc}",
-            ) from exc
+            self._fail_e_run(
+                run_id,
+                manifest,
+                f"E_BULK_FETCH_FAILURE: {type(exc).__name__}: {exc}",
+                R3Error(
+                    "E_BULK_FETCH_FAILURE",
+                    f"pinned fetch_delisted_bars bulk invocation raised: "
+                    f"{type(exc).__name__}: {exc}",
+                ),
+            )
 
         rows_by_symbol: dict[str, list[dict]] = {}
         for row in bulk_rows:
@@ -2769,34 +2791,53 @@ class R3Runner:
         # here; it is retained only as future BJ-extension design).
 
         if unresolved:
-            _terminal_failed(
-                f"E_UNRESOLVED: {len(unresolved)} unresolved: {unresolved[:20]}"
-            )
-            raise R3Error(
-                "E_UNRESOLVED",
-                f"{len(unresolved)} delisted targets unresolved after retries: {unresolved[:20]}",
+            self._fail_e_run(
+                run_id,
+                manifest,
+                f"E_UNRESOLVED: {len(unresolved)} unresolved: {unresolved[:20]}",
+                R3Error(
+                    "E_UNRESOLVED",
+                    f"{len(unresolved)} delisted targets unresolved after retries: "
+                    f"{unresolved[:20]}",
+                ),
             )
 
         # compact guard: zero incomplete manifest blocking batches for this run
         incomplete = manifest.incomplete_batch_counts_by_dataset(run_id) or {}
         blocking = {ds: n for ds, n in incomplete.items() if n > 0}
         if blocking:
-            _terminal_failed(f"E_INCOMPLETE_BEFORE_COMPACT: {blocking}")
-            raise R3Error(
-                "E_INCOMPLETE_BEFORE_COMPACT",
-                f"incomplete manifest batches before compact: {blocking}",
+            self._fail_e_run(
+                run_id,
+                manifest,
+                f"E_INCOMPLETE_BEFORE_COMPACT: {blocking}",
+                R3Error(
+                    "E_INCOMPLETE_BEFORE_COMPACT",
+                    f"incomplete manifest batches before compact: {blocking}",
+                ),
             )
 
         try:
             compact = self._compact(run_id)
         except R3Error as exc:
-            _terminal_failed(f"COMPACT_FAILED: {exc.code}: {str(exc)[:300]}")
-            raise
+            self._fail_e_run(
+                run_id, manifest,
+                f"COMPACT_FAILED: {exc.code}: {str(exc)[:300]}",
+                exc,
+            )
         # E manifest run terminal SUCCESS (only after bulk done, unresolved==0,
         # incomplete==0 and compact succeeded).
-        manifest.finish_run(
-            run_id, "success", rows_read=total_rows, rows_written=total_rows
-        )
+        try:
+            manifest.finish_run(
+                run_id, "success", rows_read=total_rows, rows_written=total_rows
+            )
+        except Exception as exc:
+            # compact succeeded but the success-terminalization itself failed:
+            # no success receipt, no machine.complete, current stays E_delisted.
+            raise R3Error(
+                "E_MANIFEST_SUCCESS_TERMINALIZATION_FAILED",
+                f"E manifest run success-terminalization failed: "
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
         receipt = {
             "run_id": run_id,
             "scope": "SH_SZ_MVP",

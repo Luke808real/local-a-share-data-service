@@ -487,12 +487,19 @@ compact failure, or another caught exception raised after the run exists) calls
 `finish_run("failed", error_message)` BEFORE raising (no compact if the failure
 preceded it, no success receipt, no `machine.complete`). The BJ gate runs before
 the manifest run is created so `E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP` never leaves
-a running run behind. On an in-process explicit terminal failure whose manifest
-run was terminalized, `stage_delisted` performs an append-only
-`abandon_current("E_delisted", reason=..., replacement="E_delisted_operator_retry")`
-so an OPERATOR may explicitly re-run `--stage E_delisted` (no automatic retry).
-Crash / kill / power loss must NOT auto-abandon or blind-restart: `current` stays
-`E_delisted` and the next normal execution fails closed on `entrance`.
+a running run behind. An in-process terminal E failure abandons the E marker
+(append-only `abandon_current("E_delisted", ...,
+replacement="E_delisted_operator_retry")`) ONLY AFTER `finish_run("failed")` is
+successfully persisted — `stage_delisted` never abandons speculatively. Pre-run
+failures (`E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP`, identity/partition errors before
+the manifest run exists) NEVER abandon. If the failed-manifest terminalization
+itself fails, `E_MANIFEST_FAILURE_TERMINALIZATION_FAILED` is raised, `current`
+stays `E_delisted`, no abandon is performed and no ordinary retry is allowed; the
+same holds if success-terminalization fails
+(`E_MANIFEST_SUCCESS_TERMINALIZATION_FAILED`). Crash / kill / power loss must NOT
+auto-abandon or blind-restart: `current` stays `E_delisted` and the next normal
+execution fails closed on entrance. Operator retry of `--stage E_delisted` is
+available only after a confirmed failed-manifest terminalization + abandon.
 
 Do not call pinned `backfill_delisted_bars`: that helper unconditionally writes
 `derived/delisting_events` when it recovers rows, crossing the R3 boundary.

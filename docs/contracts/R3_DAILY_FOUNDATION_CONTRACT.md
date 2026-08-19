@@ -95,9 +95,13 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   before every terminal-failure raise; receipt `manifest_run_status`). On an
   in-process explicit terminal E failure the E marker is append-only abandoned
   (`replacement = E_delisted_operator_retry`) so an operator can explicitly
-  re-run `--stage E_delisted`; automatic retry is disallowed and crash /
-  interruption never auto-abandons or blind-restarts (`current` stays
-  E_delisted, next run fails closed on entrance). The BJ gate runs before the E
+  re-run `--stage E_delisted`, but ONLY AFTER `finish_run("failed")` has been
+  successfully persisted (never speculative). Pre-run failures and failed /
+  success manifest terminalization failures raise
+  `E_MANIFEST_FAILURE_TERMINALIZATION_FAILED` / `E_MANIFEST_SUCCESS_TERMINALIZATION_FAILED`,
+  keep `current = E_delisted`, and forbid abandon and ordinary retry; automatic
+  retry is disallowed and crash / interruption never auto-abandons or
+  blind-restarts. The BJ gate runs before the E
   manifest run is created.
   `live_missing`/current active names are excluded; `never_issued` is not a
   completion gate.

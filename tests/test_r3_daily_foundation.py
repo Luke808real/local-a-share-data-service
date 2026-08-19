@@ -4007,7 +4007,10 @@ def test_v08_e_bj_gate_before_run_creation(monkeypatch, tmp_path):
     assert manifest.runs == {}
     state = runner.machine.load()
     assert "E_delisted" not in state["completed"]
-    assert state["current"] is None  # append-only abandon by stage_delisted
+    # PRE-RUN failure -> NO abandon: current stays E_delisted (fail closed).
+    assert state["current"] == "E_delisted"
+    assert state["status"] == "running"
+    assert not state.get("abandoned")
 
 
 def test_v08_e_second_operator_invocation_succeeds(monkeypatch, tmp_path):
@@ -4050,6 +4053,86 @@ def test_v08_e_no_auto_provider_retry_within_failed_invocation(monkeypatch, tmp_
     assert captured["fetch_calls"] == 1  # exactly one provider call, no retry
     rid = next(iter(manifest.runs))
     assert manifest.runs[rid]["status"] == "failed"  # no running E manifest remains
+
+
+def _boom_finish_run(*a, **k):
+    raise RuntimeError("manifest terminalization boom")
+
+
+def _assert_e_failed_terminalization_no_abandon(runner):
+    state = runner.machine.load()
+    assert state["current"] == "E_delisted"  # NOT abandoned
+    assert state["status"] == "running"
+    assert "E_delisted" not in state["completed"]
+    assert not state.get("abandoned")
+
+
+def test_v08_e_unresolved_terminalization_failure_no_abandon(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk({}, [], captured),  # empty -> E_UNRESOLVED
+        formal=formal,
+    )
+    monkeypatch.setattr(manifest, "finish_run", _boom_finish_run)
+    with pytest.raises(R3Error, match="E_MANIFEST_FAILURE_TERMINALIZATION_FAILED"):
+        runner.stage_delisted()
+    assert captured["fetch_calls"] == 1  # single bulk call only
+    _assert_e_failed_terminalization_no_abandon(runner)
+
+
+def test_v08_e_bulk_terminalization_failure_no_abandon(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+
+    def boom(symbols, start, end, config=None):
+        raise RuntimeError("transport down")
+
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path, fetch_impl=boom, formal=formal,
+    )
+    monkeypatch.setattr(manifest, "finish_run", _boom_finish_run)
+    with pytest.raises(R3Error, match="E_MANIFEST_FAILURE_TERMINALIZATION_FAILED"):
+        runner.stage_delisted()
+    _assert_e_failed_terminalization_no_abandon(runner)
+
+
+def test_v08_e_compact_terminalization_failure_no_abandon(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    rows_by_symbol = {"600001.SH": [_v08_e_row("600001.SH")]}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk(rows_by_symbol, [], captured),
+        formal=formal,
+    )
+
+    def boom_compact(rid):
+        raise R3Error("COMPACT_FAILED", "boom compact")
+
+    runner._compact = boom_compact
+    monkeypatch.setattr(manifest, "finish_run", _boom_finish_run)
+    with pytest.raises(R3Error, match="E_MANIFEST_FAILURE_TERMINALIZATION_FAILED"):
+        runner.stage_delisted()
+    _assert_e_failed_terminalization_no_abandon(runner)
+
+
+def test_v08_e_success_terminalization_failure_no_receipt(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    rows_by_symbol = {"600001.SH": [_v08_e_row("600001.SH")]}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk(rows_by_symbol, [], captured),
+        formal=formal,
+    )
+    monkeypatch.setattr(manifest, "finish_run", _boom_finish_run)
+    with pytest.raises(R3Error, match="E_MANIFEST_SUCCESS_TERMINALIZATION_FAILED"):
+        runner.stage_delisted()
+    # no success receipt, E not completed, current stays E_delisted (no abandon)
+    assert not (runner.meta / "r3-delisted-recovery.json").exists()
+    _assert_e_failed_terminalization_no_abandon(runner)
+    assert compacts["n"] == 1  # compact ran, but success finalization failed
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================
