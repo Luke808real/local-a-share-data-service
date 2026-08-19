@@ -2957,6 +2957,196 @@ class R3Runner:
         )
         return df
 
+    def _plan_f_shsz_scope(self) -> dict[str, Any]:
+        """Centralized Stage-F AS_OF SH/SZ scope planner (V08 F ASOF fix).
+
+        Shared by the NORMAL daily route and the failed-run REUSE route so the
+        two planners can never drift. Non-NULL curated list_date keeps the
+        existing ``effective_span`` semantics (a list_date > ASOF is
+        ``expected_no_data`` with reason LIST_DATE_AFTER_ASOF and never gets a
+        provider call). A curated list_date=NULL candidate is bound to the
+        frozen Stage-B authority: the r3-identity-receipt scope/hash must match
+        a FRESH Baostock ``fetch_instrument_basics()`` ASOF-identity computation
+        (at most ONE call, and only when a NULL candidate exists). Each NULL
+        candidate is then resolved to a bounded effective span (Baostock
+        list_date <= ASOF) or excluded (list_date > ASOF, or absent from the
+        verified ASOF identity), and `effective_span(None, ...)` is never used
+        to create a full-window F obligation.
+        """
+        instruments = load_curated_instruments(self.cfg)
+        if instruments is None or instruments.is_empty():
+            raise R3Error("NO_INSTRUMENTS", "no instruments to plan daily coverage")
+        df = instruments.filter(
+            (pl.col("asset_type").is_in(["stock", "cdr"]))
+            & (pl.col("exchange").is_in(["SH", "SZ"]))
+        )
+        df = df.with_columns(
+            pl.when(
+                pl.col("delist_date").is_null()
+                | (pl.col("delist_date") >= self.daily_as_of)
+            )
+            .then(pl.lit(True))
+            .otherwise(pl.lit(False))
+            .alias("_effective_active")
+        )
+        df = df.filter(pl.col("_effective_active")).drop("_effective_active")
+
+        required_spans: dict[str, tuple[date, date]] = {}
+        expected_no_data: list[dict[str, str]] = []
+        null_candidates: list[dict[str, Any]] = []
+
+        for row in df.iter_rows(named=True):
+            sym = row["symbol"]
+            lst = row["list_date"]
+            dlt = row["delist_date"]
+            if lst is None:
+                null_candidates.append({"symbol": sym, "delist_date": dlt})
+                continue
+            if lst > self.daily_as_of:
+                expected_no_data.append(
+                    {"symbol": sym, "reason": "LIST_DATE_AFTER_ASOF"}
+                )
+                continue
+            span = effective_span(lst, dlt, self.history_start, self.daily_as_of)
+            if span is None:
+                # active-as-of candidate with non-NULL list_date should always
+                # carry a span unless list_date > ASOF (handled above); strict.
+                expected_no_data.append(
+                    {"symbol": sym, "reason": "NO_EFFECTIVE_SPAN"}
+                )
+                continue
+            required_spans[sym] = span
+
+        evidence: dict[str, Any] = {
+            "scope": "SH_SZ_MVP",
+            "authority": "BAOSTOCK_QUERY_STOCK_BASIC",
+            "asof_identity_hash": None,
+            "asof_identity_n": 0,
+            "baostock_stock_basic_calls": 0,
+            "null_list_date_candidate_n": len(null_candidates),
+            "null_list_date_resolved_n": 0,
+            "null_list_date_excluded_n": 0,
+        }
+
+        if not null_candidates:
+            return {
+                "required_spans": required_spans,
+                "expected_no_data": expected_no_data,
+                "evidence": evidence,
+            }
+
+        # Bind to the frozen Stage-B AS_OF formal identity authority. Only a
+        # completed SH_SZ_MVP receipt may resolve NULL-list-date candidates.
+        receipt_path = self.meta / "r3-identity-receipt.json"
+        if not receipt_path.exists():
+            raise R3Error(
+                "F_FORMAL_AUTHORITY_UNAVAILABLE",
+                "r3-identity-receipt.json missing; cannot resolve F ASOF scope",
+            )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if (
+            receipt.get("scope") != "SH_SZ_MVP"
+            or receipt.get("shsz_identity_complete") is not True
+            or not receipt.get("formal_identity_hash")
+        ):
+            raise R3Error(
+                "F_FORMAL_AUTHORITY_UNAVAILABLE",
+                "r3-identity-receipt is not a completed SH_SZ_MVP identity",
+            )
+
+        evidence["baostock_stock_basic_calls"] = 1
+        from cnequity.adapters.baostock.instruments import fetch_instrument_basics
+
+        basic_df = fetch_instrument_basics()
+        formal_df = basic_df.filter(
+            (pl.col("exchange").is_in(["SH", "SZ"]))
+            & (pl.col("asset_type").is_in(["stock", "cdr"]))
+            & (
+                pl.col("list_date").is_null()
+                | (pl.col("list_date") <= self.daily_as_of)
+            )
+            & (
+                pl.col("delist_date").is_null()
+                | (pl.col("delist_date") >= self.history_start)
+            )
+        ) if basic_df.height else basic_df
+        formal_symbols = (
+            set(formal_df["symbol"].to_list()) if formal_df.height else set()
+        )
+        fresh_hash = sha256_bytes(
+            json.dumps(sorted(formal_symbols), separators=(",", ":")).encode()
+        )
+        evidence["asof_identity_hash"] = fresh_hash
+        evidence["asof_identity_n"] = len(formal_symbols)
+        frozen_hash = receipt.get("formal_identity_hash")
+        if fresh_hash != frozen_hash:
+            raise R3Error(
+                "F_FORMAL_IDENTITY_DRIFT",
+                f"fresh ASOF formal identity hash {fresh_hash} != frozen "
+                f"recipient hash {frozen_hash}; subsequent IPOs must not change "
+                "the 2026-08-17 universe",
+            )
+
+        basic_map: dict[str, tuple[Any, Any, Any]] = {}
+        if basic_df.height:
+            basic_map = {
+                row["symbol"]: (
+                    row["list_date"],
+                    row["delist_date"],
+                    row["name"],
+                )
+                for row in basic_df.select(
+                    "symbol", "list_date", "delist_date", "name"
+                ).iter_rows(named=True)
+            }
+
+        resolved_n = 0
+        excluded_n = 0
+        for cand in null_candidates:
+            sym = cand["symbol"]
+            bs_rec = basic_map.get(sym)
+            bs_list = bs_rec[0] if bs_rec else None
+            if bs_list is not None and bs_list > self.daily_as_of:
+                # CASE B: Baostock positively proves a post-ASOF listing.
+                excluded_n += 1
+                expected_no_data.append(
+                    {"symbol": sym, "reason": "PRELISTING_CONFIRMED"}
+                )
+                continue
+            if sym not in formal_symbols:
+                # CASE C: not part of the verified 2026-08-17 ASOF identity.
+                excluded_n += 1
+                expected_no_data.append(
+                    {"symbol": sym, "reason": "OUTSIDE_FORMAL_ASOF_IDENTITY"}
+                )
+                continue
+            if bs_list is None:
+                # CASE D: in the verified identity but stock_basic list_date is
+                # still NULL — never fall back to history_start.
+                raise R3Error(
+                    "F_NULL_LIST_DATE_UNRESOLVED",
+                    f"F candidate {sym} in verified ASOF formal identity has "
+                    "NULL stock_basic list_date; refusing history_start span",
+                )
+            # CASE A: resolved bounded span from the Baostock list_date.
+            span = effective_span(
+                bs_list, cand["delist_date"], self.history_start, self.daily_as_of
+            )
+            if span is None:
+                raise R3Error(
+                    "F_NULL_LIST_DATE_UNRESOLVED",
+                    f"F candidate {sym} list_date {bs_list} yields no span",
+                )
+            required_spans[sym] = span
+            resolved_n += 1
+        evidence["null_list_date_resolved_n"] = resolved_n
+        evidence["null_list_date_excluded_n"] = excluded_n
+        return {
+            "required_spans": required_spans,
+            "expected_no_data": expected_no_data,
+            "evidence": evidence,
+        }
+
     def _fetch_daily_bars_per_route(self) -> dict[str, Any]:
         """V08 SH/SZ MVP daily route planning: SH/SZ TDX route only (no BJ route,
         no EastMoney / em_daily_tristate; f2 is an explicit DEFERRED marker).
@@ -2971,14 +3161,10 @@ class R3Runner:
         re-raise). Pre-run planning failures (NO_INSTRUMENTS etc.) happen before
         the run exists: no run, no abandon, current stays F_daily.
         """
-        spans_shsz: dict[str, tuple[date, date]] = {}
-        expect_no_data: list[str] = []
-        for row in self._effective_active().iter_rows(named=True):
-            span = effective_span(row["list_date"], row["delist_date"])
-            if span is None:
-                expect_no_data.append(row["symbol"])
-                continue
-            spans_shsz[row["symbol"]] = span
+        plan = self._plan_f_shsz_scope()
+        spans_shsz = plan["required_spans"]
+        expect_no_data = plan["expected_no_data"]
+        plan_evidence = plan["evidence"]
 
         run_id = self._new_run("r3_daily_bars")
         manifest = Manifest(self.cfg.manifest_path)
@@ -3010,6 +3196,17 @@ class R3Runner:
             "scope": "SH_SZ_MVP",
             "sh_sz_symbols": len(spans_shsz),
             "expected_no_data": len(expect_no_data),
+            "expected_no_data_reason_counts": {
+                reason: sum(1 for e in expect_no_data if e["reason"] == reason)
+                for reason in sorted({e["reason"] for e in expect_no_data})
+            },
+            "asof_identity_authority": plan_evidence["authority"],
+            "asof_identity_hash": plan_evidence["asof_identity_hash"],
+            "asof_identity_n": plan_evidence["asof_identity_n"],
+            "baostock_stock_basic_calls": plan_evidence["baostock_stock_basic_calls"],
+            "null_list_date_candidate_n": plan_evidence["null_list_date_candidate_n"],
+            "null_list_date_resolved_n": plan_evidence["null_list_date_resolved_n"],
+            "null_list_date_excluded_n": plan_evidence["null_list_date_excluded_n"],
             "manifest_run_status": "success",
             "bj_scope": "DEFERRED_EXTENSION",
             "bj_execution": "NOT_RUN",
@@ -3122,34 +3319,29 @@ class R3Runner:
         src_success = [r for r in rows if r["status"] == "success"]
         src_failed = [r for r in rows if r["status"] == "failed"]
 
-        # --- current plan parity gate ---
-        current_spans: dict[str, tuple[date, date]] = {}
-        expect_no_data: list[str] = []
-        for row in self._effective_active().iter_rows(named=True):
-            span = effective_span(row["list_date"], row["delist_date"])
-            if span is None:
-                expect_no_data.append(row["symbol"])
-            else:
-                current_spans[row["symbol"]] = span
+        # --- current AS_OF plan (shared planner; authoritative scope) ---
+        plan = self._plan_f_shsz_scope()
+        current_spans = plan["required_spans"]
+        expect_no_data = plan["expected_no_data"]
+        plan_evidence = plan["evidence"]
+        expected_no_data_syms = {e["symbol"] for e in expect_no_data}
         cur_scope = {
             (sym, w0.isoformat(), w1.isoformat())
             for sym, (w0, w1) in current_spans.items()
         }
-        src_scope = {
+        src_success_scope = {
             (sym, r["window_start"], r["window_end"])
-            for r in rows
+            for r in src_success
             for sym in r["symbols"]
         }
-        if cur_scope != src_scope:
-            missing = sorted(cur_scope - src_scope)
-            extra = sorted(src_scope - cur_scope)
-            raise R3Error(
-                "F_REUSE_PLAN_MISMATCH",
-                f"source run batch scope != current F planned scope: "
-                f"missing={missing[:5]} extra={extra[:5]}",
-            )
+        src_failed_scope = {
+            (sym, r["window_start"], r["window_end"])
+            for r in src_failed
+            for sym in r["symbols"]
+        }
+        src_scope = src_success_scope | src_failed_scope
 
-        # --- source staging completeness gate ---
+        # --- source staging completeness gate (before parity C staging check) ---
         staging_root_dir = (
             Path(self.cfg.staging_root) / "daily_bars" / f"run_id={reuse_run_id}"
         )
@@ -3167,25 +3359,48 @@ class R3Runner:
                     f"source failed batch {r['batch_id']} unexpectedly has staging",
                 )
 
-        # source scope -> singleton recovery spans (current effective span per symbol)
-        instruments = load_curated_instruments(self.cfg)
-        list_map = {
-            row["symbol"]: (row["list_date"], row["delist_date"])
-            for row in instruments.iter_rows(named=True)
-        }
-        failed_symbols: list[str] = []
-        for r in src_failed:
-            failed_symbols.extend(r["symbols"])
-        singleton_span: dict[str, tuple[date, date]] = {}
-        for sym in sorted(set(failed_symbols)):
-            lst, dlt = list_map.get(sym, (None, None))
-            span = effective_span(lst, dlt)
-            if span is None:
+        # --- three-part safe-contraction plan parity ---
+        missing = sorted(cur_scope - src_scope)
+        if missing:
+            raise R3Error(
+                "F_REUSE_PLAN_MISMATCH",
+                f"current required scope missing from source run: {missing[:5]}",
+            )
+        success_extra = sorted(src_success_scope - cur_scope)
+        if success_extra:
+            raise R3Error(
+                "F_REUSE_PLAN_MISMATCH",
+                f"source success scope outside current plan: {success_extra[:5]}",
+            )
+        reuse_dropped: dict[str, list[str]] = {}
+        for (sym, w0, w1) in sorted(src_scope - cur_scope):
+            if sym not in expected_no_data_syms:
                 raise R3Error(
                     "F_REUSE_PLAN_MISMATCH",
-                    f"failed symbol {sym} has no current effective span",
+                    f"source scope extra {sym} is not expected_no_data",
                 )
-            singleton_span[sym] = span
+            sym_batches = [r for r in rows if sym in r["symbols"]]
+            if any(r["status"] == "success" for r in sym_batches):
+                raise R3Error(
+                    "F_REUSE_PLAN_MISMATCH",
+                    f"expected_no_data extra {sym} appears in a success batch",
+                )
+            for r in sym_batches:
+                if (staging_root_dir / f"part-{r['batch_id']}.parquet").exists():
+                    raise R3Error(
+                        "F_REUSE_PLAN_MISMATCH",
+                        f"expected_no_data extra {sym} has a staging file",
+                    )
+            reuse_dropped.setdefault(sym, []).append(
+                {"batch_id": sym_batches[0]["batch_id"]}
+            )
+        dropped_symbols = sorted(reuse_dropped)
+
+        # --- singleton recovery scope: source failed ∩ current required ---
+        failed_symbols = sorted({sym for r in src_failed for sym in r["symbols"]})
+        singleton_span = {
+            sym: current_spans[sym] for sym in failed_symbols if sym in current_spans
+        }
 
         # all gates pass: create a brand-new run (source run immutable)
         new_run_id = self._new_run("r3_daily_bars")
@@ -3230,6 +3445,24 @@ class R3Runner:
                 reused_rows += r["rows_written"]
                 reused_bytes += file_bytes
 
+            # record authoritative expected_no_data extras that were dropped
+            # (never refetched, never carried into the new run)
+            for b_sym in dropped_symbols:
+                self.ledger.append(
+                    {
+                        "stage": "F",
+                        "event": "REUSE_DROPPED_EXPECTED_NO_DATA",
+                        "source_run_id": reuse_run_id,
+                        "new_run_id": new_run_id,
+                        "symbol": b_sym,
+                        "reason": next(
+                            (e["reason"] for e in expect_no_data
+                             if e["symbol"] == b_sym),
+                            "EXPECTED_NO_DATA",
+                        ),
+                    }
+                )
+
             # --- singleton recovery (1 symbol / batch, TDX only) ---
             f1 = self._singleton_recovery_route(new_run_id, manifest, singleton_span)
 
@@ -3267,10 +3500,22 @@ class R3Runner:
             "reused_success_batch_n": reused_batch_n,
             "reused_success_rows": reused_rows,
             "reused_success_bytes": reused_bytes,
+            "reuse_dropped_expected_no_data": dropped_symbols,
             "singleton_symbol_n": len(singleton_span),
             "f1_recovery": f1,
             "sh_sz_symbols": len(current_spans),
             "expected_no_data": len(expect_no_data),
+            "expected_no_data_reason_counts": {
+                reason: sum(1 for e in expect_no_data if e["reason"] == reason)
+                for reason in sorted({e["reason"] for e in expect_no_data})
+            },
+            "asof_identity_authority": plan_evidence["authority"],
+            "asof_identity_hash": plan_evidence["asof_identity_hash"],
+            "asof_identity_n": plan_evidence["asof_identity_n"],
+            "baostock_stock_basic_calls": plan_evidence["baostock_stock_basic_calls"],
+            "null_list_date_candidate_n": plan_evidence["null_list_date_candidate_n"],
+            "null_list_date_resolved_n": plan_evidence["null_list_date_resolved_n"],
+            "null_list_date_excluded_n": plan_evidence["null_list_date_excluded_n"],
             "bj_scope": "DEFERRED_EXTENSION",
             "bj_execution": "NOT_RUN",
             "f2_em_primary": {

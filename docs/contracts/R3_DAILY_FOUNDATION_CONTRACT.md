@@ -121,6 +121,23 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   `bj_scope=DEFERRED_EXTENSION`, `bj_execution=NOT_RUN`, and
   `f2_em_primary = {status: DEFERRED, reason: BJ_EXTENSION_OUTSIDE_CURRENT_MVP}`
   — never a symbols=0 success.
+- F ASOF scope is centralized in one shared planner used by both the normal
+  route and the reuse route. Non-NULL curated `list_date` keeps
+  `effective_span(list_date, delist_date, R3_HISTORY_START, R3_DAILY_AS_OF)`;
+  `list_date > R3_DAILY_AS_OF` is `expected_no_data`
+  (`LIST_DATE_AFTER_ASOF`, no provider call). A curated `list_date=NULL`
+  candidate NEVER defaults to the 2016-01-01 full-window obligation: it must be
+  bound to the frozen Stage-B authority — the `r3-identity-receipt.json` is a
+  completed `SH_SZ_MVP` identity, and ONE `fetch_instrument_basics()` call
+  (only when a NULL candidate exists) recomputes the ASOF formal identity whose
+  hash MUST equal the receipt's frozen `formal_identity_hash`
+  (`F_FORMAL_IDENTITY_DRIFT` otherwise; `F_FORMAL_AUTHORITY_UNAVAILABLE` when
+  the receipt is missing/not completed). Per candidate: resolved bounded span
+  from `stock_basic.list_date <= ASOF`; `PRELISTING_CONFIRMED` when
+  `list_date > ASOF`; `OUTSIDE_FORMAL_ASOF_IDENTITY` when absent from the
+  verified identity; `F_NULL_LIST_DATE_UNRESOLVED` when in the identity but
+  list_date is still NULL (never `effective_span(None, ...)`). `roster_on(day)`
+  is never a production F membership gate.
   F manifest run is always terminalized: `finish_run("success")` only after TDX
   PASS + compact success, rows = SUM of the run's final successful daily_bars
   manifest batches (never `rows_written_last`); run-scoped terminal failures
@@ -138,15 +155,22 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   state must be pending/current=null/through E_delisted with an
   `F_daily_operator_retry` abandon (checked before enter); the source run must
   be a failed `r3_daily_bars` run whose error is `F1_STRICT_DECREASE` or
-  `F1_FAILED_AFTER`; its batch scope must exactly equal the current F planned
-  scope (`F_REUSE_PLAN_MISMATCH` otherwise); every final-success batch must have
+  `F1_FAILED_AFTER`. Plan parity is a **safe contraction** against the ASOF
+  scope: every current required symbol/window must exist exactly in the source;
+  source SUCCESS scope must be a subset of the current plan; source-only extras
+  are allowed only for current `expected_no_data` symbols confined to final
+  FAILED batches with no staging (recorded `REUSE_DROPPED_EXPECTED_NO_DATA`);
+  anything else `F_REUSE_PLAN_MISMATCH`. Every final-success batch must have
   a non-empty staging file and no failed batch may (`F_REUSE_STAGING_INCOMPLETE`
   otherwise). The source run is never mutated. Successful source batches are
   copied to the new run's staging with zero provider calls and recorded in the
   ledger as `REUSED_SUCCESS_BATCH`; the failed scope is expanded to one
   batch-per-symbol `f-recovery-single-<hash>` TDX singletons using the current
   effective span, ≤3 attempts, strict-decrease on the singleton failed set,
-  `failover_enabled=false`. Compact only when reused + singletons all succeed
+  `failover_enabled=false`. The singleton recovery scope is
+  `source failed symbols ∩ CURRENT_REQUIRED_SCOPE` — a failed symbol proven
+  `expected_no_data` by the ASOF authority never gets a TDX fetch. Compact only
+  when reused + singletons all succeed
   and blocking incomplete batches == 0 (`F_INCOMPLETE_BEFORE_COMPACT` otherwise,
   treated as a run-scoped terminal failure through `_fail_f_run`); success
   totals = SUM of the new run's final successful daily_bars batches. Failed

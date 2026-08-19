@@ -574,6 +574,40 @@ old failed manifest / ledger / staging evidence preserved. Stage-F compact
 merges staged daily rows with existing curated daily rows (including the
 Stage-E recovered delisted rows), so E existing rows are preserved.
 
+#### F AS_OF scope — NULL-list-date must not default to the full history window
+
+F planning is centralized in a single shared helper (`_plan_f_shsz_scope`) that
+is used by BOTH the normal daily route and the failed-run reuse route, so the
+two can never drift. Non-NULL curated `list_date` keeps the existing
+`effective_span(list_date, delist_date, R3_HISTORY_START, R3_DAILY_AS_OF)`
+semantics unchanged; a non-NULL `list_date > R3_DAILY_AS_OF` is
+`expected_no_data` (reason `LIST_DATE_AFTER_ASOF`) and never gets a provider
+call. A curated `list_date = NULL` candidate never defaults to a 2016-01-01
+full-window obligation — instead it is bound to the frozen Stage-B authority:
+
+1. The `r3-identity-receipt.json` must be a completed `SH_SZ_MVP` identity
+   (scope + `shsz_identity_complete` + `formal_identity_hash`), else
+   `F_FORMAL_AUTHORITY_UNAVAILABLE`.
+2. A single `fetch_instrument_basics()` call (at most 1 per planning episode,
+   0 when no NULL candidate exists) recomputes the ASOF formal identity with the
+   exact Stage-B filter (SH/SZ, stock/cdr, `list_date is null or <= ASOF`,
+   `delist_date is null or >= history_start`); the fresh
+   `formal_identity_hash` MUST equal the receipt's frozen hash, otherwise
+   `F_FORMAL_IDENTITY_DRIFT` (later IPOs must not change the 2026-08-17
+   universe).
+3. Resolution per NULL candidate: in the verified identity with
+   `stock_basic.list_date <= ASOF` -> bounded span from that date
+   (`LIST_DATE_RESOLVED_FROM_BAOSTOCK`); `list_date > ASOF` ->
+   `expected_no_data` `PRELISTING_CONFIRMED`; absent from the verified ASOF
+   identity -> `expected_no_data` `OUTSIDE_FORMAL_ASOF_IDENTITY`; in the
+   identity but list_date still NULL -> `F_NULL_LIST_DATE_UNRESOLVED`
+   (fail closed, never `effective_span(None, ...)`).
+
+`roster_on(day)` is never used as a production membership gate in F planning or
+recovery; it stays a Stage-B audit-only crosscheck (a daily traded roster cannot
+safely bound the listed membership and could wrongly exclude suspended
+securities).
+
 #### F recovery — explicit failed-run reuse + singleton retry (`--f-reuse-run-id`)
 
 For a terminal F failure (F1_STRICT_DECREASE / F1_FAILED_AFTER) that happened
@@ -594,8 +628,15 @@ Before any new manifest run is created the controller enforces, in order:
    terminal `failed` status whose error is `F1_STRICT_DECREASE` or
    `F1_FAILED_AFTER`. Success/running/other-job runs are rejected.
 3. **Plan-parity gate**: the source run's final daily_bars batch scope
-   (`symbol` + `window_start` + `window_end`) must exactly equal the current F
-   planned SH/SZ scope; otherwise `F_REUSE_PLAN_MISMATCH` (no guessing reuse).
+   is checked against the authoritative AS_OF plan as a **safe contraction**
+   (three parts), not a rigid equality that would break when the current plan is
+   authoritatively narrowed: (a) every current required symbol/window must exist
+   exactly in the source scope; (b) source SUCCESS scope must be a subset of the
+   current plan (already-staged out-of-scope rows are never silently copied);
+   (c) source-only extras are allowed only for current `expected_no_data`
+   symbols confined to final FAILED batches with no staging file (recorded
+   `REUSE_DROPPED_EXPECTED_NO_DATA`). Anything else fails
+   `F_REUSE_PLAN_MISMATCH` (no guessing reuse).
 4. **Staging-completeness gate**: every final-success source batch must have a
    non-empty staging parquet file and no failed source batch may have one;
    otherwise `F_REUSE_STAGING_INCOMPLETE`.
@@ -620,6 +661,12 @@ staging and ledger evidence are preserved. Chained recovery is supported: a
 later `--f-reuse-run-id` may point at the latest failed F recovery run so only
 the still-missing singleton scope is refetched. The route never reaches
 EastMoney or Sina.
+
+The singleton recovery scope is `source failed symbols ∩ CURRENT_REQUIRED_SCOPE`
+— a failed symbol that the authoritative AS_OF resolution proves is
+`expected_no_data` never gets a TDX fetch (so the prelisting-style extras yield
+`singleton_symbol_n = 0` and `TDX_PROVIDER_CALLS = 0`, with the source run
+fully immutable).
 
 Do not call the pinned generic `step_daily_bars` or its unbounded expected-date
 logic. The controller fetches daily bars separately per exchange route and

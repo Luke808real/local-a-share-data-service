@@ -5032,6 +5032,599 @@ def test_f_reuse_surface_never_reaches_em_or_sina():
 
 
 # ============================================================================
+# V08 F ASOF SCOPE FIX: NULL-list-date formal-identity resolution + reuse
+# safe-contraction
+# ============================================================================
+
+
+def _formal_hash(mock_bs, daily_as_of=R3_DAILY_AS_OF, history_start=R3_HISTORY_START):
+    """Replicate the Stage-B ASOF formal-identity hash over a synthetic frame."""
+    if mock_bs is None or mock_bs.height == 0:
+        syms: list[str] = []
+    else:
+        f = mock_bs.filter(
+            pl.col("exchange").is_in(["SH", "SZ"])
+            & pl.col("asset_type").is_in(["stock", "cdr"])
+            & (pl.col("list_date").is_null() | (pl.col("list_date") <= daily_as_of))
+            & (pl.col("delist_date").is_null() | (pl.col("delist_date") >= history_start))
+        )
+        syms = sorted(f["symbol"].to_list()) if f.height else []
+    return r3.sha256_bytes(json.dumps(syms, separators=(",", ":")).encode())
+
+
+def _v08_f_plan_ctx(monkeypatch, tmp_path, *, instrument_rows, mock_bs_rows=None,
+                    receipt_hash=None):
+    """Runner + receipt seed + mocked fetch_instrument_basics counter for the
+    shared F ASOF planner. ``instrument_rows`` / ``mock_bs_rows`` are tuples of
+    (symbol, name, exchange, asset_type, list_date, delist_date)."""
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.history_start = R3_HISTORY_START
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+        batch_size=1,
+        failover_enabled=False,
+    )
+    mock_bs = _v08_instruments(*mock_bs_rows) if mock_bs_rows else None
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {
+                "scope": "SH_SZ_MVP",
+                "shsz_identity_complete": True,
+                "formal_identity_hash": receipt_hash or _formal_hash(mock_bs),
+            }
+        )
+    )
+    bs_calls = {"n": 0}
+
+    def _fake_bs():
+        bs_calls["n"] += 1
+        return _v08_instruments(*mock_bs_rows) if mock_bs_rows else pl.DataFrame(
+            {
+                "symbol": [],
+                "name": [],
+                "exchange": [],
+                "asset_type": [],
+                "list_date": [],
+                "delist_date": [],
+                "prev_symbol": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.instruments.fetch_instrument_basics", _fake_bs
+    )
+    monkeypatch.setattr(
+        r3, "load_curated_instruments",
+        lambda cfg: _v08_instruments(*instrument_rows),
+    )
+    return runner, bs_calls
+
+
+def _v08_f_reuse_asof_ctx(
+    monkeypatch,
+    tmp_path,
+    *,
+    src_success,
+    src_failed,
+    singleton_fetch_impl,
+    instrument_rows,
+    mock_bs_rows=None,
+    compact_impl=None,
+    source_run_id="src-fail-1",
+    src_error="F1_STRICT_DECREASE (attempt 3: 2 -> 2)",
+    seed_f_retry_abandon=True,
+    receipt_hash=None,
+):
+    """Like ``_v08_f_reuse_ctx`` but with the ASOF authority seeded: an
+    r3-identity-receipt and a mocked ``fetch_instrument_basics``."""
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.f_reuse_run_id = source_run_id
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+        batch_size=1,
+        failover_enabled=False,
+    )
+    runner.history_start = R3_HISTORY_START
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    state = {
+        "status": "pending",
+        "current": None,
+        "completed": [
+            "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+            "D_calendar", "E_delisted",
+        ],
+    }
+    if seed_f_retry_abandon:
+        state["abandoned"] = [
+            {
+                "stage": "F_daily",
+                "reason": "F_TERMINAL_FAILURE:F1_STRICT_DECREASE:field",
+                "replacement": "F_daily_operator_retry",
+                "abandoned_at": "2026-01-01T00:00:00Z",
+                "prior_started_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    runner.machine.save(state)
+
+    runs = {"n": 0}
+
+    def _new_run(job):
+        runs["n"] += 1
+        return f"new-rid-{runs['n']}"
+
+    runner._new_run = _new_run
+    compacts = {"n": 0}
+    if compact_impl is None:
+        compact_impl = lambda rid: {"status": "success"}
+
+    def _compact(rid):
+        compacts["n"] += 1
+        return compact_impl(rid)
+
+    runner._compact = _compact
+
+    class Led:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, rec):
+            self.calls.append(rec)
+
+    ledger = Led()
+    runner.ledger = ledger
+
+    manifest = FakeManifest([])
+    manifest.seed_run(
+        source_run_id, job_name="r3_daily_bars", status="failed",
+        error_message=src_error,
+    )
+    staging_root = tmp_path / "staging"
+    src_staging = staging_root / "daily_bars" / f"run_id={source_run_id}"
+    for b in src_success:
+        manifest.seed_batch(
+            source_run_id, b["batch_id"], status="success",
+            symbols=b["symbols"],
+            window_start=b["window_start"], window_end=b["window_end"],
+            rows_read=b["rows_read"], rows_written=b["rows_written"],
+        )
+        src_staging.mkdir(parents=True, exist_ok=True)
+        (src_staging / f"part-{b['batch_id']}.parquet").write_bytes(b"00")
+    for b in src_failed:
+        manifest.seed_batch(
+            source_run_id, b["batch_id"], status="failed",
+            symbols=b["symbols"],
+            window_start=b["window_start"], window_end=b["window_end"],
+            rows_read=0, rows_written=0,
+        )
+
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(
+        r3, "load_curated_instruments", lambda cfg: _v08_instruments(*instrument_rows)
+    )
+    mock_bs = _v08_instruments(*mock_bs_rows) if mock_bs_rows else None
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {
+                "scope": "SH_SZ_MVP",
+                "shsz_identity_complete": True,
+                "formal_identity_hash": receipt_hash or _formal_hash(mock_bs),
+            }
+        )
+    )
+    bs_calls = {"n": 0}
+
+    def _fake_bs():
+        bs_calls["n"] += 1
+        return _v08_instruments(*mock_bs_rows) if mock_bs_rows else pl.DataFrame(
+            {
+                "symbol": [], "name": [], "exchange": [], "asset_type": [],
+                "list_date": [], "delist_date": [], "prev_symbol": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.instruments.fetch_instrument_basics", _fake_bs
+    )
+    calls = {"n": 0, "specs_by_attempt": {}}
+
+    def wrapped_fetch(config, symbols, start, end, run_id, batch_specs=None):
+        calls["n"] += 1
+        calls["specs_by_attempt"][calls["n"]] = list(batch_specs or [])
+        result = singleton_fetch_impl(calls["n"])
+        failed = set(result.get("failed_symbols") or [])
+        rows = int(result.get("rows_written") or 0)
+        for spec in (batch_specs or []):
+            batch_id = spec[0]
+            status = "failed" if any(s in failed for s in spec[1]) else "success"
+            manifest.finish_batch(
+                run_id, batch_id, status,
+                dataset="daily_bars", rows_read=rows, rows_written=rows,
+            )
+        return result
+
+    monkeypatch.setattr(r3, "fetch_daily_bars_parallel", wrapped_fetch)
+    return runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls
+
+
+# --- A. effective planning ---
+
+
+def test_f_asof_non_null_le_asof_span_unchanged(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("600000.SH", "", "stock", date(2000, 1, 1), None)],
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert plan["required_spans"]["600000.SH"] == (R3_HISTORY_START, R3_DAILY_AS_OF)
+    assert plan["expected_no_data"] == []
+    assert bs_calls["n"] == 0
+
+
+def test_f_asof_non_null_gt_asof_expected_no_data(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("699999.SH", "", "stock", date(2026, 12, 1), None)],
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert plan["required_spans"] == {}
+    assert plan["expected_no_data"] == [
+        {"symbol": "699999.SH", "reason": "LIST_DATE_AFTER_ASOF"}
+    ]
+    assert bs_calls["n"] == 0
+
+
+def test_f_asof_no_null_candidates_zero_stock_basic_calls(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[
+            ("600000.SH", "", "stock", date(2000, 1, 1), None),
+            ("699999.SH", "", "stock", date(2026, 12, 1), None),
+        ],
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert plan["evidence"]["baostock_stock_basic_calls"] == 0
+    assert bs_calls["n"] == 0
+
+
+# --- B. formal authority binding ---
+
+
+def test_f_asof_null_triggers_exactly_one_baostock_call(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688826.SH", "", "stock", None, None)],
+        mock_bs_rows=[],
+        receipt_hash=_formal_hash(None),
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert bs_calls["n"] == 1
+    assert plan["evidence"]["baostock_stock_basic_calls"] == 1
+    assert plan["evidence"]["null_list_date_candidate_n"] == 1
+    assert plan["expected_no_data"][0]["reason"] == "OUTSIDE_FORMAL_ASOF_IDENTITY"
+
+
+def test_f_asof_fresh_hash_matches_receipt_allowed(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688826.SH", "", "stock", None, None)],
+        mock_bs_rows=[("600000.SH", "", "stock", date(2000, 1, 1), None)],
+    )
+    plan = runner._plan_f_shsz_scope()  # hash gate passes by construction
+    assert bs_calls["n"] == 1
+    assert plan["evidence"]["asof_identity_hash"] == _formal_hash(
+        _v08_instruments(("600000.SH", "", "stock", date(2000, 1, 1), None))
+    )
+
+
+def test_f_asof_hash_mismatch_drift(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688826.SH", "", "stock", None, None)],
+        mock_bs_rows=[("600000.SH", "", "stock", date(2000, 1, 1), None)],
+        receipt_hash="0" * 64,
+    )
+    with pytest.raises(R3Error, match="F_FORMAL_IDENTITY_DRIFT"):
+        runner._plan_f_shsz_scope()
+    assert bs_calls["n"] == 1
+
+
+# --- C. NULL-list-date resolution ---
+
+
+def test_f_asof_null_resolved_span_from_baostock(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688826.SH", "", "stock", None, None)],
+        mock_bs_rows=[("688826.SH", "", "stock", date(2020, 1, 1), None)],
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert plan["required_spans"]["688826.SH"] == (date(2020, 1, 1), R3_DAILY_AS_OF)
+    assert plan["expected_no_data"] == []
+    assert plan["evidence"]["null_list_date_resolved_n"] == 1
+    assert bs_calls["n"] == 1
+
+
+def test_f_asof_null_prelisting_confirmed(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688826.SH", "", "stock", None, None)],
+        mock_bs_rows=[("688826.SH", "", "stock", date(2026, 8, 18), None)],
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert plan["required_spans"] == {}
+    assert plan["expected_no_data"] == [
+        {"symbol": "688826.SH", "reason": "PRELISTING_CONFIRMED"}
+    ]
+    assert plan["evidence"]["null_list_date_excluded_n"] == 1
+
+
+def test_f_asof_null_absent_outside_formal(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688835.SH", "", "stock", None, None)],
+        mock_bs_rows=[],
+    )
+    plan = runner._plan_f_shsz_scope()
+    assert plan["expected_no_data"] == [
+        {"symbol": "688835.SH", "reason": "OUTSIDE_FORMAL_ASOF_IDENTITY"}
+    ]
+
+
+def test_f_asof_null_in_identity_still_null_unresolved(monkeypatch, tmp_path):
+    runner, bs_calls = _v08_f_plan_ctx(
+        monkeypatch, tmp_path,
+        instrument_rows=[("688826.SH", "", "stock", None, None)],
+        mock_bs_rows=[("688826.SH", "", "stock", None, None)],
+    )
+    with pytest.raises(R3Error, match="F_NULL_LIST_DATE_UNRESOLVED"):
+        runner._plan_f_shsz_scope()
+    assert bs_calls["n"] == 1
+
+
+# --- D. reuse safe contraction ---
+
+
+_F_REQUIRED = [
+    ("600000.SH", "", "stock", date(2000, 1, 1), None),
+    ("600001.SH", "", "stock", date(2000, 1, 1), None),
+    ("000001.SZ", "", "stock", date(2000, 1, 1), None),
+]
+_F_PRELISTING = ["688826.SH", "688835.SH", "688836.SH", "301655.SZ",
+                 "301688.SZ", "301697.SZ", "601123.SH"]
+
+
+def test_f_reuse_asof_safe_contraction_success(monkeypatch, tmp_path):
+    # Current incident shape: 3 required + 7 NULL-list-date extras that are all
+    # authoritative expected_no_data -> reuse ALL source success, drop extras,
+    # singleton scope 0, compact once, manifest success, F complete.
+    src_success = [
+        _src_batch("b1", ["600000.SH"], status="success", rows=10),
+        _src_batch("b2", ["600001.SH"], status="success", rows=10),
+        _src_batch("b3", ["000001.SZ"], status="success", rows=10),
+    ]
+    src_failed = [
+        _src_batch(f"fb{i}", [s], status="failed", rows=0)
+        for i, s in enumerate(_F_PRELISTING)
+    ]
+
+    def ok_fetch(attempt):
+        raise AssertionError("TDX must not be called: singleton scope is empty")
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls = (
+        _v08_f_reuse_asof_ctx(
+            monkeypatch, tmp_path,
+            src_success=src_success, src_failed=src_failed,
+            singleton_fetch_impl=ok_fetch,
+            instrument_rows=_F_REQUIRED
+            + [(s, "", "stock", None, None) for s in _F_PRELISTING],
+            mock_bs_rows=_F_REQUIRED,
+        )
+    )
+    receipt = runner.stage_daily()
+    assert receipt["manifest_run_status"] == "success"
+    assert receipt["recovery_mode"] == "FAILED_RUN_REUSE_SINGLETON"
+    assert receipt["reused_success_batch_n"] == 3
+    assert receipt["singleton_symbol_n"] == 0
+    assert receipt["reuse_dropped_expected_no_data"] == sorted(_F_PRELISTING)
+    assert receipt["expected_no_data"] == 7
+    assert receipt["null_list_date_candidate_n"] == 7
+    assert receipt["null_list_date_excluded_n"] == 7
+    assert bs_calls["n"] == 1
+    assert calls["n"] == 0  # no TDX fetch for the dropped prelisting scope
+    assert compacts["n"] == 1
+    state = runner.machine.load()
+    assert "F_daily" in state["completed"]
+    rid = "new-rid-1"
+    assert manifest.runs[rid]["status"] == "success"
+    assert manifest.runs[rid]["rows_written"] == 30
+    # each dropped extra recorded in the ledger
+    dropped_events = [c for c in ledger.calls
+                      if c.get("event") == "REUSE_DROPPED_EXPECTED_NO_DATA"]
+    assert {d["symbol"] for d in dropped_events} == set(_F_PRELISTING)
+
+
+def test_f_reuse_asof_success_extra_rejected(monkeypatch, tmp_path):
+    # A NULL-list-date/expected_no_data symbol appearing in a SUCCESS batch
+    # (already staged) must be rejected — never silently copied.
+    src_success = [
+        _src_batch("b1", ["600000.SH"], status="success", rows=10),
+        _src_batch("bz", ["688826.SH"], status="success", rows=1),  # prelisting
+    ]
+    src_failed = []
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls = (
+        _v08_f_reuse_asof_ctx(
+            monkeypatch, tmp_path,
+            src_success=src_success, src_failed=src_failed,
+            singleton_fetch_impl=ok_fetch,
+            instrument_rows=_F_REQUIRED
+            + [("688826.SH", "", "stock", None, None)],
+            mock_bs_rows=_F_REQUIRED,
+        )
+    )
+    with pytest.raises(R3Error, match="F_REUSE_PLAN_MISMATCH"):
+        runner.stage_daily()
+    assert runs["n"] == 0  # pre-run gate: no new run, no abandon
+    assert calls["n"] == 0
+
+
+def test_f_reuse_asof_failed_extra_not_expected_no_data_rejected(monkeypatch, tmp_path):
+    # A source failed symbol that is NOT in current scope nor expected_no_data
+    # (absent from the curated master entirely) must be rejected.
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("fz", ["700000.SH"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls = (
+        _v08_f_reuse_asof_ctx(
+            monkeypatch, tmp_path,
+            src_success=src_success, src_failed=src_failed,
+            singleton_fetch_impl=ok_fetch,
+            instrument_rows=_F_REQUIRED,  # 700000.SH absent from current master
+            mock_bs_rows=_F_REQUIRED,
+        )
+    )
+    with pytest.raises(R3Error, match="F_REUSE_PLAN_MISMATCH"):
+        runner.stage_daily()
+    assert runs["n"] == 0
+
+
+def test_f_reuse_asof_current_required_missing_from_source(monkeypatch, tmp_path):
+    # A CURRENT required symbol absent from the source scope is a mismatch.
+    src_success = [_src_batch("b1", ["600000.SH"], status="success", rows=10)]
+    src_failed = [_src_batch("fz", ["688826.SH"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls = (
+        _v08_f_reuse_asof_ctx(
+            monkeypatch, tmp_path,
+            src_success=src_success, src_failed=src_failed,
+            singleton_fetch_impl=ok_fetch,
+            instrument_rows=_F_REQUIRED  # 600001/000001 required but not in source
+            + [("688826.SH", "", "stock", None, None)],
+            mock_bs_rows=_F_REQUIRED,
+        )
+    )
+    with pytest.raises(R3Error, match="F_REUSE_PLAN_MISMATCH"):
+        runner.stage_daily()
+    assert runs["n"] == 0
+
+
+def test_f_reuse_asof_window_mismatch_rejected(monkeypatch, tmp_path):
+    # Same symbol but a different window in the source batch -> exact-match A.
+    src_success = [
+        _src_batch("b1", ["600000.SH"], status="success", rows=10),
+        {
+            "batch_id": "b2",
+            "symbols": ["600001.SH"],
+            "window_start": date(2020, 1, 1).isoformat(),
+            "window_end": R3_DAILY_AS_OF.isoformat(),
+            "status": "success",
+            "rows_read": 5,
+            "rows_written": 5,
+        },
+        _src_batch("b3", ["000001.SZ"], status="success", rows=10),
+    ]
+    src_failed = [_src_batch("fz", ["688826.SH"], status="failed", rows=0)]
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls = (
+        _v08_f_reuse_asof_ctx(
+            monkeypatch, tmp_path,
+            src_success=src_success, src_failed=src_failed,
+            singleton_fetch_impl=ok_fetch,
+            instrument_rows=_F_REQUIRED
+            + [("688826.SH", "", "stock", None, None)],
+            mock_bs_rows=_F_REQUIRED,
+        )
+    )
+    with pytest.raises(R3Error, match="F_REUSE_PLAN_MISMATCH"):
+        runner.stage_daily()
+    assert runs["n"] == 0
+
+
+# --- F. safety / no roster dependency ---
+
+
+def test_f_asof_no_roster_on_in_planning_or_recovery():
+    src = inspect.getsource(r3.R3Runner._plan_f_shsz_scope) + (
+        inspect.getsource(r3.R3Runner._fetch_daily_bars_per_route)
+    ) + inspect.getsource(r3.R3Runner._fetch_daily_bars_reuse_route)
+    assert "roster_on" not in src
+
+
+def test_f_asof_source_run_immutable_after_safe_contraction(monkeypatch, tmp_path):
+    src_success = [
+        _src_batch("b1", ["600000.SH"], status="success", rows=10),
+        _src_batch("b2", ["600001.SH"], status="success", rows=10),
+        _src_batch("b3", ["000001.SZ"], status="success", rows=10),
+    ]
+    src_failed = [
+        _src_batch(f"fb{i}", [s], status="failed", rows=0)
+        for i, s in enumerate(_F_PRELISTING)
+    ]
+    before_bytes = {}
+    staging_root_dir = None
+
+    def ok_fetch(attempt):
+        return {"failed_symbols": [], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger, staging_root, bs_calls = (
+        _v08_f_reuse_asof_ctx(
+            monkeypatch, tmp_path,
+            src_success=src_success, src_failed=src_failed,
+            singleton_fetch_impl=ok_fetch,
+            instrument_rows=_F_REQUIRED
+            + [(s, "", "stock", None, None) for s in _F_PRELISTING],
+            mock_bs_rows=_F_REQUIRED,
+            source_run_id="src-fail-1",
+        )
+    )
+    src_before = dict(manifest.get_run("src-fail-1"))
+    src_dir = staging_root / "daily_bars" / "run_id=src-fail-1"
+    before_bytes = {
+        p.name: p.read_bytes()
+        for p in src_dir.glob("part-*.parquet")
+    }
+    runner.stage_daily()
+    assert dict(manifest.get_run("src-fail-1")) == src_before
+    after_bytes = {
+        p.name: p.read_bytes()
+        for p in src_dir.glob("part-*.parquet")
+    }
+    assert after_bytes == before_bytes
+    assert src_dir.glob("part-*") is not None  # source staging untouched
+    # only the 3 required were reused into the new run
+    new_dir = staging_root / "daily_bars" / "run_id=new-rid-1"
+    assert sorted(p.name for p in new_dir.glob("part-*.parquet")) == [
+        "part-b1.parquet", "part-b2.parquet", "part-b3.parquet"
+    ]
+
+
+# ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================
 
