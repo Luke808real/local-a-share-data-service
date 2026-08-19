@@ -152,3 +152,76 @@ TRADEPLAN=false
 
 This report is author status only. Independent Sol audit of the exact pushed
 commit is required before any R4A activity.
+
+---
+
+## 8. CORRECTNESS FIX V01 (post code re-audit)
+
+Two fail-closed correctness bugs found by the independent Sol code audit were
+fixed (commit on branch `codex/r4a0-corporate-actions-availability-gate-v01`):
+
+### 8.1 Pinned-upstream check (was: pin printed, not enforced)
+
+`tools/verify_r4a0_corporate_actions_gate.py` `contract_check` now explicitly
+verifies the installed CNEquity `direct_url.vcs_info.commit_id` equals the
+pinned upstream SHA, and that comparison participates in `contract_check.match`
+(schema AND source AND pin). A pin mismatch exits non-zero and R4A0 cannot
+PASS.
+
+Real-root result (2026-08-20 re-run):
+
+```text
+PIN_EXPECTED  a18ee0484dfb0801650175471724def3228b8a17
+PIN_ACTUAL    a18ee0484dfb0801650175471724def3228b8a17
+PIN_MATCH     true
+```
+
+### 8.2 Coverage hard fix (was: any successful run -> COVERAGE_PASS)
+
+That rule is deleted. `corporate_actions` is a sparse event dataset; row
+min/max cannot prove historical completeness. `COVERAGE_PASS` now requires
+authoritative ingestion evidence whose covered window actually spans the
+requested window, compared strictly:
+
+```text
+COVERAGE_PROOF_SEMANTIC  INGESTION_WINDOW_OR_WATERMARK_MUST_COVER_REQUESTED_WINDOW
+REQUESTED_WINDOW         2016-01-01 .. 2026-08-17
+covered_start <= 2016-01-01  AND  covered_end >= 2026-08-17
+```
+
+`run_gate(window_start, window_end)` parameters now participate in the
+decision. Success without a window, or a partial window, is UNKNOWN_PARTIAL
+and never PASS.
+
+Real-root result (unchanged, still fail-closed):
+
+```text
+COVERED_WINDOW   None  (dataset absent)
+COVERAGE_STATUS  UNKNOWN_PARTIAL
+PARTIAL_RUN_REJECTED  false (no dataset to be partial)
+R4A0_READY       false
+BLOCKER          CORPORATE_ACTIONS_DATASET_NOT_BUILT
+```
+
+### 8.3 Targeted tests
+
+Original 7 scenarios retained; 4 new scenarios added (all pass):
+
+```text
+A  successful run with window only 2026-08-01..2026-08-17  -> UNKNOWN_PARTIAL, READY=false
+B  successful run explicitly covering 2016-01-01..2026-08-17 -> COVERAGE_PASS
+C  watermark start after 2016-01-01                          -> UNKNOWN_PARTIAL, READY=false
+D  wrong CNEquity pin                                        -> contract_check FAIL (PIN_MATCH=false)
+
+TARGETED_TESTS  11 passed
+```
+
+The gate was not weakened to make tests pass; the new tests encode the hard
+fail-closed semantics.
+
+### 8.4 Re-run guarantee
+
+Only the READ-ONLY R4A0 gate was re-run on the real root. No bootstrap, no
+backfill, no provider fetch, no R4A execution, no sidecar cleanup; manifest
+SQLite reads remain `immutable=1` (verified: `-wal`/`-shm` mtime unchanged
+before/after re-run).

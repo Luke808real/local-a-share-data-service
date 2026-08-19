@@ -12,13 +12,18 @@ Scenarios required by the R4A0 task contract:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, datetime, timezone
 
 import polars as pl
 import pytest
 
-from ashare_data.r4a0_corporate_actions_gate import run_gate
+from ashare_data.r4a0_corporate_actions_gate import (
+    CNEQUITY_PIN_SHA,
+    evaluate_pin_contract,
+    run_gate,
+)
 
 
 SCHEMA = {
@@ -68,7 +73,7 @@ def write_parquet(root, rows, schema=None):
     df.write_parquet(d / "part.parquet")
 
 
-def write_manifest(root, *, success: bool = True):
+def write_manifest(root, *, success: bool = True, scope=("2016-01-01", "2026-08-17")):
     meta = root / "meta"
     meta.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(meta / "manifest.db")
@@ -85,6 +90,14 @@ def write_manifest(root, *, success: bool = True):
         "blocks_compaction INTEGER)"
     )
     if success:
+        start_s, end_s = scope
+        metadata = json.dumps(
+            {
+                "trade_date": "2026-08-17",
+                "backfill": True,
+                "backfill_scope": {"start": start_s, "end": end_s, "symbols": None},
+            }
+        )
         con.execute(
             "INSERT INTO ingestion_runs VALUES (?,?,?,?,?,?,?,?,?)",
             (
@@ -96,8 +109,7 @@ def write_manifest(root, *, success: bool = True):
                 10,
                 10,
                 None,
-                '{"trade_date":"2026-08-17","backfill":true,'
-                '"backfill_scope":{"start":"2016-01-01","end":null,"symbols":null}}',
+                metadata,
             ),
         )
         con.execute(
@@ -109,8 +121,8 @@ def write_manifest(root, *, success: bool = True):
                 "corporate_actions",
                 "success",
                 "[]",
-                "2016-01-01",
-                "2026-08-17",
+                start_s,
+                end_s,
                 10,
                 10,
                 0,
@@ -123,6 +135,14 @@ def write_manifest(root, *, success: bool = True):
         )
     con.commit()
     con.close()
+
+
+def write_watermark(root, *, start="2016-01-01", end="2026-08-17"):
+    state = root / "meta" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "corporate_actions.json").write_text(
+        json.dumps({"start": start, "end": end}), encoding="utf-8"
+    )
 
 
 def test_valid_dataset_pass(tmp_path):
@@ -230,3 +250,81 @@ def test_coverage_unknown_partial_ready_false(tmp_path):
     assert report["R4A0_READY"] is False
     assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
     assert report["BLOCKER"] == "COVERAGE_UNPROVEN"
+
+
+def test_a_partial_successful_run_rejected(tmp_path):
+    # successful corporate run whose covered window is only 2026-08-01..2026-08-17
+    root = tmp_path / "root"
+    write_parquet(root, [base_row("000001.SZ", date(2026, 8, 3))])
+    write_manifest(root, scope=("2026-08-01", "2026-08-17"))
+    report = run_gate(root)
+    assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
+    assert report["PARTIAL_RUN_REJECTED"] is True
+    assert report["R4A0_READY"] is False
+
+
+def test_b_explicit_full_window_coverage_pass(tmp_path):
+    # successful run explicitly covering 2016-01-01..2026-08-17
+    root = tmp_path / "root"
+    write_parquet(
+        root,
+        [
+            base_row("600519.SH", date(2016, 1, 4)),
+            base_row("000001.SZ", date(2026, 6, 1)),
+        ],
+    )
+    write_manifest(root, scope=("2016-01-01", "2026-08-17"))
+    report = run_gate(root)
+    assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["COVERED_WINDOW"] == {"start": "2016-01-01", "end": "2026-08-17"}
+    assert report["R4A0_READY"] is True
+
+
+def test_c_watermark_start_after_window_rejected(tmp_path):
+    # watermark coverage starts 2020-01-01, i.e. after requested 2016-01-01
+    root = tmp_path / "root"
+    write_parquet(root, [base_row("600519.SH", date(2020, 1, 4))])
+    write_watermark(root, start="2020-01-01", end="2026-08-17")
+    report = run_gate(root)
+    assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
+    assert report["R4A0_READY"] is False
+
+
+def test_d_wrong_pin_fails_contract():
+    wrong = {
+        "url": "https://github.com/rootSunc/CNEquity.git",
+        "vcs_info": {
+            "vcs": "git",
+            "commit_id": "deadbeef00000000000000000000000000000000",
+            "requested_revision": "deadbeef00000000000000000000000000000000",
+        },
+    }
+    ev = evaluate_pin_contract(
+        wrong,
+        list(SCHEMA.keys()),
+        "tdx_protocol",
+        "eastmoney",
+        pin_expected=CNEQUITY_PIN_SHA,
+    )
+    assert ev["PIN_MATCH"] is False
+    assert ev["SCHEMA_MATCH"] is True
+    assert ev["SOURCE_MATCH"] is True
+    assert ev["match"] is False
+
+    ok = {
+        "url": "https://github.com/rootSunc/CNEquity.git",
+        "vcs_info": {
+            "vcs": "git",
+            "commit_id": CNEQUITY_PIN_SHA,
+            "requested_revision": CNEQUITY_PIN_SHA,
+        },
+    }
+    ev2 = evaluate_pin_contract(
+        ok,
+        list(SCHEMA.keys()),
+        "tdx_protocol",
+        "eastmoney",
+        pin_expected=CNEQUITY_PIN_SHA,
+    )
+    assert ev2["PIN_MATCH"] is True
+    assert ev2["match"] is True

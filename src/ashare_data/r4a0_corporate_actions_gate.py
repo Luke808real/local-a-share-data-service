@@ -71,6 +71,24 @@ def list_parquet(dataset: Path) -> list[Path]:
     return sorted(p for p in dataset.rglob("*.parquet") if p.is_file())
 
 
+def _safe_json(text: str | None) -> Any:
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _parse_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except Exception:
+        return None
+
+
 def read_manifest_states(root: Path) -> dict[str, Any]:
     """Read meta/manifest.db read-only for corporate_actions runs/batches.
 
@@ -127,6 +145,7 @@ def read_manifest_states(root: Path) -> dict[str, Any]:
             "rows_written": r[6],
             "error_message": r[7],
             "metadata_json": r[8],
+            "metadata_parsed": _safe_json(r[8]),
         }
         for r in runs
     ]
@@ -164,6 +183,86 @@ def read_manifest_states(root: Path) -> dict[str, Any]:
         "corporate_watermark": watermark,
         "manifest_wal_pending": False,
         "manifest_error": None,
+    }
+
+
+def extract_covered_window(manifest: dict[str, Any]) -> tuple[date | None, date | None]:
+    """Covered start/end proven by successful ingestion evidence.
+
+    A sparse event dataset's historical completeness cannot be inferred from
+    row min/max. Coverage is proven only by an explicit, authoritative window:
+      * successful corporate_actions ingestion batch window_start/window_end, or
+      * successful run metadata backfill_scope.start/end, or
+      * a trustworthy watermark/coverage metadata block.
+    Returns (None, None) when no explicit covered window is proven.
+    """
+    starts: list[date] = []
+    ends: list[date] = []
+
+    for b in manifest.get("batches", []):
+        if b.get("status") != "success":
+            continue
+        s = _parse_date(b.get("window_start"))
+        e = _parse_date(b.get("window_end"))
+        if s is not None:
+            starts.append(s)
+        if e is not None:
+            ends.append(e)
+
+    for r in manifest.get("runs", []):
+        if r.get("status") != "success":
+            continue
+        meta = r.get("metadata_parsed")
+        scope = (meta or {}).get("backfill_scope") if isinstance(meta, dict) else {}
+        s = _parse_date(scope.get("start"))
+        if s is not None:
+            starts.append(s)
+        e = _parse_date(scope.get("end") or scope.get("to") or scope.get("cutoff"))
+        if e is not None:
+            ends.append(e)
+
+    wm = manifest.get("corporate_watermark")
+    if isinstance(wm, dict) and wm.get("corrupt") is not True:
+        ws = _parse_date(wm.get("start") or wm.get("min_date") or wm.get("first_date"))
+        we = _parse_date(wm.get("end") or wm.get("max_date") or wm.get("last_date"))
+        if ws is not None:
+            starts.append(ws)
+        if we is not None:
+            ends.append(we)
+
+    covered_start = min(starts) if starts else None
+    covered_end = max(ends) if ends else None
+    return covered_start, covered_end
+
+
+def evaluate_pin_contract(
+    pin: Any,
+    schema_keys: list[str],
+    spec_primary: Any,
+    spec_backup: Any,
+    *,
+    pin_expected: str = CNEQUITY_PIN_SHA,
+) -> dict[str, Any]:
+    """Evaluate the pinned-upstream contract (schema + source + exact pin).
+
+    PNG mismatch alone fails the contract; the pin is not merely reported.
+    """
+    pin_actual = None
+    if isinstance(pin, dict):
+        vcs = pin.get("vcs_info") or {}
+        pin_actual = vcs.get("commit_id")
+    pin_match = bool(pin_actual and pin_actual == pin_expected)
+    schema_match = set(CONTRACT.required_fields).issubset(set(schema_keys))
+    source_match = (
+        spec_primary == CONTRACT.primary_source and spec_backup == CONTRACT.backup_source
+    )
+    return {
+        "PIN_EXPECTED": pin_expected,
+        "PIN_ACTUAL": pin_actual,
+        "PIN_MATCH": pin_match,
+        "SCHEMA_MATCH": schema_match,
+        "SOURCE_MATCH": source_match,
+        "match": bool(schema_match and source_match and pin_match),
     }
 
 
@@ -236,23 +335,21 @@ def run_gate(
         )
 
     # ---- COVERAGE (event data: no daily-grid requirement) -----------------
-    # Event data does not require a row per trading day. A full coverage claim
-    # needs (a) rows present and (b) an explicit historical-coverage proof from
-    # an ingestion run or watermark bounding the R4A window. Without that proof
-    # coverage is UNKNOWN/PARTIAL and never PASS.
-    if not dataset_exists or row_count <= 0:
-        coverage_status = "UNKNOWN_PARTIAL"
-    else:
-        wm = manifest["corporate_watermark"]
-        run_success = manifest["corporate_run_success"]
-        wm_covers = False
-        if wm and isinstance(wm, dict):
-            start = wm.get("start") or wm.get("min_date") or wm.get("first_date")
-            end = wm.get("end") or wm.get("max_date") or wm.get("last_date")
-            wm_covers = bool(start and end)
-        coverage_status = (
-            "PASS" if (run_success or (wm_covers and row_count > 0)) else "UNKNOWN_PARTIAL"
-        )
+    # A sparse event dataset cannot prove historical completeness from row
+    # min/max or from "a corporate run succeeded". COVERAGE_PASS requires
+    # authoritative ingestion evidence whose covered window actually spans the
+    # requested window (window_start..window_end). A success with no window, or
+    # a partial window, is UNKNOWN_PARTIAL and never PASS.
+    covered_start, covered_end = extract_covered_window(manifest)
+    coverage_pass = bool(
+        dataset_exists
+        and row_count > 0
+        and covered_start is not None
+        and covered_end is not None
+        and covered_start <= window_start
+        and covered_end >= window_end
+    )
+    coverage_status = "PASS" if coverage_pass else "UNKNOWN_PARTIAL"
 
     # ---- UNIQUENESS (PK = symbol, ex_date, action_type) -------------------
     duplicate_action_n = 0
@@ -359,6 +456,24 @@ def run_gate(
         "SCHEMA_STATUS": schema_status,
         "SCOPE_STATUS": scope_status,
         "COVERAGE_STATUS": coverage_status,
+        "REQUESTED_WINDOW": {
+            "start": str(window_start),
+            "end": str(window_end),
+        },
+        "COVERED_WINDOW": (
+            {
+                "start": str(covered_start),
+                "end": str(covered_end),
+            }
+            if covered_start is not None and covered_end is not None
+            else None
+        ),
+        "COVERAGE_PROOF_SEMANTIC": (
+            "INGESTION_WINDOW_OR_WATERMARK_MUST_COVER_REQUESTED_WINDOW"
+        ),
+        "PARTIAL_RUN_REJECTED": bool(
+            dataset_exists and coverage_status == "UNKNOWN_PARTIAL"
+        ),
         "UNIQUENESS_STATUS": uniqueness_status,
         "PROVENANCE_STATUS": provenance_status,
         "ROW_COUNT": row_count,

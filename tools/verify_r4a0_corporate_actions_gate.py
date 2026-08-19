@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from ashare_data.r4a0_corporate_actions_gate import (  # noqa: E402
     CNEQUITY_PIN_SHA,
     CONTRACT,
+    evaluate_pin_contract,
     run_gate,
 )
 
@@ -51,12 +52,7 @@ def contract_check() -> dict:
     except Exception:
         pin = None
 
-    schema = domain.schemas.CORPORATE_ACTIONS_SCHEMA
-    origin_required = tuple(field for field in CONTRACT.required_fields if True)
-    schema_cols = tuple(schema.keys())
-    # contract required_fields must be a subset of the pinned schema columns
-    subset_ok = set(CONTRACT.required_fields).issubset(set(schema_cols))
-    # source/pk expectations
+    schema_cols = list(domain.schemas.CORPORATE_ACTIONS_SCHEMA.keys())
     spec = None
     if hasattr(specs_ds, "DATASETS"):
         spec = specs_ds.DATASETS.get(DATASET_NAME) if isinstance(
@@ -64,19 +60,20 @@ def contract_check() -> dict:
         ) else None
     spec_primary = getattr(spec, "primary_source", None) if spec else None
     spec_backup = getattr(spec, "backup_source", None) if spec else None
-    source_match = (
-        spec_primary == CONTRACT.primary_source
-        and spec_backup == CONTRACT.backup_source
+    ev = evaluate_pin_contract(
+        pin,
+        schema_cols,
+        spec_primary,
+        spec_backup,
+        pin_expected=CNEQUITY_PIN_SHA,
     )
     return {
         "cnequity_package_checked": True,
         "direct_url": pin,
-        "schema_match_subset": subset_ok,
+        **ev,
         "missing_from_pin_schema": sorted(
             set(CONTRACT.required_fields) - set(schema_cols)
         ),
-        "spec_source_match": source_match,
-        "match": bool(subset_ok and source_match),
     }
 
 
