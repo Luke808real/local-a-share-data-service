@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""R4A0 corporate_actions availability gate — read-only verifier CLI.
+
+Usage (authorized, frozen offline venv):
+  /Users/luke808/ASL-r3-daily-foundation-v01/.venv/bin/python \
+      tools/verify_r4a0_corporate_actions_gate.py --config config/cnequity.toml
+
+The gate never writes to the data root, never calls a provider, and never
+bootstraps/backfills corporate_actions. Exit code is 0 only when
+R4A0_READY=true.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import tomllib
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ashare_data.r4a0_corporate_actions_gate import (  # noqa: E402
+    CNEQUITY_PIN_SHA,
+    CONTRACT,
+    run_gate,
+)
+
+
+def contract_check() -> dict:
+    """Verify the inlined contract matches the pinned CNEquity origin."""
+    try:
+        import cnequity  # noqa: F401
+        from cnequity import domain
+        from cnequity.domain import datasets as specs_ds
+    except Exception as exc:  # pragma: no cover - environment probe
+        return {
+            "cnequity_package_checked": False,
+            "error": str(exc),
+            "match": False,
+        }
+
+    pin = None
+    try:
+        from importlib.metadata import distribution
+
+        dm = distribution("cnequity").read_text("direct_url.json")
+        if dm:
+            pin = json.loads(dm)
+    except Exception:
+        pin = None
+
+    schema = domain.schemas.CORPORATE_ACTIONS_SCHEMA
+    origin_required = tuple(field for field in CONTRACT.required_fields if True)
+    schema_cols = tuple(schema.keys())
+    # contract required_fields must be a subset of the pinned schema columns
+    subset_ok = set(CONTRACT.required_fields).issubset(set(schema_cols))
+    # source/pk expectations
+    spec = None
+    if hasattr(specs_ds, "DATASETS"):
+        spec = specs_ds.DATASETS.get(DATASET_NAME) if isinstance(
+            specs_ds.DATASETS, dict
+        ) else None
+    spec_primary = getattr(spec, "primary_source", None) if spec else None
+    spec_backup = getattr(spec, "backup_source", None) if spec else None
+    source_match = (
+        spec_primary == CONTRACT.primary_source
+        and spec_backup == CONTRACT.backup_source
+    )
+    return {
+        "cnequity_package_checked": True,
+        "direct_url": pin,
+        "schema_match_subset": subset_ok,
+        "missing_from_pin_schema": sorted(
+            set(CONTRACT.required_fields) - set(schema_cols)
+        ),
+        "spec_source_match": source_match,
+        "match": bool(subset_ok and source_match),
+    }
+
+
+DATASET_NAME = CONTRACT.dataset
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="R4A0 corporate_actions gate")
+    parser.add_argument("--config", default="config/cnequity.toml")
+    parser.add_argument("--contract-check", action="store_true")
+    args = parser.parse_args()
+
+    config_path = (REPO_ROOT / args.config).resolve()
+    with config_path.open("rb") as fh:
+        config = tomllib.load(fh)
+    root = Path(config["data"]["root"])
+
+    cc = contract_check() if args.contract_check else None
+    report = run_gate(root)
+    report["config"] = {
+        "path": str(config_path),
+        "sha256": __import__("hashlib").sha256(config_path.read_bytes()).hexdigest(),
+        "root": str(root),
+    }
+    report["upstream"] = {
+        "cnequity_pin_sha": CNEQUITY_PIN_SHA,
+        "contract_check": cc,
+    }
+    if cc is not None and not cc.get("match"):
+        print(json.dumps({"error": "CNEquity contract mismatch"}, indent=2))
+        return 2
+
+    print(json.dumps(report, indent=2, default=str))
+    return 0 if report["R4A0_READY"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
