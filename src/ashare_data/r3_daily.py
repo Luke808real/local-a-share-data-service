@@ -2577,122 +2577,161 @@ class R3Runner:
                 f"{symbol}|{self.history_start}|{self.daily_as_of}|a{attempt}".encode()
             ).hexdigest()[:12]
 
-        # SH/SZ RECOVERY_REQUIRED with prefetch manifest + service ledger
+        # V08 E scope (Baostock batch fix): ONE bounded bulk adapter invocation
+        # over the full frozen SH/SZ RECOVERY_REQUIRED set. Retry / relogin /
+        # pacing / batching authority lives in the pinned CNEquity
+        # `fetch_per_symbol` (shared session, <=3 inner retries, relogin,
+        # `baostock_batch_size`/`baostock_batch_rest_seconds`, watchdog). The
+        # service layer must NOT wrap another per-symbol retry, so the outer
+        # attempt is fixed at 1 and we never call fetch_delisted_bars([sym]).
+        adapter_retry_owner = "cnequity.fetch_per_symbol"
+        adapter_max_retries = 3
         for symbol in sh_sz:
-            attempt = 0
-            prior_failed: list[str] = []
-            done = False
-            while attempt < 3 and not done:
-                attempt += 1
-                batch_id = _batch_id(symbol, attempt)
-                manifest.start_batch(
-                    run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
-                    symbols=[symbol], window_start=self.history_start.isoformat(),
-                    window_end=self.daily_as_of.isoformat(), blocks_compaction=True,
-                )
-                self.ledger.append(
-                    {
-                        "stage": "E",
-                        "event": "ATTEMPT_START",
-                        "symbol": symbol,
-                        "symbol_hash": sha256_bytes(symbol.encode()),
-                        "attempt": attempt,
-                        "window_start": self.history_start.isoformat(),
-                        "window_end": self.daily_as_of.isoformat(),
-                        "adapter": "baostock",
-                        "batch_id": batch_id,
-                        "ownership": "RECOVERY_REQUIRED",
-                        "status": "running",
-                    }
-                )
-                try:
-                    frame_rows, _failed = fetch_delisted_bars(
-                        [symbol], self.history_start, self.daily_as_of, config=self.cfg
-                    )
-                    if _failed:
-                        raise RuntimeError(f"baostock failed for {symbol}: {_failed}")
-                    frame = pl.DataFrame(frame_rows)
-                except Exception as exc:
-                    manifest.finish_batch(run_id, batch_id, "failed", error_message=str(exc))
-                    prior_failed.append(batch_id)
-                    self.ledger.append(
-                        {
-                            "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
-                            "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
-                            "status": "failed", "reason": f"{type(exc).__name__}: {exc}",
-                        }
-                    )
-                    continue
-                if frame.is_empty():
-                    manifest.finish_batch(run_id, batch_id, "failed",
-                                          error_message="empty baostock response")
-                    prior_failed.append(batch_id)
-                    self.ledger.append(
-                        {
-                            "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
-                            "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
-                            "status": "failed", "reason": "EMPTY_RESPONSE",
-                        }
-                    )
-                    continue
-                frame = frame.with_columns(
-                    pl.lit("baostock").alias("source")
-                ) if "source" not in frame.columns else frame
-                traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
-                if traded.is_empty():
-                    # non-empty frame but ZERO positive-volume rows => not success
-                    manifest.finish_batch(run_id, batch_id, "failed",
-                                          error_message="ZERO_VOLUME_ONLY")
-                    prior_failed.append(batch_id)
-                    self.ledger.append(
-                        {
-                            "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
-                            "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
-                            "status": "failed", "reason": "ZERO_VOLUME_ONLY",
-                        }
-                    )
-                    continue
-                frame = with_provenance(
-                    frame, source="baostock", data_version=data_version_for("daily_bars")
-                )
-                frame = frame.unique(subset=["symbol", "trade_date"], keep="last")
-                writer.write_batch("daily_bars", run_id, batch_id, frame)
+            batch_id = _batch_id(symbol, 1)
+            manifest.start_batch(
+                run_id, batch_id, task_id="daily_bars", dataset="daily_bars",
+                symbols=[symbol], window_start=self.history_start.isoformat(),
+                window_end=self.daily_as_of.isoformat(), blocks_compaction=True,
+            )
+            self.ledger.append(
+                {
+                    "stage": "E",
+                    "event": "ATTEMPT_START",
+                    "symbol": symbol,
+                    "symbol_hash": sha256_bytes(symbol.encode()),
+                    "attempt": 1,
+                    "window_start": self.history_start.isoformat(),
+                    "window_end": self.daily_as_of.isoformat(),
+                    "adapter": "baostock",
+                    "batch_id": batch_id,
+                    "ownership": "RECOVERY_REQUIRED",
+                    "status": "running",
+                    "adapter_retry_owner": adapter_retry_owner,
+                    "adapter_max_retries": adapter_max_retries,
+                }
+            )
+
+        try:
+            bulk_rows, failed_symbols = fetch_delisted_bars(
+                list(sh_sz),
+                self.history_start,
+                self.daily_as_of,
+                config=self.cfg,
+            )
+        except Exception as exc:  # noqa: BLE001 - bulk failure must fail closed
+            # Every still-running E batch terminalizes failed; ledger records the
+            # bulk failure; no compact; E does not complete; re-raise.
+            for symbol in sh_sz:
+                bid = _batch_id(symbol, 1)
                 manifest.finish_batch(
-                    run_id, batch_id, "success",
-                    rows_read=frame.height, rows_written=frame.height,
+                    run_id, bid, "failed",
+                    error_message=f"BULK_FETCH_FAILURE: {type(exc).__name__}: {exc}",
                 )
-                if prior_failed:
-                    manifest.supersede_batches(run_id, prior_failed, superseded_by=batch_id)
-                    self.ledger.append(
-                        {
-                            "stage": "E", "event": "ATTEMPT_SUPERSEDE", "symbol": symbol,
-                            "successful_batch_id": batch_id,
-                            "superseded_batch_ids": list(prior_failed),
-                            "superseded_n": len(prior_failed),
-                        }
-                    )
-                prior_failed.clear()
-                recovered_spans[symbol] = (
-                    traded["trade_date"].min(),
-                    traded["trade_date"].max(),
-                )
-                total_rows += frame.height
                 self.ledger.append(
                     {
                         "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
-                        "attempt": attempt, "adapter": "baostock", "batch_id": batch_id,
-                        "status": "success", "rows": frame.height,
-                        "span": (
-                            f"{traded['trade_date'].min()}|{traded['trade_date'].max()}"
-                            if not traded.is_empty()
-                            else None
-                        ),
-                        "symbol_hash": sha256_bytes(symbol.encode()),
+                        "attempt": 1, "adapter": "baostock", "batch_id": bid,
+                        "status": "failed",
+                        "reason": f"BULK_FETCH_FAILURE: {type(exc).__name__}: {exc}",
                     }
                 )
-                done = True
-            if not done:
+            self.ledger.append(
+                {
+                    "stage": "E",
+                    "event": "BULK_FETCH_FAILURE",
+                    "adapter": "baostock",
+                    "symbols": list(sh_sz),
+                    "symbols_hash": sha256_bytes(
+                        json.dumps(sorted(sh_sz), separators=(",", ":")).encode()
+                    ),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            raise R3Error(
+                "E_BULK_FETCH_FAILURE",
+                f"pinned fetch_delisted_bars bulk invocation raised: "
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+
+        rows_by_symbol: dict[str, list[dict]] = {}
+        for row in bulk_rows:
+            rows_by_symbol.setdefault(row["symbol"], []).append(row)
+
+        # Classify each SH/SZ target (no second provider call on failure).
+        for symbol in sh_sz:
+            batch_id = _batch_id(symbol, 1)
+            frame_rows = rows_by_symbol.get(symbol, [])
+            if symbol in failed_symbols:
+                manifest.finish_batch(
+                    run_id, batch_id, "failed", error_message="FAILED_BY_ADAPTER"
+                )
+                self.ledger.append(
+                    {
+                        "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                        "attempt": 1, "adapter": "baostock", "batch_id": batch_id,
+                        "status": "failed", "reason": "FAILED_BY_ADAPTER",
+                    }
+                )
                 unresolved.append(symbol)
+                continue
+            if not frame_rows:
+                manifest.finish_batch(
+                    run_id, batch_id, "failed", error_message="EMPTY_RESPONSE"
+                )
+                self.ledger.append(
+                    {
+                        "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                        "attempt": 1, "adapter": "baostock", "batch_id": batch_id,
+                        "status": "failed", "reason": "EMPTY_RESPONSE",
+                    }
+                )
+                unresolved.append(symbol)
+                continue
+            frame = pl.DataFrame(frame_rows)
+            frame = frame.with_columns(
+                pl.lit("baostock").alias("source")
+            ) if "source" not in frame.columns else frame
+            traded = frame.filter(pl.col("volume") > 0) if "volume" in frame.columns else frame
+            if traded.is_empty():
+                manifest.finish_batch(
+                    run_id, batch_id, "failed", error_message="ZERO_VOLUME_ONLY"
+                )
+                self.ledger.append(
+                    {
+                        "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                        "attempt": 1, "adapter": "baostock", "batch_id": batch_id,
+                        "status": "failed", "reason": "ZERO_VOLUME_ONLY",
+                    }
+                )
+                unresolved.append(symbol)
+                continue
+            frame = with_provenance(
+                frame, source="baostock", data_version=data_version_for("daily_bars")
+            )
+            frame = frame.unique(subset=["symbol", "trade_date"], keep="last")
+            writer.write_batch("daily_bars", run_id, batch_id, frame)
+            manifest.finish_batch(
+                run_id, batch_id, "success",
+                rows_read=frame.height, rows_written=frame.height,
+            )
+            recovered_spans[symbol] = (
+                traded["trade_date"].min(),
+                traded["trade_date"].max(),
+            )
+            total_rows += frame.height
+            self.ledger.append(
+                {
+                    "stage": "E", "event": "ATTEMPT_END", "symbol": symbol,
+                    "attempt": 1, "adapter": "baostock", "batch_id": batch_id,
+                    "status": "success", "rows": frame.height,
+                    "span": (
+                        f"{traded['trade_date'].min()}|{traded['trade_date'].max()}"
+                        if not traded.is_empty()
+                        else None
+                    ),
+                    "symbol_hash": sha256_bytes(symbol.encode()),
+                }
+            )
 
         # BJ historical EastMoney execution branch is DISABLED under V08
         # SH/SZ MVP (the EastMoney delisted-bars wrapper path is not reachable
@@ -2720,6 +2759,9 @@ class R3Runner:
             "e_shsz_complete": True,  # SH/SZ recovery done (unresolved == 0)
             "bj_scope": "DEFERRED_EXTENSION",
             "bj_execution": "NOT_RUN",
+            "baostock_execution_mode": "PINNED_BULK_FETCH_PER_SYMBOL",
+            "service_provider_invocations": 1,
+            "adapter_retry_owner": "cnequity.fetch_per_symbol",
             "target_set_sha": target_set_sha,
             "targets": len(targets),
             "recover": len(recover),

@@ -84,6 +84,12 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   scope fails closed `E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP`; EastMoney
   (`em_daily_tristate`) is never called in the MVP; the E receipt records
   `scope=SH_SZ_MVP`, `bj_scope=DEFERRED_EXTENSION`, `bj_execution=NOT_RUN`.
+  SH/SZ recovery is ONE bulk `fetch_delisted_bars(sh_sz, …)` invocation; retry,
+  relogin, batching and pacing authority is the pinned CNEquity
+  `fetch_per_symbol` (service_provider_invocations = 1, outer attempt = 1,
+  adapter_retry_owner = cnequity.fetch_per_symbol); the service never nests a
+  second per-symbol retry, and a bulk exception terminalizes every running
+  batch and fails closed before compact.
   `live_missing`/current active names are excluded; `never_issued` is not a
   completion gate.
 - No symbol is dropped by board, ST, liquidity, or strategy use.

@@ -1253,41 +1253,55 @@ def test_stage_e_prefetch_manifest_ledger_before_fetch(monkeypatch, tmp_path):
         monkeypatch, tmp_path, fetch_impl=fetch_fail,
         formal_map=formal, instruments_df=_instruments_with(formal),
     )
-    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+    with pytest.raises(R3Error, match="E_BULK_FETCH_FAILURE"):
         runner._recover_delisted_daily()
     start_events = [r for r in ledger.calls if r.get("event") == "ATTEMPT_START"]
     assert start_events and start_events[0]["status"] == "running"
     assert start_events[0]["adapter"] == "baostock"
     assert start_events[0]["ownership"] == "RECOVERY_REQUIRED"
-    assert calls["fetch"] >= 3  # exact retries
+    assert calls["fetch"] == 1  # single bulk invocation; no service retry
     assert manifest.calls and manifest.calls[0][0] == "start"
+    assert {
+        s for s in manifest.status_by_batch.values()
+    } == {"failed"}  # every running batch terminalized on bulk failure
 
 
-def test_stage_e_fail_then_retry_success_lineage(monkeypatch, tmp_path):
-    formal = {"600001.SH": date(2019, 12, 31)}
-    seq = {"n": 0}
+def test_stage_e_failed_symbol_unresolved_no_second_call(monkeypatch, tmp_path):
+    formal = {
+        "600001.SH": date(2019, 12, 31),
+        "600003.SH": date(2020, 6, 30),
+    }
+    capped = {"fetch_calls": 0}
 
-    def fetch_flaky(symbols, start, end, config=None):
-        seq["n"] += 1
-        if seq["n"] == 1:
-            raise RuntimeError("boom1")
-        sym = symbols[0]
-        return [
-            {
-                "symbol": sym, "trade_date": date(2019, 12, 30),
-                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
-                "volume": 100, "amount": 1050.0,
-            }
-        ], []
+    def bulk_partial(symbols, start, end, config=None):
+        capped["fetch_calls"] += 1
+        capped["symbols"] = list(symbols)
+        rows, failed = [], []
+        for sym in symbols:
+            if sym == "600001.SH":
+                rows.append({
+                    "symbol": sym, "trade_date": date(2019, 12, 30),
+                    "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                    "volume": 100, "amount": 1050.0,
+                })
+            else:
+                failed.append(sym)
+        return rows, failed
 
     runner, ledger, manifest, _w, _ = _stage_e_ctx(
-        monkeypatch, tmp_path, fetch_impl=fetch_flaky,
+        monkeypatch, tmp_path, fetch_impl=bulk_partial,
         formal_map=formal, instruments_df=_instruments_with(formal),
     )
-    runner._recover_delisted_daily()
-    assert manifest.superseded  # prior failed batch resolved
-    assert manifest.incomplete_blocking() == 0
-    assert any(r.get("event") == "ATTEMPT_SUPERSEDE" for r in ledger.calls)
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner._recover_delisted_daily()
+    assert capped["fetch_calls"] == 1  # never a second provider call
+    assert "600003.SH" in capped["symbols"]
+    # the failed symbol's batch is left failed (blocks compact)
+    assert manifest.incomplete_blocking() >= 1
+    assert any(
+        r.get("symbol") == "600003.SH" and r.get("reason") == "FAILED_BY_ADAPTER"
+        for r in ledger.calls
+    )
 
 
 def test_stage_e_expected_no_data_terminal_evidence(monkeypatch, tmp_path):
@@ -3628,6 +3642,9 @@ def test_v08_e_receipt_scope_fields(monkeypatch, tmp_path):
     assert receipt["e_shsz_complete"] is True
     assert receipt["bj_scope"] == "DEFERRED_EXTENSION"
     assert receipt["bj_execution"] == "NOT_RUN"
+    assert receipt["baostock_execution_mode"] == "PINNED_BULK_FETCH_PER_SYMBOL"
+    assert receipt["service_provider_invocations"] == 1
+    assert receipt["adapter_retry_owner"] == "cnequity.fetch_per_symbol"
     assert receipt["recovered"] == 1
     assert "DAILY_READY" not in receipt
 
@@ -3658,6 +3675,141 @@ def test_v08_ef_does_not_touch_g_or_daily_ready():
     src += inspect.getsource(r3.R3Runner._fetch_daily_bars_per_route)
     for forbidden in ("stage_coverage", "G_coverage", "DAILY_READY", "verified"):
         assert forbidden not in src
+
+
+# ============================================================================
+# V08 E Baostock batch fix (single bulk fetch_delisted_bars; pinned retry owner)
+# ============================================================================
+
+
+def _bs_bulk(rows_by_symbol, failed, captured):
+    def impl(symbols, start, end, config=None):
+        captured["fetch_calls"] = captured.get("fetch_calls", 0) + 1
+        captured["symbols"] = list(symbols)
+        rows = []
+        for sym in symbols:
+            if sym in failed:
+                continue
+            rows.extend(rows_by_symbol.get(sym, []))
+        return rows, list(failed for f in failed if f in symbols)
+    return impl
+
+
+def _v08_e_bulk_ctx(monkeypatch, tmp_path, formal, fetch_impl, compact_counter):
+    runner, ledger, manifest, writer, _ = _stage_e_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=fetch_impl,
+        formal_map=formal,
+        instruments_df=_instruments_with(formal),
+    )
+    runner._compact = lambda rid: compact_counter.update(n=compact_counter.get("n", 0) + 1) or {"status": "success"}
+    return runner, ledger, manifest, writer
+
+
+def test_v08_e_bulk_single_call_full_set(monkeypatch, tmp_path):
+    formal = {
+        "600001.SH": date(2019, 12, 31),
+        "600002.SH": date(2021, 6, 30),
+        "000001.SZ": date(2020, 9, 30),
+    }
+    rows_by_symbol = {
+        s: [{
+            "symbol": s, "trade_date": date(2019, 12, 30),
+            "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+            "volume": 100, "amount": 1050.0,
+        }]
+        for s in formal
+    }
+    capped = {"fetch_calls": 0}
+    compact = {"n": 0}
+    runner, ledger, manifest, w = _v08_e_bulk_ctx(
+        monkeypatch, tmp_path, formal,
+        _bs_bulk(rows_by_symbol, [], capped), compact,
+    )
+    receipt = runner._recover_delisted_daily()
+    assert capped["fetch_calls"] == 1
+    assert sorted(capped["symbols"]) == sorted(formal)  # full SH/SZ recovery set
+    assert compact["n"] == 1
+    assert receipt["e_shsz_complete"] is True
+    assert receipt["recovered"] == 3
+    assert manifest.incomplete_blocking() == 0
+
+
+def test_v08_e_no_per_symbol_fetch_in_source():
+    src = inspect.getsource(r3.R3Runner._recover_delisted_daily)
+    assert "list(sh_sz)" in src  # bulk invocation with the full set
+    assert "while attempt < 3" not in src  # service outer retry removed
+    assert "prior_failed" not in src  # no per-symbol supersede loop
+
+
+def test_v08_e_empty_rows_unresolved_no_second_call(monkeypatch, tmp_path):
+    formal = {
+        "600001.SH": date(2019, 12, 31),
+        "600002.SH": date(2021, 6, 30),
+    }
+    rows_by_symbol = {"600001.SH": []}  # 600002 gets nothing -> EMPTY_RESPONSE
+    capped = {"fetch_calls": 0}
+    compact = {"n": 0}
+    runner, ledger, manifest, w = _v08_e_bulk_ctx(
+        monkeypatch, tmp_path, formal,
+        _bs_bulk(rows_by_symbol, [], capped), compact,
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner._recover_delisted_daily()
+    assert capped["fetch_calls"] == 1
+    assert compact["n"] == 0  # never compacted
+    assert any(
+        r.get("symbol") == "600002.SH" and r.get("reason") == "EMPTY_RESPONSE"
+        for r in ledger.calls
+    )
+
+
+def test_v08_e_zero_volume_unresolved_no_second_call(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    rows_by_symbol = {
+        "600001.SH": [{
+            "symbol": "600001.SH", "trade_date": date(2019, 12, 30),
+            "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+            "volume": 0, "amount": 0.0,
+        }]
+    }
+    capped = {"fetch_calls": 0}
+    compact = {"n": 0}
+    runner, ledger, manifest, w = _v08_e_bulk_ctx(
+        monkeypatch, tmp_path, formal,
+        _bs_bulk(rows_by_symbol, [], capped), compact,
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner._recover_delisted_daily()
+    assert capped["fetch_calls"] == 1
+    assert compact["n"] == 0
+    assert any(
+        r.get("symbol") == "600001.SH" and r.get("reason") == "ZERO_VOLUME_ONLY"
+        for r in ledger.calls
+    )
+
+
+def test_v08_e_bulk_exception_terminalizes_no_compact(monkeypatch, tmp_path):
+    formal = {
+        "600001.SH": date(2019, 12, 31),
+        "600002.SH": date(2021, 6, 30),
+    }
+
+    def boom(symbols, start, end, config=None):
+        raise RuntimeError("bulk transport failure")
+
+    capped = {"fetch_calls": 0}
+    compact = {"n": 0}
+    runner, ledger, manifest, w = _v08_e_bulk_ctx(
+        monkeypatch, tmp_path, formal, boom, compact,
+    )
+    with pytest.raises(R3Error, match="E_BULK_FETCH_FAILURE"):
+        runner._recover_delisted_daily()
+    assert compact["n"] == 0  # no compact
+    assert set(manifest.status_by_batch.values()) == {"failed"}
+    assert any(
+        r.get("event") == "BULK_FETCH_FAILURE" for r in ledger.calls
+    )
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================

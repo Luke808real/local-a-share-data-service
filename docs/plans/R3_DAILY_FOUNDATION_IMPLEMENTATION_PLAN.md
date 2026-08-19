@@ -469,6 +469,15 @@ trading-session set through `R3_DAILY_AS_OF`.
 > `e_shsz_complete` is true once the SH/SZ recovery is done, and the BJ
 > historical gate does not block E SH/SZ completion. DAILY_READY remains FALSE.
 
+Stage E SH/SZ recovery uses ONE bounded bulk invocation
+`fetch_delisted_bars(sh_sz, R3_HISTORY_START, R3_DAILY_AS_OF, config=self.cfg)`.
+Retry / relogin / batching / pacing authority is the pinned CNEquity
+`fetch_per_symbol` (shared session, <=3 inner retries, `baostock_batch_size` /
+`baostock_batch_rest_seconds` / `rate_limit`, watchdog). The service layer does
+NOT nest another per-symbol retry (`service_provider_invocations = 1`, outer
+attempt = 1, `adapter_retry_owner = cnequity.fetch_per_symbol`); a bulk
+exception terminalizes every running batch and fails closed without compact.
+
 Do not call pinned `backfill_delisted_bars`: that helper unconditionally writes
 `derived/delisting_events` when it recovers rows, crossing the R3 boundary.
 Instead implement a narrow, service-owned recovery adapter composed only from
