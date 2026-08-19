@@ -121,6 +121,17 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   `bj_scope=DEFERRED_EXTENSION`, `bj_execution=NOT_RUN`, and
   `f2_em_primary = {status: DEFERRED, reason: BJ_EXTENSION_OUTSIDE_CURRENT_MVP}`
   — never a symbols=0 success.
+  F manifest run is always terminalized: `finish_run("success")` only after TDX
+  PASS + compact success, rows = SUM of the run's final successful daily_bars
+  manifest batches (never `rows_written_last`); run-scoped terminal failures
+  (`F1_STRICT_DECREASE`, `F1_FAILED_AFTER`, compact failure) abandon the F marker
+  ONLY after confirmed `finish_run("failed")` (replacement =
+  `F_daily_operator_retry`); pre-run failures (`NO_INSTRUMENTS`) never abandon;
+  `F_MANIFEST_FAILURE_TERMINALIZATION_FAILED` / `F_MANIFEST_SUCCESS_TERMINALIZATION_FAILED`
+  keep `current = F_daily` and forbid abandon/ordinary retry; crash never
+  auto-abandons or blind-restarts. Operator retry is explicit with a new run_id
+  and old failed evidence preserved. F compact merges staged rows into existing
+  curated daily rows, preserving Stage-E recovered delisted bars.
 - Coverage requires at least one positive-volume in-window row. Zero-volume
   placeholder rows are not coverage evidence.
 

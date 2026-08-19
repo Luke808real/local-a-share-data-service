@@ -280,6 +280,7 @@ class FakeManifest:
         self.status_by_batch = {}
         self.superseded = []
         self.runs = {}
+        self.batches = []
 
     def start_batch(self, *args, **kwargs):
         batch_id = kwargs.get("batch_id") or (args[1] if len(args) > 1 else None)
@@ -291,6 +292,16 @@ class FakeManifest:
         if args and len(args) >= 3:
             batch_id, status = args[1], args[2]
             self.status_by_batch[batch_id] = status
+            self.batches.append(
+                {
+                    "run_id": args[0],
+                    "batch_id": batch_id,
+                    "dataset": kwargs.get("dataset", "daily_bars"),
+                    "status": status,
+                    "rows_read": kwargs.get("rows_read", 0),
+                    "rows_written": kwargs.get("rows_written", 0),
+                }
+            )
         self.calls.append(("finish", args, kwargs))
 
     def finish_run(self, run_id, status, rows_read=0, rows_written=0, error_message=None):
@@ -301,6 +312,9 @@ class FakeManifest:
             "rows_written": rows_written,
             "error_message": error_message,
         }
+
+    def get_batches_for_run(self, run_id):
+        return [b for b in self.batches if b["run_id"] == run_id]
 
     def supersede_batches(self, run_id, batch_ids, *, superseded_by):
         count = 0
@@ -3580,7 +3594,12 @@ def _v08_f_runner(monkeypatch, instruments_df, captured):
 
     runner = object.__new__(r3.R3Runner)
     runner.meta = Path("unused-meta")  # not used by this route
-    runner.cfg = types.SimpleNamespace()
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=Path("unused-m.db"),
+        staging_root=Path("unused-staging"),
+        batch_size=1,
+        failover_enabled=False,
+    )
     runner.daily_as_of = R3_DAILY_AS_OF
     runner.history_start = R3_HISTORY_START
     runner._new_run = lambda job: "frid"
@@ -3589,7 +3608,7 @@ def _v08_f_runner(monkeypatch, instruments_df, captured):
         lambda rid, spans: captured.setdefault("tdx", {}).update(
             {s: sp for s, sp in spans.items()}
         )
-        or {"status": "tdx_ok"}
+        or {"status": "tdx_ok", "rows_written_last": 0}
     )
     monkeypatch.setattr(
         r3.R3Runner,
@@ -3599,6 +3618,7 @@ def _v08_f_runner(monkeypatch, instruments_df, captured):
         ),
     )
     monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: instruments_df)
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: FakeManifest([]))
     return runner
 
 
@@ -3874,7 +3894,8 @@ def _v08_e_stage_ctx(monkeypatch, tmp_path, *, fetch_impl, formal):
         def append(self, r):
             self.calls.append(r)
 
-    runner.ledger = Led()
+    ledger = Led()
+    runner.ledger = ledger
     manifest = FakeManifest([])
     writer = FakeWriter([])
     monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
@@ -4133,6 +4154,331 @@ def test_v08_e_success_terminalization_failure_no_receipt(monkeypatch, tmp_path)
     assert not (runner.meta / "r3-delisted-recovery.json").exists()
     _assert_e_failed_terminalization_no_abandon(runner)
     assert compacts["n"] == 1  # compact ran, but success finalization failed
+
+
+# ============================================================================
+# V08 F terminalization (manifest success/failed + append-only abandon)
+# ============================================================================
+
+
+def _v08_f_terminal_ctx(
+    monkeypatch, tmp_path, *, fetch_impl, instruments_df=None, compact_impl=None
+):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+        batch_size=1,
+        failover_enabled=False,
+    )
+    runner.history_start = R3_HISTORY_START
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save(
+        {
+            "status": "pending",
+            "current": None,
+            "completed": [
+                "A_instruments", "B_discovery", "C_merge", "C2_enrich",
+                "D_calendar", "E_delisted",
+            ],
+        }
+    )
+    runs = {"n": 0}
+
+    def _new_run(job):
+        runs["n"] += 1
+        return f"frid-{runs['n']}"
+
+    runner._new_run = _new_run
+    compacts = {"n": 0}
+    if compact_impl is None:
+        compact_impl = lambda rid: {"status": "success"}
+
+    def _compact(rid):
+        compacts["n"] += 1
+        return compact_impl(rid)
+
+    runner._compact = _compact
+
+    class Led:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            self.calls.append(r)
+
+    ledger = Led()
+    runner.ledger = ledger
+    manifest = FakeManifest([])
+    writer = FakeWriter([])
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: writer)
+    if instruments_df is None:
+        instruments_df = _v08_instruments(
+            ("600000.SH", "", "stock", date(2000, 1, 1), None),
+        )
+    monkeypatch.setattr(
+        r3, "load_curated_instruments", lambda cfg: instruments_df
+    )
+    calls = {"n": 0}
+
+    def wrapped_fetch(config, symbols, start, end, run_id, batch_specs=None):
+        calls["n"] += 1
+        result = fetch_impl(calls["n"])
+        failed = set(result.get("failed_symbols") or [])
+        rows = int(result.get("rows_written") or 0)
+        for spec in (batch_specs or []):
+            status = "failed" if failed else "success"
+            batch_id = spec[0]  # pinned batch_spec tuples: (batch_id, symbols, start, end)
+            manifest.finish_batch(
+                run_id, batch_id, status,
+                dataset="daily_bars", rows_read=rows, rows_written=rows,
+            )
+        return result
+
+    monkeypatch.setattr(r3, "fetch_daily_bars_parallel", wrapped_fetch)
+    return runner, manifest, runs, compacts, calls, ledger
+
+
+def _v08_f_ok_impl(symbols):
+    def impl(attempt):
+        return {"failed_symbols": [], "rows_written": 10}
+    return impl
+
+
+def _v08_f_fail_impl(symbols):
+    def impl(attempt):
+        return {"failed_symbols": list(symbols), "rows_written": 0}
+    return impl
+
+
+def test_v08_f_success_manifest_terminal(monkeypatch, tmp_path):
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path, fetch_impl=_v08_f_ok_impl(["600000.SH"])
+    )
+    receipt = runner.stage_daily()
+    state = runner.machine.load()
+    assert "F_daily" in state["completed"]
+    assert receipt["manifest_run_status"] == "success"
+    assert receipt["scope"] == "SH_SZ_MVP"
+    assert receipt["sh_sz_symbols"] == 1
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "success"
+    assert manifest.runs[rid]["rows_written"] == 10
+
+
+def test_v08_f_run_rows_is_batch_sum_not_rows_written_last(monkeypatch, tmp_path):
+    # 2 symbols (batch_size=1 => 2 daily_bars batch specs), each successful
+    # attempt returns rows_written=10 per batch; last-attempt value is 10 but the
+    # run-level total must be the SUM of the final successful batches (20).
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path,
+        instruments_df=_v08_instruments(
+            ("600000.SH", "", "stock", date(2000, 1, 1), None),
+            ("600001.SH", "", "stock", date(2000, 1, 1), None),
+        ),
+        fetch_impl=_v08_f_ok_impl(["600000.SH", "600001.SH"]),
+    )
+    receipt = runner.stage_daily()
+    rid = next(iter(manifest.runs))
+    assert receipt["f1_tdx"]["rows_written_last"] == 10
+    assert manifest.runs[rid]["rows_written"] == 20  # batch sum, not last-attempt
+    assert manifest.runs[rid]["rows_read"] == 20
+
+
+def test_v08_f_failed_after_terminal_failure(monkeypatch, tmp_path):
+    def impl(attempt):
+        # strictly decreasing failed set still non-empty at attempt 3 -> F1_FAILED_AFTER
+        return {
+            1: {"failed_symbols": ["600000.SH", "600001.SH", "000001.SZ"], "rows_written": 0},
+            2: {"failed_symbols": ["600000.SH", "600001.SH"], "rows_written": 0},
+            3: {"failed_symbols": ["600000.SH"], "rows_written": 0},
+        }[attempt]
+
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path,
+        instruments_df=_v08_instruments(
+            ("600000.SH", "", "stock", date(2000, 1, 1), None),
+            ("600001.SH", "", "stock", date(2000, 1, 1), None),
+            ("000001.SZ", "", "stock", date(2000, 1, 1), None),
+        ),
+        fetch_impl=impl,
+    )
+    with pytest.raises(R3Error, match="F1_FAILED_AFTER"):
+        runner.stage_daily()
+    state = runner.machine.load()
+    assert state["current"] is None and state["status"] == "pending"
+    assert "F_daily" not in state["completed"]
+    assert any(
+        a.get("stage") == "F_daily" and a.get("replacement") == "F_daily_operator_retry"
+        for a in state.get("abandoned", [])
+    )
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"
+    assert calls["n"] == 3  # TDX internal attempts only; no whole-stage auto retry
+    assert runs["n"] == 1
+
+
+def test_v08_f_strict_decrease_terminal_failure(monkeypatch, tmp_path):
+    seq = {"n": 0}
+
+    def impl(attempt):
+        if attempt == 1:
+            return {"failed_symbols": ["600000.SH", "600001.SH"], "rows_written": 0}
+        return {"failed_symbols": ["600000.SH", "600001.SH"], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path,
+        instruments_df=_v08_instruments(
+            ("600000.SH", "", "stock", date(2000, 1, 1), None),
+            ("600001.SH", "", "stock", date(2000, 1, 1), None),
+        ),
+        fetch_impl=impl,
+    )
+    with pytest.raises(R3Error, match="F1_STRICT_DECREASE"):
+        runner.stage_daily()
+    state = runner.machine.load()
+    assert state["current"] is None and "F_daily" not in state["completed"]
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"
+
+
+def test_v08_f_failed_terminalization_raises_no_abandon(monkeypatch, tmp_path):
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_v08_f_fail_impl(["600000.SH"]),
+    )
+    monkeypatch.setattr(manifest, "finish_run", _boom_finish_run)
+    with pytest.raises(R3Error, match="F_MANIFEST_FAILURE_TERMINALIZATION_FAILED"):
+        runner.stage_daily()
+    state = runner.machine.load()
+    assert state["current"] == "F_daily" and state["status"] == "running"
+    assert "F_daily" not in state["completed"]
+    assert not state.get("abandoned")
+
+
+def test_v08_f_compact_failure_terminal_failure(monkeypatch, tmp_path):
+    def boom_compact(rid):
+        raise R3Error("COMPACT_FAILED", "boom compact")
+
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_v08_f_ok_impl(["600000.SH"]),
+        compact_impl=boom_compact,
+    )
+    with pytest.raises(R3Error, match="COMPACT_FAILED"):
+        runner.stage_daily()
+    state = runner.machine.load()
+    assert state["current"] is None and "F_daily" not in state["completed"]
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"  # terminalized before abandon
+
+
+def test_v08_f_success_terminalization_raises_no_receipt(monkeypatch, tmp_path):
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path, fetch_impl=_v08_f_ok_impl(["600000.SH"]),
+    )
+    monkeypatch.setattr(manifest, "finish_run", _boom_finish_run)
+    with pytest.raises(R3Error, match="F_MANIFEST_SUCCESS_TERMINALIZATION_FAILED"):
+        runner.stage_daily()
+    state = runner.machine.load()
+    assert state["current"] == "F_daily" and state["status"] == "running"
+    assert "F_daily" not in state["completed"]
+    assert compacts["n"] == 1  # compact ran, success finalization failed
+
+
+def test_v08_f_pre_run_no_instruments_no_abandon(monkeypatch, tmp_path):
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path, fetch_impl=_v08_f_ok_impl(["600000.SH"])
+    )
+    monkeypatch.setattr(r3, "load_curated_instruments", lambda cfg: None)
+    with pytest.raises(R3Error, match="NO_INSTRUMENTS"):
+        runner.stage_daily()
+    assert runs["n"] == 0  # no manifest run created
+    assert calls["n"] == 0
+    state = runner.machine.load()
+    assert state["current"] == "F_daily" and state["status"] == "running"
+    assert not state.get("abandoned")
+
+
+def test_v08_f_second_operator_invocation_succeeds(monkeypatch, tmp_path):
+    def fail_impl(attempt):
+        return {
+            1: {"failed_symbols": ["600000.SH", "600001.SH", "000001.SZ"], "rows_written": 0},
+            2: {"failed_symbols": ["600000.SH", "600001.SH"], "rows_written": 0},
+            3: {"failed_symbols": ["600000.SH"], "rows_written": 0},
+        }[attempt] if attempt <= 3 else {"failed_symbols": [], "rows_written": 0}
+
+    runner, manifest, runs, compacts, calls, ledger = _v08_f_terminal_ctx(
+        monkeypatch, tmp_path,
+        instruments_df=_v08_instruments(
+            ("600000.SH", "", "stock", date(2000, 1, 1), None),
+            ("600001.SH", "", "stock", date(2000, 1, 1), None),
+            ("000001.SZ", "", "stock", date(2000, 1, 1), None),
+        ),
+        fetch_impl=fail_impl,
+    )
+    with pytest.raises(R3Error, match="F1_FAILED_AFTER"):
+        runner.stage_daily()
+    assert runs["n"] == 1
+    state1 = runner.machine.load()
+    assert state1["current"] is None and "F_daily" not in state1["completed"]
+
+    # explicit operator re-invocation (NOT an automatic retry)
+    def ok_fetch(config, symbols, start, end, run_id, batch_specs=None):
+        for spec in (batch_specs or []):
+            manifest.finish_batch(
+                run_id, spec[0], "success",
+                dataset="daily_bars", rows_read=7, rows_written=7,
+            )
+        return {"failed_symbols": [], "rows_written": 7}
+
+    monkeypatch.setattr(
+        r3, "fetch_daily_bars_parallel",
+        ok_fetch,
+    )
+    receipt = runner.stage_daily()
+    state2 = runner.machine.load()
+    assert "F_daily" in state2["completed"]
+    assert runs["n"] == 2  # new run id
+    assert receipt["manifest_run_status"] == "success"
+
+
+def test_v08_f_e_existing_rows_preserved_by_compact_merge():
+    # Bounded synthetic emulation of the pinned compact merge: curated daily_bars
+    # already holds a Stage-E recovered delisted row; Stage-F staging adds an
+    # active-symbol row; after concat + dedupe(keep=last) BOTH must exist.
+    curated = pl.DataFrame(
+        {
+            "symbol": ["600001.SH"],
+            "trade_date": [date(2019, 12, 30)],
+            "open": [10.0], "high": [11.0], "low": [9.0], "close": [10.5],
+            "volume": [100], "amount": [1050.0],
+            "source": ["baostock"],
+        }
+    )
+    staged = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "trade_date": [date(2026, 8, 17)],
+            "open": [12.0], "high": [13.0], "low": [11.0], "close": [12.5],
+            "volume": [200], "amount": [2500.0],
+            "source": ["tdx_protocol"],
+        }
+    )
+    merged = pl.concat([curated, staged]).unique(
+        subset=["symbol", "trade_date"], keep="last"
+    ).sort("symbol")
+    syms = set(merged["symbol"].to_list())
+    assert "600001.SH" in syms  # E_EXISTING_ROWS_PRESERVED = true
+    assert "600000.SH" in syms
+    assert merged.height == 2
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================

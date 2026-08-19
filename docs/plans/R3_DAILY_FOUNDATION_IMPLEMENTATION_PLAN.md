@@ -553,6 +553,27 @@ lake or a copy of the upstream delisting-event subsystem. Do not run public
 > (never a symbols=0 success). SH/SZ daily window is 2016-01-01 .. 2026-08-17,
 > RAW/unadjusted; no 2026-08-18+ daily bars are read or written.
 
+F run terminalization: the `r3_daily_bars` manifest run is always terminalized —
+`finish_run("success")` only after TDX PASS + compact success, using the SUM of
+the run's final successful daily_bars manifest batches (never `rows_written_last`,
+which after a retry only covers the last failed scope; avoids double counting);
+the F receipt records `manifest_run_status = "success"`. Every run-scoped
+terminal failure (`F1_STRICT_DECREASE`, `F1_FAILED_AFTER`, compact failure,
+other explicit run-scoped R3Error) goes through the centralized `_fail_f_run`:
+`finish_run("failed")` must persist FIRST, then append-only
+`abandon_current("F_daily", ..., replacement="F_daily_operator_retry")`, then the
+original error is re-raised (no automatic whole-stage retry). Pre-run planning
+failures (e.g., `NO_INSTRUMENTS`) happen before the run exists: no run, no
+abandon, `current` stays `F_daily`. If failed-terminalization raises,
+`F_MANIFEST_FAILURE_TERMINALIZATION_FAILED` — or if success-terminalization
+raises `F_MANIFEST_SUCCESS_TERMINALIZATION_FAILED` — `current` stays `F_daily`,
+no abandon, no ordinary retry (crash/interruption never auto-abandon or
+blind-restart). Operator retry of `--stage F_daily` is available only after a
+confirmed failed-manifest terminalization + abandon, with a new run_id and the
+old failed manifest / ledger / staging evidence preserved. Stage-F compact
+merges staged daily rows with existing curated daily rows (including the
+Stage-E recovered delisted rows), so E existing rows are preserved.
+
 Do not call the pinned generic `step_daily_bars` or its unbounded expected-date
 logic. The controller fetches daily bars separately per exchange route and
 keeps `config.failover_enabled=false` so no EastMoney/source backup is written

@@ -2914,7 +2914,18 @@ class R3Runner:
 
     def _fetch_daily_bars_per_route(self) -> dict[str, Any]:
         """V08 SH/SZ MVP daily route planning: SH/SZ TDX route only (no BJ route,
-        no EastMoney / em_daily_tristate; f2 is an explicit DEFERRED marker)."""
+        no EastMoney / em_daily_tristate; f2 is an explicit DEFERRED marker).
+
+        Manifest lifecycle (mirrors the audited E fail-closed pattern): the
+        `r3_daily_bars` run is terminalized `finish_run("success")` ONLY after
+        TDX PASS (no unresolved failed symbols) + compact success, using the SUM
+        of the run's final successful daily_bars manifest batches (never
+        `rows_written_last`, which after a retry only covers the last failed
+        scope). Every run-scoped terminal failure goes through `_fail_f_run`
+        (confirmed failed-terminalization -> append-only abandon ->
+        re-raise). Pre-run planning failures (NO_INSTRUMENTS etc.) happen before
+        the run exists: no run, no abandon, current stays F_daily.
+        """
         spans_shsz: dict[str, tuple[date, date]] = {}
         expect_no_data: list[str] = []
         for row in self._effective_active().iter_rows(named=True):
@@ -2925,13 +2936,36 @@ class R3Runner:
             spans_shsz[row["symbol"]] = span
 
         run_id = self._new_run("r3_daily_bars")
-        f1 = self._tdx_route(run_id, spans_shsz)
-        compact = self._compact(run_id)
+        manifest = Manifest(self.cfg.manifest_path)
+        try:
+            f1 = self._tdx_route(run_id, spans_shsz)
+            compact = self._compact(run_id)
+        except R3Error as exc:
+            # run-scoped terminal F failure (F1_STRICT_DECREASE / F1_FAILED_AFTER
+            # / COMPACT_FAILED / other explicit run-scoped R3Error): confirmed
+            # failed-terminalization -> abandon -> re-raise (never auto-retry).
+            self._fail_f_run(
+                run_id, manifest, f"{exc.code}: {str(exc)[:300]}", exc
+            )
+        rows_read, rows_written = self._f_run_success_rows(manifest, run_id)
+        try:
+            manifest.finish_run(
+                run_id, "success", rows_read=rows_read, rows_written=rows_written
+            )
+        except Exception as exc:
+            # compact succeeded but success-terminalization itself failed:
+            # no success receipt, no machine.complete, current stays F_daily.
+            raise R3Error(
+                "F_MANIFEST_SUCCESS_TERMINALIZATION_FAILED",
+                f"F manifest run success-terminalization failed: "
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
         return {
             "run_id": run_id,
             "scope": "SH_SZ_MVP",
             "sh_sz_symbols": len(spans_shsz),
             "expected_no_data": len(expect_no_data),
+            "manifest_run_status": "success",
             "bj_scope": "DEFERRED_EXTENSION",
             "bj_execution": "NOT_RUN",
             "f1_tdx": f1,
@@ -2941,6 +2975,56 @@ class R3Runner:
             },
             "compact": compact,
         }
+
+    def _fail_f_run(
+        self,
+        run_id: str,
+        manifest: Any,
+        reason: str,
+        original: R3Error,
+    ) -> None:
+        """Centralized confirmed terminal-F-failure path (never returns).
+
+        1. `Manifest.finish_run(run_id, "failed", error_message=...)` MUST
+           succeed — a confirmed failed terminalization is the ONLY proof that
+           abandoning current=F_daily is safe.
+        2. Only then perform the append-only `abandon_current` so an OPERATOR can
+           explicitly re-run `--stage F_daily` (no automatic retry).
+        3. Re-raise the original F failure.
+
+        If `finish_run("failed")` itself raises, the failure is NOT terminalized:
+        keep current=F_daily (fail closed), do NOT abandon, and raise
+        ``F_MANIFEST_FAILURE_TERMINALIZATION_FAILED``.
+        """
+        try:
+            manifest.finish_run(run_id, "failed", error_message=reason[:400])
+        except Exception as exc:
+            raise R3Error(
+                "F_MANIFEST_FAILURE_TERMINALIZATION_FAILED",
+                f"F manifest run failed-terminalization failed when finalizing "
+                f"{original.code}: {type(exc).__name__}: {exc}",
+            ) from exc
+        if getattr(self, "machine", None) is not None:
+            try:
+                self.machine.abandon_current(
+                    "F_daily",
+                    reason=f"F_TERMINAL_FAILURE:{original.code}:{str(original)[:180]}",
+                    replacement="F_daily_operator_retry",
+                )
+            except Exception:  # noqa: BLE001 - abandon must never mask the failure
+                pass
+        raise original
+
+    def _f_run_success_rows(self, manifest: Any, run_id: str) -> tuple[int, int]:
+        """Sum rows_read/rows_written over the run's FINAL successful daily_bars
+        manifest batches (never `rows_written_last` of a single attempt)."""
+        rows_read = 0
+        rows_written = 0
+        for row in manifest.get_batches_for_run(run_id):
+            if row["dataset"] == "daily_bars" and row["status"] == "success":
+                rows_read += int(row["rows_read"] or 0)
+                rows_written += int(row["rows_written"] or 0)
+        return rows_read, rows_written
 
     def _tdx_route(self, run_id: str, spans: dict[str, tuple[date, date]]) -> dict[str, Any]:
         """Stage F1 (V07.3): SH/SZ via pinned fetch_daily_bars_parallel.
