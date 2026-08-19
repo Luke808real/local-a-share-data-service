@@ -279,6 +279,7 @@ class FakeManifest:
         self.calls = calls
         self.status_by_batch = {}
         self.superseded = []
+        self.runs = {}
 
     def start_batch(self, *args, **kwargs):
         batch_id = kwargs.get("batch_id") or (args[1] if len(args) > 1 else None)
@@ -291,6 +292,15 @@ class FakeManifest:
             batch_id, status = args[1], args[2]
             self.status_by_batch[batch_id] = status
         self.calls.append(("finish", args, kwargs))
+
+    def finish_run(self, run_id, status, rows_read=0, rows_written=0, error_message=None):
+        self.run_status = status
+        self.runs[run_id] = {
+            "status": status,
+            "rows_read": rows_read,
+            "rows_written": rows_written,
+            "error_message": error_message,
+        }
 
     def supersede_batches(self, run_id, batch_ids, *, superseded_by):
         count = 0
@@ -3810,6 +3820,236 @@ def test_v08_e_bulk_exception_terminalizes_no_compact(monkeypatch, tmp_path):
     assert any(
         r.get("event") == "BULK_FETCH_FAILURE" for r in ledger.calls
     )
+
+
+# ============================================================================
+# V08 E terminalization (manifest run success/failed + append-only abandon)
+# ============================================================================
+
+
+def _v08_e_stage_ctx(monkeypatch, tmp_path, *, fetch_impl, formal):
+    import types
+
+    meta = tmp_path / "asl" / "r3"
+    meta.mkdir(parents=True)
+    (meta / "r3-identity-receipt.json").write_text(
+        json.dumps(
+            {"shsz_formal_delisted": {k: v.isoformat() for k, v in formal.items()}}
+        )
+    )
+    runner = object.__new__(r3.R3Runner)
+    runner.meta = meta
+    runner.daily_as_of = R3_DAILY_AS_OF
+    runner.history_start = R3_HISTORY_START
+    runner.cfg = types.SimpleNamespace(
+        manifest_path=tmp_path / "m.db",
+        staging_root=tmp_path / "staging",
+    )
+    runner.machine = r3.StageMachine(meta / "execution-state.json")
+    runner.machine.save(
+        {
+            "status": "pending",
+            "current": None,
+            "completed": [
+                "A_instruments", "B_discovery", "C_merge", "C2_enrich", "D_calendar",
+            ],
+        }
+    )
+    runs = {"n": 0}
+
+    def _new_run(job):
+        runs["n"] += 1
+        return f"erid-{runs['n']}"
+
+    runner._new_run = _new_run
+    compacts = {"n": 0}
+    runner._compact = (
+        lambda rid: compacts.update(n=compacts["n"] + 1) or {"status": "success"}
+    )
+
+    class Led:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, r):
+            self.calls.append(r)
+
+    runner.ledger = Led()
+    manifest = FakeManifest([])
+    writer = FakeWriter([])
+    monkeypatch.setattr(r3, "Manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(r3, "StagingWriter", lambda *a, **k: writer)
+    monkeypatch.setattr(r3, "load_delisted_catalog", lambda cfg: {})
+    monkeypatch.setattr(
+        r3, "load_curated_instruments", lambda cfg: _instruments_with(formal)
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.fetch_delisted_bars", fetch_impl
+    )
+    return runner, manifest, writer, runs, compacts
+
+
+def _v08_e_row(symbol, volume=100, day=date(2019, 12, 30)):
+    return {
+        "symbol": symbol, "trade_date": day,
+        "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+        "volume": volume, "amount": 1050.0 if volume else 0.0,
+    }
+
+
+def test_v08_e_success_manifest_terminal(monkeypatch, tmp_path):
+    formal = {
+        "600001.SH": date(2019, 12, 31),
+        "600002.SH": date(2021, 6, 30),
+    }
+    rows_by_symbol = {s: [_v08_e_row(s)] for s in formal}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk(rows_by_symbol, [], captured),
+        formal=formal,
+    )
+    receipt = runner.stage_delisted()
+    state = runner.machine.load()
+    assert "E_delisted" in state["completed"]
+    assert state["evidence"]["E_delisted"]["manifest_run_status"] == "success"
+    assert captured["fetch_calls"] == 1
+    assert compacts["n"] == 1
+    assert len(manifest.runs) == 1
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "success"
+    assert manifest.runs[rid]["rows_written"] == 2  # terminal success rows recorded
+    assert receipt["manifest_run_status"] == "success"
+
+
+def test_v08_e_unresolved_abandons_manifest_failed(monkeypatch, tmp_path):
+    formal = {
+        "600001.SH": date(2019, 12, 31),
+        "600002.SH": date(2021, 6, 30),
+    }
+    rows_by_symbol = {"600001.SH": [_v08_e_row("600001.SH")]}  # 600002 empty -> unresolved
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk(rows_by_symbol, [], captured),
+        formal=formal,
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner.stage_delisted()
+    state = runner.machine.load()
+    assert state["current"] is None
+    assert state["status"] == "pending"
+    assert "E_delisted" not in state["completed"]
+    assert any(
+        a.get("stage") == "E_delisted" and a.get("replacement") == "E_delisted_operator_retry"
+        for a in state.get("abandoned", [])
+    )
+    assert compacts["n"] == 0  # no compact on failure
+    assert captured["fetch_calls"] == 1  # no automatic provider retry
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"  # manifest run terminalized
+
+
+def test_v08_e_bulk_exception_abandons_manifest_failed(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+
+    def boom(symbols, start, end, config=None):
+        raise RuntimeError("transport down")
+
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path, fetch_impl=boom, formal=formal,
+    )
+    with pytest.raises(R3Error, match="E_BULK_FETCH_FAILURE"):
+        runner.stage_delisted()
+    state = runner.machine.load()
+    assert state["current"] is None and state["status"] == "pending"
+    assert "E_delisted" not in state["completed"]
+    assert compacts["n"] == 0
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"
+
+
+def test_v08_e_compact_exception_manifest_failed(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    rows_by_symbol = {"600001.SH": [_v08_e_row("600001.SH")]}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk(rows_by_symbol, [], captured),
+        formal=formal,
+    )
+
+    def boom_compact(rid):
+        raise R3Error("COMPACT_FAILED", "boom compact")
+
+    runner._compact = boom_compact
+    with pytest.raises(R3Error, match="COMPACT_FAILED"):
+        runner.stage_delisted()
+    state = runner.machine.load()
+    assert "E_delisted" not in state["completed"]
+    assert state["current"] is None and state["status"] == "pending"
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"
+
+
+def test_v08_e_bj_gate_before_run_creation(monkeypatch, tmp_path):
+    formal = {"920001.BJ": date(2023, 6, 30)}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk({}, [], captured),
+        formal=formal,
+    )
+    with pytest.raises(R3Error, match="E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP"):
+        runner.stage_delisted()
+    assert captured["fetch_calls"] == 0  # provider never called
+    assert runs["n"] == 0  # BJ gate precedes manifest run creation
+    assert manifest.runs == {}
+    state = runner.machine.load()
+    assert "E_delisted" not in state["completed"]
+    assert state["current"] is None  # append-only abandon by stage_delisted
+
+
+def test_v08_e_second_operator_invocation_succeeds(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=lambda symbols, start, end, config=None: ([], []),  # empty -> unresolved
+        formal=formal,
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner.stage_delisted()
+    state1 = runner.machine.load()
+    assert "E_delisted" not in state1["completed"]
+    assert state1["current"] is None and runs["n"] == 1
+
+    # explicit operator re-invocation (NOT an automatic retry)
+    c2 = {"fetch_calls": 0}
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.delisted_bars.fetch_delisted_bars",
+        _bs_bulk({"600001.SH": [_v08_e_row("600001.SH")]}, [], c2),
+    )
+    receipt = runner.stage_delisted()
+    state2 = runner.machine.load()
+    assert "E_delisted" in state2["completed"]
+    assert runs["n"] == 2  # new run id for the operator invocation
+    assert c2["fetch_calls"] == 1
+    assert state2["evidence"]["E_delisted"]["manifest_run_status"] == "success"
+
+
+def test_v08_e_no_auto_provider_retry_within_failed_invocation(monkeypatch, tmp_path):
+    formal = {"600001.SH": date(2019, 12, 31)}
+    captured = {"fetch_calls": 0}
+    runner, manifest, writer, runs, compacts = _v08_e_stage_ctx(
+        monkeypatch, tmp_path,
+        fetch_impl=_bs_bulk({}, [], captured),  # empty -> EMPTY_RESPONSE unresolved
+        formal=formal,
+    )
+    with pytest.raises(R3Error, match="E_UNRESOLVED"):
+        runner.stage_delisted()
+    assert captured["fetch_calls"] == 1  # exactly one provider call, no retry
+    rid = next(iter(manifest.runs))
+    assert manifest.runs[rid]["status"] == "failed"  # no running E manifest remains
 # ============================================================================
 # V07.3 FIX01: empty-roster retryable failure + final receipt gate + lineage
 # ============================================================================

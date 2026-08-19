@@ -90,6 +90,15 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   adapter_retry_owner = cnequity.fetch_per_symbol); the service never nests a
   second per-symbol retry, and a bulk exception terminalizes every running
   batch and fails closed before compact.
+  E manifest run is always terminalized (`finish_run("success")` only after
+  bulk + unresolved==0 + incomplete==0 + compact success; `finish_run("failed")`
+  before every terminal-failure raise; receipt `manifest_run_status`). On an
+  in-process explicit terminal E failure the E marker is append-only abandoned
+  (`replacement = E_delisted_operator_retry`) so an operator can explicitly
+  re-run `--stage E_delisted`; automatic retry is disallowed and crash /
+  interruption never auto-abandons or blind-restarts (`current` stays
+  E_delisted, next run fails closed on entrance). The BJ gate runs before the E
+  manifest run is created.
   `live_missing`/current active names are excluded; `never_issued` is not a
   completion gate.
 - No symbol is dropped by board, ST, liquidity, or strategy use.

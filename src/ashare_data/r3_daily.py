@@ -2508,18 +2508,38 @@ class R3Runner:
 
     def stage_delisted(self) -> dict[str, Any]:
         self.machine.enter("E_delisted")
-        receipt = self._recover_delisted_daily()
+        try:
+            receipt = self._recover_delisted_daily()
+        except R3Error as exc:
+            # In-process explicit terminal E failure whose manifest run has
+            # already been terminalized (success/failed inside the recovery):
+            # safely abandon the E_delisted marker so an OPERATOR can explicitly
+            # re-run `--stage E_delisted`. Never abandon on crash / kill /
+            # interruption, and never auto-retry here.
+            try:
+                self.machine.abandon_current(
+                    "E_delisted",
+                    reason=f"E_TERMINAL_FAILURE:{exc.code}:{str(exc)[:180]}",
+                    replacement="E_delisted_operator_retry",
+                )
+            except Exception:  # noqa: BLE001 - abandon must never mask the failure
+                pass
+            raise
         self.machine.complete("E_delisted", receipt)
         return receipt
 
     def _recover_delisted_daily(self) -> dict[str, Any]:
         """R3-safe delisted recovery; never touches backfill_delisted_bars.
 
-        SH/SZ: prefetch controller+manifest+ledger lineage; exact retries with
-        strict scope; success retries supersede prior failed batches. EXPECTED
-        NO-DATA symbols get explicit terminal ledger evidence (no provider
-        request). Compact is guarded by zero incomplete manifest blocking
-        batches and an asserted complete service scope.
+        SH/SZ: ONE bulk pinned `fetch_delisted_bars(sh_sz, ...)` with per-symbol
+        controller batches + ATTEMPT_START ledger evidence (service attempt = 1;
+        retry owner = cnequity.fetch_per_symbol). EXPECTED_NO_DATA symbols get
+        explicit terminal ledger evidence (no provider request). The E manifest
+        run is ALWAYS terminalized: `finish_run(success)` only after bulk +
+        unresolved==0 + incomplete==0 + compact success; `finish_run(failed)`
+        before every terminal-failure raise. Compact is guarded by zero
+        incomplete manifest blocking batches and an asserted complete service
+        scope. The BJ gate runs BEFORE the manifest run is created.
         """
         self._prepare_network_env()
         from cnequity.adapters.baostock.delisted_bars import fetch_delisted_bars
@@ -2539,12 +2559,33 @@ class R3Runner:
         recover = partition["recover"]
         target_set_sha = partition["target_set_sha"]
 
+        sh_sz = partition["sh_sz"]
+        bj = partition["bj"]
+        # V08 SH/SZ MVP: BJ is DEFERRED_EXTENSION. The BJ gate MUST run BEFORE the
+        # E manifest run is created so E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP never
+        # leaves an empty running run behind (and provider calls stay 0).
+        if bj:
+            raise R3Error(
+                "E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP",
+                f"{len(bj)} BJ delisted target(s) under SH/SZ MVP scope; "
+                f"BJ is DEFERRED_EXTENSION: {sorted(bj)[:20]}",
+            )
+
         run_id = self._new_run("r3_delisted_daily")
         manifest = Manifest(self.cfg.manifest_path)
         writer = StagingWriter(self.cfg.staging_root)
         unresolved: list[str] = []
         recovered_spans: dict[str, tuple[date, date]] = {}
         total_rows = 0
+
+        def _terminal_failed(reason: str) -> None:
+            """Terminalize the E manifest run as failed (fail closed)."""
+            try:
+                manifest.finish_run(
+                    run_id, "failed", error_message=reason[:400]
+                )
+            except Exception:  # noqa: BLE001 - never mask the original failure
+                pass
 
         # EXPECTED_NO_DATA_BEFORE_WINDOW: explicit terminal evidence, no fetch
         for symbol in no_data:
@@ -2559,17 +2600,6 @@ class R3Runner:
                     "window_start": self.history_start.isoformat(),
                     "window_end": self.daily_as_of.isoformat(),
                 }
-            )
-
-        sh_sz = partition["sh_sz"]
-        bj = partition["bj"]
-        # V08 SH/SZ MVP: BJ is DEFERRED_EXTENSION. A BJ delisted target inside
-        # the SH/SZ scope is unexpected -> fail closed, never call EastMoney.
-        if bj:
-            raise R3Error(
-                "E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP",
-                f"{len(bj)} BJ delisted target(s) under SH/SZ MVP scope; "
-                f"BJ is DEFERRED_EXTENSION: {sorted(bj)[:20]}",
             )
 
         def _batch_id(symbol: str, attempt: int) -> str:
@@ -2647,6 +2677,7 @@ class R3Runner:
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
+            _terminal_failed(f"E_BULK_FETCH_FAILURE: {type(exc).__name__}: {exc}")
             raise R3Error(
                 "E_BULK_FETCH_FAILURE",
                 f"pinned fetch_delisted_bars bulk invocation raised: "
@@ -2738,6 +2769,9 @@ class R3Runner:
         # here; it is retained only as future BJ-extension design).
 
         if unresolved:
+            _terminal_failed(
+                f"E_UNRESOLVED: {len(unresolved)} unresolved: {unresolved[:20]}"
+            )
             raise R3Error(
                 "E_UNRESOLVED",
                 f"{len(unresolved)} delisted targets unresolved after retries: {unresolved[:20]}",
@@ -2747,16 +2781,27 @@ class R3Runner:
         incomplete = manifest.incomplete_batch_counts_by_dataset(run_id) or {}
         blocking = {ds: n for ds, n in incomplete.items() if n > 0}
         if blocking:
+            _terminal_failed(f"E_INCOMPLETE_BEFORE_COMPACT: {blocking}")
             raise R3Error(
                 "E_INCOMPLETE_BEFORE_COMPACT",
                 f"incomplete manifest batches before compact: {blocking}",
             )
 
-        compact = self._compact(run_id)
+        try:
+            compact = self._compact(run_id)
+        except R3Error as exc:
+            _terminal_failed(f"COMPACT_FAILED: {exc.code}: {str(exc)[:300]}")
+            raise
+        # E manifest run terminal SUCCESS (only after bulk done, unresolved==0,
+        # incomplete==0 and compact succeeded).
+        manifest.finish_run(
+            run_id, "success", rows_read=total_rows, rows_written=total_rows
+        )
         receipt = {
             "run_id": run_id,
             "scope": "SH_SZ_MVP",
             "e_shsz_complete": True,  # SH/SZ recovery done (unresolved == 0)
+            "manifest_run_status": "success",
             "bj_scope": "DEFERRED_EXTENSION",
             "bj_execution": "NOT_RUN",
             "baostock_execution_mode": "PINNED_BULK_FETCH_PER_SYMBOL",

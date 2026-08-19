@@ -478,6 +478,22 @@ NOT nest another per-symbol retry (`service_provider_invocations = 1`, outer
 attempt = 1, `adapter_retry_owner = cnequity.fetch_per_symbol`); a bulk
 exception terminalizes every running batch and fails closed without compact.
 
+E run terminalization: the `r3_delisted_daily` manifest run is always
+terminalized — `finish_run("success", rows_read/written)` only after bulk +
+`unresolved == 0` + zero incomplete blocking + compact success (receipt records
+`manifest_run_status = "success"`); every terminal failure
+(`E_BULK_FETCH_FAILURE`, `E_UNRESOLVED`, `E_INCOMPLETE_BEFORE_COMPACT`,
+compact failure, or another caught exception raised after the run exists) calls
+`finish_run("failed", error_message)` BEFORE raising (no compact if the failure
+preceded it, no success receipt, no `machine.complete`). The BJ gate runs before
+the manifest run is created so `E_UNEXPECTED_BJ_TARGET_IN_SHSZ_MVP` never leaves
+a running run behind. On an in-process explicit terminal failure whose manifest
+run was terminalized, `stage_delisted` performs an append-only
+`abandon_current("E_delisted", reason=..., replacement="E_delisted_operator_retry")`
+so an OPERATOR may explicitly re-run `--stage E_delisted` (no automatic retry).
+Crash / kill / power loss must NOT auto-abandon or blind-restart: `current` stays
+`E_delisted` and the next normal execution fails closed on `entrance`.
+
 Do not call pinned `backfill_delisted_bars`: that helper unconditionally writes
 `derived/delisting_events` when it recovers rows, crossing the R3 boundary.
 Instead implement a narrow, service-owned recovery adapter composed only from
