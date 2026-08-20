@@ -110,6 +110,8 @@ class FakeEngine:
         self.calls = []
         self.contexts = []
         self.compact_result = {"status": "success"}
+        self.chunk_symbols = None
+        self.chunk_window = ("2016-01-01", "2026-08-17")
         self.corp_result = {
             "status": "success",
             "rows_read": 0,
@@ -123,17 +125,21 @@ class FakeEngine:
         self.contexts.append((name, ctx))
         if name == "corporate_actions":
             got = ctx.get("_retry_symbols") or []
+            write_symbols = (
+                list(got) if self.chunk_symbols is None else list(self.chunk_symbols)
+            )
+            w_start, w_end = self.chunk_window
             # simulate the pinned step writing child chunk receipts from its
             # explicit symbol scope
-            for i in range(max(1, len(got))):
+            for i in range(max(1, len(write_symbols))):
                 self.manifest.start_batch(
                     run_id,
                     f"chunk-{i:04d}",
                     task_id="corporate_actions_chunk",
                     dataset="corporate_actions",
-                    symbols=got,
-                    window_start="2016-01-01",
-                    window_end="2026-08-17",
+                    symbols=write_symbols,
+                    window_start=w_start,
+                    window_end=w_end,
                 )
             return dict(self.corp_result)
         if name == "compact":
@@ -159,12 +165,14 @@ def tmp_config_file(tmp_path, root: Path):
 def test_valid_24_scope_accepted(tmp_path):
     root = tmp_path / "root"
     eng = FakeEngine()
+    cfg_path = tmp_config_file(tmp_path, root)
     report = adapter.run_bounded_pilot(
         VALID,
         root=root,
         cfg=cfg_factory(),
         engine=eng,
         identity=make_identity(VALID),
+        config_path=cfg_path,
     )
     assert report["STATUS"] == "PILOT_COMPLETE"
     assert report["PILOT_COMPLETE"] is True
@@ -425,7 +433,8 @@ def test_step_failure_not_complete(tmp_path):
     assert report["failed_symbols"] == ["600000.SH"]
     assert report["final_status"] == "failed"
     # provider (corporate_actions) execution path was entered -> NOT "NO"
-    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "YES"
+    assert report["PROVIDER_STEP_ENTERED"] == "YES"
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] != "NO"
     assert report["MANIFEST_WRITE"] == "YES"
 
 
@@ -447,6 +456,7 @@ def test_compact_finish_ordering_matches_pinned_lifecycle(tmp_path):
 def test_zero_event_success_keeps_receipt_semantics(tmp_path):
     root = tmp_path / "root"
     eng = FakeEngine()
+    cfg_path = tmp_config_file(tmp_path, root)
     eng.corp_result = {
         "status": "success",
         "rows_read": 0,
@@ -459,10 +469,12 @@ def test_zero_event_success_keeps_receipt_semantics(tmp_path):
         cfg=cfg_factory(),
         engine=eng,
         identity=make_identity(VALID),
+        config_path=cfg_path,
     )
     assert report["STATUS"] == "PILOT_COMPLETE"
     assert report["PILOT_COMPLETE"] is True
     assert report["step_result"]["rows_written"] == 0
+    assert report["receipt_post_check"]["STATUS"] == "OK"
     # receipts still carry the exact symbols (0 rows is a legal sparse result)
     assert eng.manifest.batches
     for b in eng.manifest.batches:
@@ -584,8 +596,9 @@ def test_incomplete_never_reports_network_no(tmp_path):
         identity=make_identity(VALID),
     )
     assert report["PILOT_COMPLETE"] is False
-    # the corporate provider execution path was entered -> never "NO"
-    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "YES"
+    # the corporate provider step was entered -> network never "NO"
+    assert report["PROVIDER_STEP_ENTERED"] == "YES"
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] in ("YES", "UNKNOWN")
     assert report["NETWORK_PROVIDER_REQUEST_COUNT"] == "UNVERIFIED"
 
 
@@ -616,12 +629,14 @@ def test_real_execution_real_root_write_yes(tmp_path):
 def test_success_config_restored(tmp_path):
     root = tmp_path / "root"
     cfg = cfg_factory()
+    cfg_path = tmp_config_file(tmp_path, root)
     report = adapter.run_bounded_pilot(
         VALID[:2],
         root=root,
         cfg=cfg,
         engine=FakeEngine(),
         identity=make_identity(VALID),
+        config_path=cfg_path,
     )
     assert report["STATUS"] == "PILOT_COMPLETE"
     assert cfg.failover_enabled is True
@@ -668,7 +683,8 @@ def test_exception_config_restored(tmp_path):
     )
     assert report["STATUS"] == "EXECUTION_ERROR"
     assert report["PILOT_COMPLETE"] is False
-    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "YES"
+    assert report["PROVIDER_STEP_ENTERED"] == "YES"
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "UNKNOWN"
     assert cfg.failover_enabled is True
 
 
@@ -710,3 +726,191 @@ def test_config_hash_mutation_boundary_breach(tmp_path, monkeypatch):
     assert report["PERSISTENT_CONFIG_CHANGED"] is True
     assert report["CONFIG_INTEGRITY_STATUS"] == "CHANGED"
     assert cfg.failover_enabled is True  # restored even on boundary breach
+
+
+# ---- V02: receipt / runtime-contract hardening ----------------------------
+def test_receipt_real_sqlite3_row_contract(tmp_path):
+    import sqlite3
+
+    from datetime import date as _date
+
+    from cnequity.orchestrator.manifest import Manifest
+
+    db = tmp_path / "manifest.db"
+    m = Manifest(db)
+    run_id = m.start_run("backfill", {"backfill_scope": {}})
+    m.start_batch(
+        run_id,
+        "b1",
+        "corporate_actions_chunk",
+        "corporate_actions",
+        symbols=["600000.SH"],
+        window_start="2016-01-01",
+        window_end="2026-08-17",
+        blocks_compaction=False,
+    )
+    m.finish_batch(run_id, "b1", "success", rows_read=0, rows_written=0)
+    rows = m.get_batches_for_run(run_id)
+    assert rows and isinstance(rows[0], sqlite3.Row)
+
+    class Eng:
+        manifest = m
+
+    post = adapter.receipt_post_check(
+        Eng(), run_id, ["600000.SH"], _date(2016, 1, 1), _date(2026, 8, 17)
+    )
+    assert post["STATUS"] == "OK"
+    assert post["no_unexpected_symbols"] is True
+    assert post["each_requested_symbol_receipted"] is True
+    assert post["window_exact"] is True
+
+
+def test_receipt_missing_symbol_incomplete(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.chunk_symbols = ["600000.SH"]  # second requested symbol missing
+    cfg_path = tmp_config_file(tmp_path, root)
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=cfg_path,
+    )
+    assert report["receipt_post_check"]["STATUS"] == "MISMATCH"
+    assert report["receipt_post_check"]["each_requested_symbol_receipted"] is False
+    assert report["PILOT_COMPLETE"] is False
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+
+
+def test_receipt_unexpected_symbol_incomplete(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.chunk_symbols = VALID[:2] + ["999999.SZ"]
+    cfg_path = tmp_config_file(tmp_path, root)
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=cfg_path,
+    )
+    assert report["receipt_post_check"]["STATUS"] == "MISMATCH"
+    assert report["receipt_post_check"]["no_unexpected_symbols"] is False
+    assert report["PILOT_COMPLETE"] is False
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+
+
+def test_receipt_wrong_window_incomplete(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.chunk_window = ("2016-01-01", "2020-01-01")
+    cfg_path = tmp_config_file(tmp_path, root)
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=cfg_path,
+    )
+    assert report["receipt_post_check"]["STATUS"] == "MISMATCH"
+    assert report["receipt_post_check"]["window_exact"] is False
+    assert report["PILOT_COMPLETE"] is False
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+
+
+def test_receipt_manifest_read_exception_unknown_incomplete(tmp_path):
+    root = tmp_path / "root"
+
+    class RaisingManifest(FakeManifest):
+        def get_batches_for_run(self, run_id):
+            raise RuntimeError("manifest boom")
+
+    eng = FakeEngine()
+    eng.manifest = RaisingManifest()
+    cfg_path = tmp_config_file(tmp_path, root)
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=cfg_path,
+    )
+    assert report["receipt_post_check"]["STATUS"] == "UNKNOWN"
+    assert report["PILOT_COMPLETE"] is False
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+
+
+def test_receipt_zero_event_exact_success_complete(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.corp_result = {
+        "status": "success",
+        "rows_read": 0,
+        "rows_written": 0,
+        "failed_symbols": [],
+    }
+    cfg_path = tmp_config_file(tmp_path, root)
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=cfg_path,
+    )
+    assert report["receipt_post_check"]["STATUS"] == "OK"
+    assert report["PILOT_COMPLETE"] is True
+    assert report["STATUS"] == "PILOT_COMPLETE"
+
+
+def test_config_unknown_blocks_complete(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    # config path exists but hash cannot be produced for neither side
+    monkeypatch.setattr(adapter, "sha256_text", lambda _p: None)
+    eng = FakeEngine()
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=tmp_config_file(tmp_path, root),
+    )
+    assert report["CONFIG_INTEGRITY_STATUS"] == "UNKNOWN"
+    assert report["PILOT_COMPLETE"] is False
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+
+
+def test_exception_run_finalized_failed_no_orphan(tmp_path):
+    root = tmp_path / "root"
+    cfg = cfg_factory()
+
+    class FailingAfterStart(FakeEngine):
+        def run_step(self, name, trade_date, run_id, context=None):
+            self.calls.append(name)
+            if name == "corporate_actions":
+                raise RuntimeError("boom after run started")
+            return {"status": "success"}
+
+    eng = FailingAfterStart()
+    cfg_path = tmp_config_file(tmp_path, root)
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg,
+        engine=eng,
+        identity=make_identity(VALID),
+        config_path=cfg_path,
+    )
+    assert report["STATUS"] == "EXECUTION_ERROR"
+    assert report["EXCEPTION_RUN_FINALIZATION"] == "FAILED"
+    assert report["PROVIDER_STEP_ENTERED"] == "YES"
+    # no silent RUNNING orphan: the started run was finalized FAILED
+    assert eng.manifest.finishes
+    assert eng.manifest.finishes[-1]["status"] == "failed"
+    assert cfg.failover_enabled is True

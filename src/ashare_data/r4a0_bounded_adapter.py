@@ -90,6 +90,9 @@ def receipt_post_check(
         rows = eng.manifest.get_batches_for_run(run_id)
     except Exception:
         return {"STATUS": "UNKNOWN"}
+    # pinned Manifest.get_batches_for_run() returns list[sqlite3.Row]; never
+    # assume dict.get() — normalize each row safely.
+    rows = [dict(r) for r in rows]
     chunks = [
         b
         for b in rows
@@ -236,6 +239,7 @@ def _run_lifecycle(
         },
     }
     run_id = eng.manifest.start_run("backfill", metadata)
+    state["run_id"] = run_id
     context = {
         "run_id": run_id,
         "trade_date": trade_day,
@@ -363,6 +367,7 @@ def run_bounded_pilot(
                 "DRY_RUN_SYMBOL_N": len(symbols),
                 "MANIFEST_WRITE": "NO",
                 "REAL_ROOT_WRITE": "NO",
+                "PROVIDER_STEP_ENTERED": "NO",
                 "NETWORK_PROVIDER_DATA_FETCH": "NO",
                 "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
                 "MARKET_DATA_WRITE_STATUS": "NO",
@@ -395,27 +400,48 @@ def run_bounded_pilot(
             execution_error = exc
         config_sha_after = sha256_text(config_path)
         config_dirty = config_changed(config_sha_before, config_sha_after)
-        network = "YES" if state["provider_entered"] else "UNKNOWN"
+        config_status = config_integrity_status(config_sha_before, config_sha_after)
+        provider_entered = bool(state["provider_entered"])
+        # No precise provider-call evidence is available to the adapter, so a
+        # real execution is never reported as a fabricated YES count; only
+        # PROVIDER_STEP_ENTERED says whether the pinned step was invoked.
+        network = "UNKNOWN"
         art_after = ca_artifact_digest(root)
         market_data = market_data_write_status(art_before, art_after)
 
         if execution_error is not None:
+            # A fresh run may already be started before the failure. Never
+            # leave a silent RUNNING orphan: finalize it FAILED (best effort).
+            finalization = "NOT_STARTED"
+            if state.get("run_id"):
+                try:
+                    effective_eng_for_close = (
+                        engine if engine is not None else JobEngine(cfg)
+                    )
+                    effective_eng_for_close.manifest.finish_run(
+                        state["run_id"],
+                        "failed",
+                        error_message="bounded adapter execution error",
+                    )
+                    finalization = "FAILED"
+                except Exception:
+                    finalization = "FAILED_ATTEMPT_ERROR"
             return {
                 **base,
                 "STATUS": "EXECUTION_ERROR",
                 "MANIFEST_WRITE": "YES",
                 "REAL_ROOT_WRITE": "YES",
+                "PROVIDER_STEP_ENTERED": "YES" if provider_entered else "NO",
                 "NETWORK_PROVIDER_DATA_FETCH": network,
                 "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
                 "MARKET_DATA_WRITE_STATUS": market_data,
                 "PILOT_COMPLETE": False,
                 "PERSISTENT_CONFIG_CHANGED": config_dirty,
-                "CONFIG_INTEGRITY_STATUS": config_integrity_status(
-                    config_sha_before, config_sha_after
-                ),
+                "CONFIG_INTEGRITY_STATUS": config_status,
                 "config_sha256_before": config_sha_before,
                 "config_sha256_after": config_sha_after,
                 "error": str(execution_error),
+                "EXCEPTION_RUN_FINALIZATION": finalization,
                 "CONFIG_STATE_RESTORED": True,
             }
 
@@ -429,13 +455,17 @@ def run_bounded_pilot(
             effective_eng, lifecycle["run_id"], symbols, start, end
         )
         # PILOT_COMPLETE invariant: corporate success AND no failed symbol AND
-        # compact success AND final success AND no persistent-config mutation.
+        # compact success AND final success AND CONFIG_INTEGRITY_STATUS==OK AND
+        # receipt_post_check==OK. receipt UNKNOWN/MISMATCH, missing/unexpected
+        # symbol, wrong window, or config UNKNOWN/CHANGED all forbid COMPLETE.
         pilot_complete = bool(
             step_status == "success"
             and len(failed_symbols) == 0
             and compact_status == "success"
             and final_status == "success"
             and not config_dirty
+            and config_status == "OK"
+            and post.get("STATUS") == "OK"
         )
         status = (
             "WRITE_BOUNDARY_BREACH"
@@ -448,6 +478,7 @@ def run_bounded_pilot(
             "DRY_RUN_STATUS": "N/A",
             "MANIFEST_WRITE": "YES",
             "REAL_ROOT_WRITE": "YES",
+            "PROVIDER_STEP_ENTERED": "YES" if provider_entered else "NO",
             "NETWORK_PROVIDER_DATA_FETCH": network,
             "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
             "MARKET_DATA_WRITE_STATUS": market_data,
@@ -459,11 +490,10 @@ def run_bounded_pilot(
             "run_id": lifecycle["run_id"],
             "receipt_post_check": post,
             "PERSISTENT_CONFIG_CHANGED": config_dirty,
-            "CONFIG_INTEGRITY_STATUS": config_integrity_status(
-                config_sha_before, config_sha_after
-            ),
+            "CONFIG_INTEGRITY_STATUS": config_status,
             "config_sha256_before": config_sha_before,
             "config_sha256_after": config_sha_after,
+            "EXCEPTION_RUN_FINALIZATION": None,
             "CONFIG_STATE_RESTORED": True,
         }
     finally:

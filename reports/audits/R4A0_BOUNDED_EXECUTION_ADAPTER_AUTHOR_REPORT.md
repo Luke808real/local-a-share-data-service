@@ -237,3 +237,96 @@ sidecar -wal/-shm mtime unchanged
 TARGETED_TESTS  34 (adapter) + 23 (gate) = 57 passed
 GIT_DIFF_CHECK  CLEAN
 ```
+
+---
+
+## 8. FINAL RECEIPT / RUNTIME-CONTRACT FIX V02 (post re-review of e6efe1a)
+
+### 8.1 Real manifest row contract
+
+`Manifest.get_batches_for_run()` returns `list[sqlite3.Row]`; `receipt_post_check`
+no longer assumes `dict.get()`. Every row is normalized via `dict(row)` before
+reads. A test with the REAL pinned `Manifest` + a tmp `manifest.db`, actual
+`corporate_actions_chunk` receipts, then `receipt_post_check` passing on real
+`sqlite3.Row` rows was added (no FakeManifest-only proof).
+
+```text
+REAL_MANIFEST_ROW_CONTRACT_TEST  passed (real pinned Manifest)
+```
+
+### 8.2 Receipt check gates COMPLETE
+
+```text
+PILOT_COMPLETE =
+  corporate_status == success
+  AND failed_symbols empty
+  AND compact_status == success
+  AND final_status == success
+  AND CONFIG_INTEGRITY_STATUS == "OK"
+  AND receipt_post_check.STATUS == "OK"
+```
+
+Receipt UNKNOWN / MISMATCH / missing requested symbol / unexpected symbol /
+wrong window all yield `PILOT_COMPLETE=false` and `PILOT_INCOMPLETE` — no
+promotion. Enforced and tested (missing / unexpected / wrong-window /
+manifest-read-exception -> UNKNOWN).
+
+### 8.3 CONFIG UNKNOWN fails closed
+
+When the config hash cannot be produced on either side,
+`CONFIG_INTEGRITY_STATUS=UNKNOWN` and complete is forbidden
+(`PILOT_COMPLETE=false`). Formal COMPLETE only allows `CONFIG_INTEGRITY_STATUS
+== "OK"`. New test: config row unknown -> not complete.
+
+### 8.4 Network telemetry wording
+
+Split into:
+
+```text
+PROVIDER_STEP_ENTERED         YES / NO   (was the pinned step invoked?)
+NETWORK_PROVIDER_DATA_FETCH   NO         (dry-run)
+                              UNKNOWN    (real execution, no precise provider
+                                          evidence)
+                              YES        (only with real provider-call evidence;
+                                          none available to the adapter -> UNKNOWN)
+NETWORK_PROVIDER_REQUEST_COUNT            UNVERIFIED (never guessed as 24)
+```
+
+"About to enter run_step" is reported as `PROVIDER_STEP_ENTERED`, never as a
+fabricated provider fetch count. REQUESTED_SYMBOL_N stays separate.
+
+### 8.5 Exception lifecycle
+
+If a fresh run was started before a failure, the adapter finalizes that run as
+`FAILED` (best effort) so no silent RUNNING orphan remains — without
+refactoring JobEngine. Reported via `EXCEPTION_RUN_FINALIZATION`
+(FAILED / FAILED_ATTEMPT_ERROR / NOT_STARTED). Test: exception after run start
+-> the manifest run ends `failed`, config restored.
+
+### 8.6 Tests / real-config dry-run
+
+`tests/test_r4a0_bounded_adapter.py` now has **42 targeted tests**:
+prior 34 (semantics corrected: PROVIDER_STEP_ENTERED / network UNKNOWN /
+receipt gating) + real-row contract + receipt missing / unexpected /
+wrong-window / read-exception / zero-event-complete + config-UNKNOWN +
+exception-finalize. Existing `tests/test_r4a0_corporate_actions_gate.py` (23)
+re-run clean. Total: **65 passed**.
+
+Real-config `--dry-run` (read-only):
+
+```text
+DRY_RUN_STATUS OK   STATUS READY
+MANIFEST_WRITE NO   REAL_ROOT_WRITE NO
+PROVIDER_STEP_ENTERED NO
+NETWORK_PROVIDER_DATA_FETCH NO
+NETWORK_PROVIDER_REQUEST_COUNT UNVERIFIED
+CONFIG_INTEGRITY_STATUS OK
+PERSISTENT_CONFIG_CHANGED false
+CONFIG_STATE_RESTORED true
+sidecar -wal/-shm mtime unchanged
+```
+
+```text
+TARGETED_TESTS  42 (adapter) + 23 (gate) = 65 passed
+GIT_DIFF_CHECK  CLEAN
+```
