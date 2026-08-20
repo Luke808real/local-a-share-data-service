@@ -784,7 +784,7 @@ def render_report(report: dict[str, Any]) -> str:
         f"DUPLICATE_PK_N={report['DUPLICATE_PK_N']}",
         f"IDENTITY_FAILURE_N={report['IDENTITY_FAILURE_N']}",
         f"POST_ASOF_N={report['POST_ASOF_N']}",
-        f"QUERY_N={report['QUERY_N']}",
+        f"QUERY_N={report.get('QUERY_N', report.get('NETWORK_PROVIDER_REQUEST_COUNT', 'UNAVAILABLE'))}",
         f"QUERY_FAILURE_N={report['QUERY_FAILURE_N']}",
         "PROVIDER_EXECUTION_COUNT=1",
         "AUTO_RETRY=NO",

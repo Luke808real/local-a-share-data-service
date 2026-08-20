@@ -1,0 +1,27 @@
+{
+  "authority_type": "SSE_OFFICIAL_ONLY",
+  "secondary_authority_sources_n": 0,
+  "rows": [
+    {
+      "symbol": "603007.SH",
+      "listing_date": "2016-08-26",
+      "official_issue_price": 11.66,
+      "authority_url": "https://www.sse.com.cn/aboutus/publication/factbook/documents/c/10170565/files/42dc9278c7a14ff9b2d887ff0fbf4dfb.pdf",
+      "authority_note": "SSE 2017 market factbook, 2016 new-listed-stock table"
+    },
+    {
+      "symbol": "688486.SH",
+      "listing_date": "2023-02-21",
+      "official_issue_price": 64.76,
+      "authority_url": "https://big5.sse.com.cn/site/cht/www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2023-02-20/688486_20230220_OTKT.pdf",
+      "authority_note": "SSE official IPO listing announcement book"
+    },
+    {
+      "symbol": "688489.SH",
+      "listing_date": "2022-12-02",
+      "official_issue_price": 78.89,
+      "authority_url": "https://www.sse.com.cn/aboutus/publication/yearly/documents/c/10747773/files/3d6aae2466cc4c43808f5d98976f35e6.pdf",
+      "authority_note": "SSE official 2023 yearly market data, IPO issue-price table"
+    }
+  ]
+}

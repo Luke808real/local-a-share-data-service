@@ -1,0 +1,100 @@
+# R4A3.1 BaoStock Preclose Source Closure
+
+BASE_HEAD: b0ae8ba72c20f45683a587f450535c79731a5c7b
+
+## Verdict
+
+```text
+STATUS=CLOSURE_COMPLETE
+R4A3_1_BAOSTOCK_PRECLOSE_SOURCE_CLOSURE=CLOSURE_COMPLETE
+R4A_PROVIDER_SCOPE_COVERAGE_STATUS=PASS
+CLEAN_NORMAL_PARITY_STATUS=PASS
+OFFICIAL_EVENT_PARITY_STATUS=PASS
+IPO_PARITY_STATUS=PASS
+WINDOW_EDGE_STATUS=PASS
+BAOSTOCK_PRECLOSE_ROLE_RECOMMENDATION=PROMOTE_CANDIDATE_CANONICAL
+INITIAL_CLI_EXIT=0
+LEGACY_QUERY_N_RENDER_FALLBACK=ENABLED
+R4A_IMPLEMENTATION_READY=false
+```
+
+This is a bounded evaluator closure. It does not write formal preclose
+data, corporate_actions, or any other market-data dataset.
+
+## Scope and requery boundary
+
+```text
+FORMAL_IDENTITY_N=5456
+FORMAL_IDENTITY_HASH=2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f
+IDENTITY_MATCH=True
+PILOT_SYMBOL_N=24
+PILOT_SYMBOL_HASH=5fa9f5c9ef376f0c453d3f543dc3a8ee9d61f73cec3a0fd35a9bea5081e17843
+WINDOW=2016-01-01..2026-08-17
+QUERY_FIELDS=date,code,preclose,tradestatus
+REQUERY_WINDOW_N=54
+NETWORK_PROVIDER_REQUEST_COUNT=54
+FULL_242_REQUERY=false
+```
+
+Only previous symbol/year rows with unexpected_row_n>0 were re-queried.
+Rows with tradestatus=0 are retained as a provider suspended superset
+audit and are not required actual-traded rows.
+
+## Coverage
+
+```text
+REQUIRED_ROW_N=55053
+REQUIRED_PROVIDER_PRESENT_N=55053
+MISSING_REQUIRED_ROW_N=0
+PROVIDER_SUSPENDED_SUPERSET_N=982
+UNEXPECTED_TRADED_ROW_N=0
+TRADESTATUS_UNKNOWN_N=0
+DUPLICATE_PK_N=0
+IDENTITY_FAILURE_N=0
+POST_ASOF_N=0
+R4A_PROVIDER_SCOPE_COVERAGE_STATUS=PASS
+```
+
+## Parity
+
+```text
+CLEAN_NORMAL_N=54756
+CLEAN_NORMAL_EXACT_N=54756
+CLEAN_NORMAL_MISMATCH_N=0
+CLEAN_NORMAL_MAX_DIFF=0.0
+RESUMPTION_CANDIDATE_N=77
+RESUMPTION_EXACT_N=62
+RESUMPTION_NONEXACT_N=15
+OFFICIAL_EVENT_N=20
+OFFICIAL_EVENT_EXACT_N=20
+OFFICIAL_EVENT_MISMATCH_N=0
+IPO_OFFICIAL_N=3
+IPO_EXACT_N=3
+IPO_MISMATCH_N=0
+WINDOW_EDGE_STATUS=PASS
+```
+
+The 000564.SZ 2018-07-20 row is explicitly recorded as a
+RESUMPTION_CANDIDATE and is excluded from CLEAN_NORMAL.
+Official event evidence is reused from the prior bounded receipt; the
+two Sol-frozen 000002 adjusted-basis rows remain resolved.
+
+## IPO authority
+
+- 603007.SH 2016-08-26 issue=11.66 preclose=11.66 exact=True [https://www.sse.com.cn/aboutus/publication/factbook/documents/c/10170565/files/42dc9278c7a14ff9b2d887ff0fbf4dfb.pdf]
+- 688486.SH 2023-02-21 issue=64.76 preclose=64.76 exact=True [https://big5.sse.com.cn/site/cht/www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2023-02-20/688486_20230220_OTKT.pdf]
+- 688489.SH 2022-12-02 issue=78.89 preclose=78.89 exact=True [https://www.sse.com.cn/aboutus/publication/yearly/documents/c/10747773/files/3d6aae2466cc4c43808f5d98976f35e6.pdf]
+
+## Safety
+
+```text
+NETWORK_PROVIDER_DATA_FETCH=YES
+PROVIDER_STEP_ENTERED=YES
+MARKET_DATA_WRITE=NO
+CORPORATE_ACTIONS_WRITE=NO
+FORMAL_PRECLOSE_DATASET_WRITE=NO
+MANIFEST_MUTATION=NO
+SECONDARY_AUTHORITY_SOURCES_N=0
+R4B_R4C_R4D_IMPLEMENTATION=FORBIDDEN
+STRATEGY_FORWARD_TRADEPLAN=FORBIDDEN
+```
