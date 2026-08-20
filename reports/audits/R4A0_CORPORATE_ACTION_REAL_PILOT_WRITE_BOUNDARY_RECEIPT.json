@@ -1,0 +1,34 @@
+{
+  "branch": "codex/r4a0-corporate-actions-bootstrap-pilot-v01",
+  "date": "2026-08-20",
+  "data_root": "/Users/luke808/AI/local-a-share-data-service-data",
+  "manifest_db_sha256_before": "8ea64c838fd85acb99a3c3596e51319079f71978f7241bfe5de8199eb9c7bf15",
+  "manifest_db_sha256_after": "73034e4419e49c401a9f2cfa5965cbfbb76eb8fe39ff3b3f552f25c803ec663f",
+  "manifest_change_note": "allowed: pilot wrote manifest/run/batch/chunk receipts (runtime metadata)",
+  "corporate_actions_before": {
+    "curated_exists": false,
+    "staging_exists": false,
+    "curated_parquet": [],
+    "staging_parquet": []
+  },
+  "corporate_actions_after": {
+    "curated_exists": true,
+    "staging_exists": true,
+    "curated_parquet_count": 11,
+    "staging_parquet_count": 1
+  },
+  "config": {
+    "path": "config/cnequity.toml",
+    "sha256_before": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+    "sha256_after": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+    "unchanged": true
+  },
+  "protected_r3_datasets_inventory": {
+    "scope": ["curated/daily_bars", "curated/instruments", "curated/trading_calendar", "staging/daily_bars", "staging/instruments", "staging/trading_calendar"],
+    "entries": 7592,
+    "HASH_BEFORE": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+    "HASH_AFTER": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+    "UNCHANGED": true
+  },
+  "WRITE_BOUNDARY_STATUS": "OK"
+}

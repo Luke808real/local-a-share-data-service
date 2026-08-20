@@ -1,0 +1,30 @@
+{
+  "status": "PILOT_COMPLETE",
+  "run_id": "374be7c9-de36-4c89-a1d6-e9e9f58e473c",
+  "branch": "codex/r4a0-corporate-actions-bootstrap-pilot-v01",
+  "date": "2026-08-20",
+  "REQUESTED_SYMBOL_N": 24,
+  "PILOT_SYMBOL_HASH": "e846331eae6cc090eb8b4f9109f0f25f2692e7ad759acd41b3eb4d62241f3661",
+  "PIN_MATCH": true,
+  "IDENTITY_MATCH": true,
+  "FORMAL_IDENTITY_N": 5456,
+  "PROVIDER_STEP_ENTERED": "YES",
+  "NETWORK_PROVIDER_DATA_FETCH": "UNKNOWN",
+  "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
+  "CORPORATE_STATUS": "success",
+  "COMPACT_STATUS": "success",
+  "FINAL_STATUS": "success",
+  "failed_symbols": [],
+  "CONFIG_INTEGRITY_STATUS": "OK",
+  "PERSISTENT_CONFIG_CHANGED": false,
+  "PILOT_COMPLETE": true,
+  "EXCEPTION_RUN_FINALIZATION": null,
+  "receipt_post_check": {
+    "STATUS": "OK",
+    "no_unexpected_symbols": true,
+    "each_requested_symbol_receipted": true,
+    "window_exact": true,
+    "failed_chunk_contributes": false
+  },
+  "rows_fetched_written": 142
+}

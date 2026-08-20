@@ -1,0 +1,43 @@
+{
+  "run_id": "374be7c9-de36-4c89-a1d6-e9e9f58e473c",
+  "window": {"start": "2016-01-01", "end": "2026-08-17"},
+  "receipt_validation": {
+    "success_chunk_receipts": 1,
+    "SUCCESSFULLY_RECEIPTED_SYMBOL_N": 24,
+    "MISSING_RECEIPT_SYMBOL_N": 0,
+    "MISSING_RECEIPT_SYMBOLS": [],
+    "FAILED_SYMBOL_N": 0,
+    "FAILED_SYMBOLS": [],
+    "all_chunk_windows_exact": true
+  },
+  "data_validation": {
+    "EVENT_ROW_N": 142,
+    "UNIQUE_SYMBOL_WITH_EVENT_N": 19,
+    "ZERO_EVENT_SYMBOL_N": 5,
+    "MIN_EX_DATE": "2016-04-15",
+    "MAX_EX_DATE": "2026-07-24",
+    "SOURCE_COUNTS": {"tdx_protocol": 142},
+    "DATA_VERSION_COUNTS": {"v1": 142},
+    "DUPLICATE_PK_N": 0,
+    "UNEXPECTED_SYMBOL_N": 0,
+    "OUT_OF_WINDOW_ROW_N": 0
+  },
+  "curated_parquet_artifacts": [
+    {"path": "curated/corporate_actions/ex_date=2016/part-merged.parquet", "size": 4134, "sha256": "40184f0baafde587c0e90b80cdd958cf92def7c09d15528744fbf03c47e55866"},
+    {"path": "curated/corporate_actions/ex_date=2017/part-merged.parquet", "size": 4134, "sha256": "d7485b5a9760895a25b4bf85c92be0dde6d0745c329b47033046e02a23150e6f"},
+    {"path": "curated/corporate_actions/ex_date=2018/part-merged.parquet", "size": 4103, "sha256": "09cd08b9c297df30818d5fbe25004eb179f2c4d5b63545ce8ce31da31b00a5b8"},
+    {"path": "curated/corporate_actions/ex_date=2019/part-merged.parquet", "size": 4090, "sha256": "92c4919a013306728ce4886e9b11b85433f320fa5f739992958639fdf9971fb8"},
+    {"path": "curated/corporate_actions/ex_date=2020/part-merged.parquet", "size": 4276, "sha256": "6625e5803ce561ae086711ee34a47acaaa4966710a3335125266c415fb304af2"},
+    {"path": "curated/corporate_actions/ex_date=2021/part-merged.parquet", "size": 4075, "sha256": "785c68be3d6610c588e172a838e828ecc0239e887d5053630e9d42754dbef4c0"},
+    {"path": "curated/corporate_actions/ex_date=2022/part-merged.parquet", "size": 4006, "sha256": "6ead5495d4ab393e7a566dfb5c844876b7105c3750cd6f0b1bb29fd33b9a0a8f"},
+    {"path": "curated/corporate_actions/ex_date=2023/part-merged.parquet", "size": 3991, "sha256": "b890775a95e75bc5872d2969699228ee7544fe8f6275bd7d7f380ceff1682a01"},
+    {"path": "curated/corporate_actions/ex_date=2024/part-merged.parquet", "size": 4025, "sha256": "d9ffc56c19efe2102e322d8b1efef6bac6db4dc7e724029454691b11b2ceaaa6"},
+    {"path": "curated/corporate_actions/ex_date=2025/part-merged.parquet", "size": 4026, "sha256": "5167727d3e21694651afa2ab5de4d0e5429c964e6fa61c1bfa17ab7f0ccfe8f8"},
+    {"path": "curated/corporate_actions/ex_date=2026/part-merged.parquet", "size": 3972, "sha256": "22951b38f63613b5cac0b6e9abfa3fcfb5f44ca6df8be731314cc339b88e9522"}
+  ],
+  "staging_artifact": {
+    "path": "staging/corporate_actions/run_id=374be7c9-de36-4c89-a1d6-e9e9f58e473c/part-d57a8249-0724-44d6-b430-af0ee4c12f57-chunk-0000.parquet",
+    "size": 5389,
+    "sha256": "42d872fd9ff85d7d582e46836aa2a8fb8693838a9c12f7fed6aa568cd0ab8ac4"
+  }
+}
