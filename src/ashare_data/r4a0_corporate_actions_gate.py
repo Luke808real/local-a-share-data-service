@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -186,28 +186,24 @@ def read_manifest_states(root: Path) -> dict[str, Any]:
     }
 
 
-def extract_covered_window(manifest: dict[str, Any]) -> tuple[date | None, date | None]:
-    """Covered start/end proven by successful ingestion evidence.
+def collect_coverage_intervals(manifest: dict[str, Any]) -> list[tuple[date, date]]:
+    """Trusted successful coverage intervals only, normalized to [start, end].
 
-    A sparse event dataset's historical completeness cannot be inferred from
-    row min/max. Coverage is proven only by an explicit, authoritative window:
-      * successful corporate_actions ingestion batch window_start/window_end, or
-      * successful run metadata backfill_scope.start/end, or
-      * a trustworthy watermark/coverage metadata block.
-    Returns (None, None) when no explicit covered window is proven.
+    Evidence safety: failed / warning / incomplete evidence is never used to
+    prove completeness. Only these count:
+      * successful corporate_actions ingestion batch window_start/window_end
+      * successful corporate_actions run metadata backfill_scope.start/end
+      * an authoritative corporate_actions watermark (non-corrupt)
     """
-    starts: list[date] = []
-    ends: list[date] = []
+    intervals: list[tuple[date, date]] = []
 
     for b in manifest.get("batches", []):
         if b.get("status") != "success":
             continue
         s = _parse_date(b.get("window_start"))
         e = _parse_date(b.get("window_end"))
-        if s is not None:
-            starts.append(s)
-        if e is not None:
-            ends.append(e)
+        if s is not None and e is not None and s <= e:
+            intervals.append((s, e))
 
     for r in manifest.get("runs", []):
         if r.get("status") != "success":
@@ -215,24 +211,68 @@ def extract_covered_window(manifest: dict[str, Any]) -> tuple[date | None, date 
         meta = r.get("metadata_parsed")
         scope = (meta or {}).get("backfill_scope") if isinstance(meta, dict) else {}
         s = _parse_date(scope.get("start"))
-        if s is not None:
-            starts.append(s)
         e = _parse_date(scope.get("end") or scope.get("to") or scope.get("cutoff"))
-        if e is not None:
-            ends.append(e)
+        if s is not None and e is not None and s <= e:
+            intervals.append((s, e))
 
     wm = manifest.get("corporate_watermark")
     if isinstance(wm, dict) and wm.get("corrupt") is not True:
         ws = _parse_date(wm.get("start") or wm.get("min_date") or wm.get("first_date"))
         we = _parse_date(wm.get("end") or wm.get("max_date") or wm.get("last_date"))
-        if ws is not None:
-            starts.append(ws)
-        if we is not None:
-            ends.append(we)
+        if ws is not None and we is not None and ws <= we:
+            intervals.append((ws, we))
 
-    covered_start = min(starts) if starts else None
-    covered_end = max(ends) if ends else None
-    return covered_start, covered_end
+    return intervals
+
+
+def merge_intervals(intervals: list[tuple[date, date]]) -> list[tuple[date, date]]:
+    """Merge overlapping / immediately-adjacent intervals.
+
+    Adjacent means the next interval starts no later than the previous end's
+    next calendar day, so there is no gap day between them. This is stricter
+    than min(start)/max(end) and still admits exact-boundary unions.
+    """
+    if not intervals:
+        return []
+    ordered = sorted(intervals)
+    merged: list[tuple[date, date]] = []
+    cur_s, cur_e = ordered[0]
+    for s, e in ordered[1:]:
+        if s <= cur_e or (s - cur_e).days <= 1:
+            cur_e = max(cur_e, e)
+        else:
+            merged.append((cur_s, cur_e))
+            cur_s, cur_e = s, e
+    merged.append((cur_s, cur_e))
+    return merged
+
+
+def gaps_in_window(
+    merged: list[tuple[date, date]],
+    window_start: date,
+    window_end: date,
+) -> list[dict[str, str]]:
+    """Calendar-day gaps inside the requested window, between merged spans."""
+    gaps: list[dict[str, str]] = []
+    for (a_s, a_e), (b_s, b_e) in zip(merged, merged[1:]):
+        gap_s = a_e + timedelta(days=1)
+        gap_e = b_s - timedelta(days=1)
+        if gap_s > gap_e:
+            continue
+        gs = max(gap_s, window_start)
+        ge = min(gap_e, window_end)
+        if gs <= ge:
+            gaps.append({"start": str(gs), "end": str(ge)})
+    return gaps
+
+
+def contract_required(cc: dict[str, Any]) -> bool:
+    """Mandatory upstream validation: schema AND source AND exact pin."""
+    return bool(
+        cc.get("SCHEMA_MATCH") is True
+        and cc.get("SOURCE_MATCH") is True
+        and cc.get("PIN_MATCH") is True
+    )
 
 
 def evaluate_pin_contract(
@@ -336,20 +376,26 @@ def run_gate(
 
     # ---- COVERAGE (event data: no daily-grid requirement) -----------------
     # A sparse event dataset cannot prove historical completeness from row
-    # min/max or from "a corporate run succeeded". COVERAGE_PASS requires
-    # authoritative ingestion evidence whose covered window actually spans the
-    # requested window (window_start..window_end). A success with no window, or
-    # a partial window, is UNKNOWN_PARTIAL and never PASS.
-    covered_start, covered_end = extract_covered_window(manifest)
-    coverage_pass = bool(
+    # min/max or from "a corporate run succeeded". COVERAGE_PASS requires the
+    # union of trusted successful coverage intervals to be contiguous across
+    # the requested window (window_start..window_end). Any internal gap, a
+    # left/right shortfall, no-window evidence, or non-success evidence is
+    # UNKNOWN_PARTIAL and never PASS.
+    intervals = collect_coverage_intervals(manifest)
+    merged = merge_intervals(intervals)
+    gaps = gaps_in_window(merged, window_start, window_end)
+    covered_start = merged[0][0] if merged else None
+    covered_end = merged[-1][1] if merged else None
+    contiguous = bool(
         dataset_exists
         and row_count > 0
         and covered_start is not None
         and covered_end is not None
         and covered_start <= window_start
         and covered_end >= window_end
+        and len(gaps) == 0
     )
-    coverage_status = "PASS" if coverage_pass else "UNKNOWN_PARTIAL"
+    coverage_status = "PASS" if contiguous else "UNKNOWN_PARTIAL"
 
     # ---- UNIQUENESS (PK = symbol, ex_date, action_type) -------------------
     duplicate_action_n = 0
@@ -456,6 +502,11 @@ def run_gate(
         "SCHEMA_STATUS": schema_status,
         "SCOPE_STATUS": scope_status,
         "COVERAGE_STATUS": coverage_status,
+        "COVERAGE_INTERVALS": [
+            {"start": str(s), "end": str(e)} for s, e in intervals
+        ],
+        "COVERAGE_GAPS": gaps,
+        "CONTIGUOUS_COVERAGE": contiguous,
         "REQUESTED_WINDOW": {
             "start": str(window_start),
             "end": str(window_end),

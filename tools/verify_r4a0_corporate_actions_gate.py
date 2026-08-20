@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from ashare_data.r4a0_corporate_actions_gate import (  # noqa: E402
     CNEQUITY_PIN_SHA,
     CONTRACT,
+    contract_required,
     evaluate_pin_contract,
     run_gate,
 )
@@ -83,7 +84,12 @@ DATASET_NAME = CONTRACT.dataset
 def main() -> int:
     parser = argparse.ArgumentParser(description="R4A0 corporate_actions gate")
     parser.add_argument("--config", default="config/cnequity.toml")
-    parser.add_argument("--contract-check", action="store_true")
+    parser.add_argument(
+        "--contract-check",
+        action="store_true",
+        help="Deprecated compatibility no-op: pinned upstream validation is "
+        "now ALWAYS enforced and cannot be skipped.",
+    )
     args = parser.parse_args()
 
     config_path = (REPO_ROOT / args.config).resolve()
@@ -91,7 +97,9 @@ def main() -> int:
         config = tomllib.load(fh)
     root = Path(config["data"]["root"])
 
-    cc = contract_check() if args.contract_check else None
+    # PINED UPSTREAM CHECK IS MANDATORY for formal execution. There is no
+    # skip-pin path; --contract-check above is a no-op kept for compatibility.
+    cc = contract_check()
     report = run_gate(root)
     report["config"] = {
         "path": str(config_path),
@@ -102,8 +110,21 @@ def main() -> int:
         "cnequity_pin_sha": CNEQUITY_PIN_SHA,
         "contract_check": cc,
     }
-    if cc is not None and not cc.get("match"):
-        print(json.dumps({"error": "CNEquity contract mismatch"}, indent=2))
+    report["PIN_CHECK_MANDATORY"] = True
+    report["PIN_BYPASS_AVAILABLE"] = False
+    if not contract_required(cc):
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "R4A0 upstream validation failed "
+                        "(SCHEMA_MATCH and SOURCE_MATCH and PIN_MATCH required)"
+                    ),
+                    "contract_check": cc,
+                },
+                indent=2,
+            )
+        )
         return 2
 
     print(json.dumps(report, indent=2, default=str))

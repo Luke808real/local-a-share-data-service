@@ -225,3 +225,92 @@ Only the READ-ONLY R4A0 gate was re-run on the real root. No bootstrap, no
 backfill, no provider fetch, no R4A execution, no sidecar cleanup; manifest
 SQLite reads remain `immutable=1` (verified: `-wal`/`-shm` mtime unchanged
 before/after re-run).
+
+---
+
+## 9. FINAL FAIL-CLOSED FIX V02 (post re-review of 9134454)
+
+Two remaining fail-closed bypasses found by the independent Sol re-review
+were closed.
+
+### 9.1 PIN CHECK MANDATORY
+
+`--contract-check` was previously an optional flag; formal CLI runs without
+it could skip pinned-upstream validation. Now:
+
+```text
+PIN_CHECK_MANDATORY   true
+PIN_BYPASS_AVAILABLE  false
+```
+
+`tools/verify_r4a0_corporate_actions_gate.py` ALWAYS calls `contract_check()`
+on formal execution and requires `SCHEMA_MATCH=true`, `SOURCE_MATCH=true`,
+`PIN_MATCH=true`; otherwise exit non-zero and R4A0 must not PASS. The flag is
+kept only as a no-op for compatibility and cannot change the always-check
+behavior. There is no skip-pin path in formal R4A0.
+
+### 9.2 COVERAGE CONTIGUOUS-UNION
+
+The previous min(start)/max(end) logic could accept
+`2016-2018 + 2025-2026` as full coverage. Coverage now uses trusted successful
+intervals only, normalized to `[start, end]`, merged (overlap or immediate
+adjacency), and verified as a contiguous union covering the requested window;
+any internal gap, left/right shortfall, or absent window is UNKNOWN_PARTIAL.
+
+```text
+REQUESTED_WINDOW        2016-01-01 .. 2026-08-17
+CONTIGUOUS_COVERAGE     must be true for COVERAGE_PASS
+```
+
+Real-root result (2026-08-20, read-only re-run):
+
+```text
+COVERAGE_INTERVALS  []          (dataset absent)
+COVERAGE_GAPS       []
+COVERED_WINDOW      None
+COVERAGE_STATUS     UNKNOWN_PARTIAL
+```
+
+### 9.3 Evidence safety
+
+Only trusted evidence may prove completeness: successful corporate_actions
+batch windows, successful run `backfill_scope`, or an authoritative (non-
+corrupt) watermark. Failed/warning/incomplete evidence is never used; batch
+evidence is only admitted when its status is fit for a COMPLETE claim.
+UNKNOWN != PASS.
+
+### 9.4 Targeted tests
+
+All prior 11 scenarios retained; 5 new scenarios added (all pass):
+
+```text
+A  2016-01-01..2018-12-31 + 2025-01-01..2026-08-17 (gap)          -> UNKNOWN_PARTIAL
+B  2016-01-01..2020-12-31 + 2021-01-01..2026-08-17 (exact-boundary)-> PASS
+C  overlapping successful intervals covering full window          -> PASS
+D  failed interval fills gap -> ignored                           -> UNKNOWN_PARTIAL
+E  formal CLI without flag still enforces PIN_MATCH (exit=2)      -> enforced
+
+TARGETED_TESTS  16 passed
+```
+
+### 9.5 Real-root re-run (read-only)
+
+```text
+DATASET_EXISTS        false
+COVERAGE_STATUS       UNKNOWN_PARTIAL
+R4A0_READY            false
+BLOCKER               CORPORATE_ACTIONS_DATASET_NOT_BUILT
+GATE_EXIT             1
+```
+
+No bootstrap, no backfill, no provider fetch, no R4A, no real-root write, no
+sidecar cleanup. `-wal`/`-shm` mtime verified unchanged before/after.
+
+```text
+PIN_CHECK_MANDATORY   true
+PIN_BYPASS_AVAILABLE  false
+MARKET_DATA_CHANGED   NO
+NETWORK_PROVIDER_DATA_FETCH  0
+REAL_ROOT_WRITE       NO
+git diff --check      CLEAN
+```

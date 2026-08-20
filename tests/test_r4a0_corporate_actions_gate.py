@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -143,6 +145,79 @@ def write_watermark(root, *, start="2016-01-01", end="2026-08-17"):
     (state / "corporate_actions.json").write_text(
         json.dumps({"start": start, "end": end}), encoding="utf-8"
     )
+
+
+def write_manifest_batches(
+    root,
+    intervals,
+    *,
+    failed_intervals=None,
+):
+    """Write success run (no window metadata) + per-batch coverage windows.
+
+    `intervals`: list of (start, end) successful batch windows.
+    `failed_intervals`: list of (start, end) batches with status != success
+    (must never prove completeness).
+    """
+    meta = root / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(meta / "manifest.db")
+    con.execute(
+        "CREATE TABLE ingestion_runs (run_id TEXT, job_name TEXT, status TEXT, "
+        "started_at TEXT, finished_at TEXT, rows_read INTEGER, rows_written INTEGER, "
+        "error_message TEXT, metadata_json TEXT)"
+    )
+    con.execute(
+        "CREATE TABLE ingestion_batches (run_id TEXT, batch_id TEXT, task_id TEXT, "
+        "dataset TEXT, status TEXT, symbols_json TEXT, window_start TEXT, "
+        "window_end TEXT, rows_read INTEGER, rows_written INTEGER, retry_count INTEGER, "
+        "started_at TEXT, finished_at TEXT, error_message TEXT, heartbeat_at TEXT, "
+        "blocks_compaction INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO ingestion_runs VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            "run1",
+            "r3_corporate_actions",
+            "success",
+            "2026-08-19T00:00:00+00:00",
+            "2026-08-19T01:00:00+00:00",
+            0,
+            0,
+            None,
+            None,
+        ),
+    )
+    idx = 0
+    for status, windows in (
+        ("success", intervals),
+        ("failed", failed_intervals or []),
+    ):
+        for s, e in windows:
+            con.execute(
+                "INSERT INTO ingestion_batches VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "run1",
+                    f"b{idx}",
+                    "corporate_actions",
+                    "corporate_actions",
+                    status,
+                    "[]",
+                    s,
+                    e,
+                    0,
+                    0,
+                    0,
+                    "2026-08-19T00:00:00+00:00",
+                    "2026-08-19T00:30:00+00:00",
+                    None,
+                    None,
+                    0,
+                ),
+            )
+            idx += 1
+    con.commit()
+    con.close()
 
 
 def test_valid_dataset_pass(tmp_path):
@@ -328,3 +403,120 @@ def test_d_wrong_pin_fails_contract():
     )
     assert ev2["PIN_MATCH"] is True
     assert ev2["match"] is True
+
+
+def test_a_gap_between_successful_runs_rejected(tmp_path):
+    # 2016-2018 + 2025-2026, gap 2019-2024 -> must NOT pass as covered
+    root = tmp_path / "root"
+    write_parquet(
+        root,
+        [
+            base_row("600519.SH", date(2016, 1, 4)),
+            base_row("000001.SZ", date(2025, 3, 1)),
+        ],
+    )
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2018-12-31"), ("2025-01-01", "2026-08-17")],
+    )
+    report = run_gate(root)
+    assert report["CONTIGUOUS_COVERAGE"] is False
+    assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
+    assert len(report["COVERAGE_GAPS"]) == 1
+    assert report["R4A0_READY"] is False
+
+
+def test_b_contiguous_full_union_pass(tmp_path):
+    # exact-boundary adjacent intervals collectively cover the full window
+    root = tmp_path / "root"
+    write_parquet(
+        root,
+        [
+            base_row("600519.SH", date(2016, 1, 4)),
+            base_row("000001.SZ", date(2026, 6, 1)),
+        ],
+    )
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2020-12-31"), ("2021-01-01", "2026-08-17")],
+    )
+    report = run_gate(root)
+    assert report["CONTIGUOUS_COVERAGE"] is True
+    assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["COVERAGE_GAPS"] == []
+    assert report["R4A0_READY"] is True
+
+
+def test_c_overlapping_full_union_pass(tmp_path):
+    # overlapping successful intervals collectively cover the full window
+    root = tmp_path / "root"
+    write_parquet(
+        root,
+        [
+            base_row("600519.SH", date(2016, 1, 4)),
+            base_row("000001.SZ", date(2026, 6, 1)),
+        ],
+    )
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2023-06-30"), ("2020-01-01", "2026-08-17")],
+    )
+    report = run_gate(root)
+    assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["COVERAGE_GAPS"] == []
+    assert report["R4A0_READY"] is True
+
+
+def test_d_failed_interval_ignored(tmp_path):
+    # failed evidence fills otherwise missing gap -> ignored -> UNKNOWN_PARTIAL
+    root = tmp_path / "root"
+    write_parquet(
+        root,
+        [
+            base_row("600519.SH", date(2016, 1, 4)),
+            base_row("000001.SZ", date(2025, 3, 1)),
+        ],
+    )
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2018-12-31"), ("2025-01-01", "2026-08-17")],
+        failed_intervals=[("2019-01-01", "2024-12-31")],
+    )
+    report = run_gate(root)
+    assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
+    assert len(report["COVERAGE_GAPS"]) == 1
+    assert report["R4A0_READY"] is False
+
+
+def test_e_formal_cli_enforces_pin_without_flag(tmp_path, monkeypatch):
+    import importlib.util
+
+    tools_p = Path(__file__).resolve().parents[1] / "tools"
+    tools_p.joinpath("verify_r4a0_corporate_actions_gate.py").resolve()
+    spec = importlib.util.spec_from_file_location(
+        "verify_r4a0_cli",
+        tools_p
+        / "verify_r4a0_corporate_actions_gate.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    wrong_cc = {
+        "PIN_EXPECTED": CNEQUITY_PIN_SHA,
+        "PIN_ACTUAL": "deadbeef00000000000000000000000000000000",
+        "PIN_MATCH": False,
+        "SCHEMA_MATCH": True,
+        "SOURCE_MATCH": True,
+        "match": False,
+    }
+    monkeypatch.setattr(mod, "contract_check", lambda: wrong_cc)
+    monkeypatch.setattr(mod, "run_gate", lambda root: {"dummy": True})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["verify_r4a0_cli", "--config", "config/cnequity.toml"],
+    )
+    # no --contract-check flag passed: pin enforcement must still fail
+    rc = mod.main()
+    assert rc == 2
