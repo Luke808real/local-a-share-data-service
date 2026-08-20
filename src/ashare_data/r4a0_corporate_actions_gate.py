@@ -12,6 +12,7 @@ fails closed (R4A0_READY=false). UNKNOWN != PASS.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ R4A_WINDOW_END = R3_DATA_AS_OF
 
 CNEQUITY_PIN_SHA = "a18ee0484dfb0801650175471724def3228b8a17"
 DATASET_NAME = "corporate_actions"
+
+# Frozen R3 formal SH/SZ identity reference (r3-identity-receipt.json).
+FORMAL_IDENTITY_N = 5456
+FORMAL_IDENTITY_HASH = "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f"
 
 
 @dataclass(frozen=True)
@@ -126,8 +131,8 @@ def read_manifest_states(root: Path) -> dict[str, Any]:
             "rows_written, error_message, metadata_json FROM ingestion_runs"
         ).fetchall()
         batches = con.execute(
-            "SELECT run_id, batch_id, task_id, dataset, status, window_start, "
-            "window_end, rows_read, rows_written FROM ingestion_batches "
+            "SELECT run_id, batch_id, task_id, dataset, status, symbols_json, "
+            "window_start, window_end, rows_read, rows_written FROM ingestion_batches "
             "WHERE dataset IN (?) OR dataset LIKE ?",
             (DATASET_NAME, "%corporate%"),
         ).fetchall()
@@ -158,11 +163,14 @@ def read_manifest_states(root: Path) -> dict[str, Any]:
     batches_meta = [
         {
             "run_id": b[0],
+            "batch_id": b[1],
+            "task_id": b[2],
             "dataset": b[3],
             "status": b[4],
-            "window_start": b[5],
-            "window_end": b[6],
-            "rows_written": b[8],
+            "symbols_json": b[5],
+            "window_start": b[6],
+            "window_end": b[7],
+            "rows_written": b[9],
         }
         for b in batches
     ]
@@ -275,6 +283,100 @@ def contract_required(cc: dict[str, Any]) -> bool:
     )
 
 
+def identity_hash_for(symbols: list[str]) -> str:
+    """Reproduce the frozen R3 identity hash: sha256 of the sorted symbol
+    list as a compact JSON array (identical to r3_daily identity_hash)."""
+    return hashlib.sha256(
+        json.dumps(sorted(symbols), separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def load_expected_identity(
+    root: Path,
+    *,
+    injected: list[str] | None = None,
+    expected_hash: str | None = None,
+    expected_n: int | None = None,
+) -> dict[str, Any]:
+    """Load the frozen R3 formal SH/SZ identity as the expected symbol scope.
+
+    Default source: unique symbols of the authoritative R3 curated
+    `daily_bars`, whose sorted-compact-json SHA-256 reproduces the frozen
+    r3-identity-receipt `formal_identity_hash` (no provider call, no newly
+    invented identity semantics; historical delisted SH/SZ are included).
+    Any mismatch against the frozen reference is FAIL CLOSED.
+    """
+    if injected is not None:
+        symbols = sorted(set(injected))
+        source = "INJECTED"
+    else:
+        scan = pl.scan_parquet(str(root / "curated/daily_bars/**/*.parquet"))
+        syms = scan.select("symbol").unique().collect()["symbol"].cast(str).to_list()
+        symbols = sorted(set(syms))
+        source = (
+            "CURATED_DAILY_BARS_UNIQUE_SYMBOLS "
+            "(R3 formal SH/SZ identity, verified against "
+            "r3-identity-receipt formal_identity_hash)"
+        )
+    actual_hash = identity_hash_for(symbols)
+    n = len(symbols)
+    n_ok = (expected_n is None) or (n == expected_n)
+    hash_ok = (expected_hash is None) or (actual_hash == expected_hash)
+    ok = bool(n_ok and hash_ok)
+    return {
+        "IDENTITY_STATUS": "PASS" if ok else "FAIL",
+        "EXPECTED_SYMBOL_N": n,
+        "EXPECTED_SYMBOL_HASH": actual_hash,
+        "IDENTITY_SOURCE": source,
+        "identity_ok": ok,
+        "symbols": symbols,
+    }
+
+
+def _safe_list(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    try:
+        v = json.loads(raw)
+        return [str(x) for x in v] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
+def symbol_evidence_chunks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Successful corporate_actions chunks carrying an explicit
+    queried-symbol scope (symbols_json) and a window.
+
+    Evidence safety: failed / warning / incomplete receipts are not admitted;
+    a chunk without an explicit symbol scope proves nothing about which
+    symbols were queried and is skipped for symbol coverage.
+    """
+    chunks: list[dict[str, Any]] = []
+    for b in manifest.get("batches", []):
+        if b.get("status") != "success":
+            continue
+        if b.get("dataset") != DATASET_NAME:
+            continue
+        symbols = _safe_list(b.get("symbols_json"))
+        if not symbols:
+            continue
+        s = _parse_date(b.get("window_start"))
+        e = _parse_date(b.get("window_end"))
+        if s is None or e is None or s > e:
+            continue
+        chunks.append(
+            {
+                "symbols": set(symbols),
+                "start": s,
+                "end": e,
+                "task_id": b.get("task_id"),
+            }
+        )
+    return chunks
+
+
 def evaluate_pin_contract(
     pin: Any,
     schema_keys: list[str],
@@ -312,12 +414,24 @@ def run_gate(
     window_start: date = R4A_WINDOW_START,
     window_end: date = R4A_WINDOW_END,
     contract: CorporateActionsContract = CONTRACT,
+    expected_symbols: list[str] | None = None,
+    expected_identity_hash: str | None = None,
+    expected_identity_n: int | None = None,
 ) -> dict[str, Any]:
     """Run the R4A0 read-only gate against `root`. Never writes to `root`."""
 
     dataset = dataset_dir(root)
     parquet_files = list_parquet(dataset)
     manifest = read_manifest_states(root)
+
+    # ---- IDENTITY (frozen R3 formal SH/SZ scope; FAIL CLOSED on mismatch) --
+    identity = load_expected_identity(
+        root,
+        injected=expected_symbols,
+        expected_hash=expected_identity_hash,
+        expected_n=expected_identity_n,
+    )
+    identity_ok = bool(identity["identity_ok"])
 
     # ---- EXISTS -----------------------------------------------------------
     dataset_exists = len(parquet_files) > 0
@@ -395,7 +509,43 @@ def run_gate(
         and covered_end >= window_end
         and len(gaps) == 0
     )
-    coverage_status = "PASS" if contiguous else "UNKNOWN_PARTIAL"
+    date_coverage_pass = contiguous
+    # ---- SYMBOL COVERAGE: every EXPECTED_SYMBOL must itself have a
+    # successful-receipt interval union that contiguously covers the window.
+    # Event-row presence (or absence) is NOT used for this judgement.
+    chunks = symbol_evidence_chunks(manifest)
+    successfully_covered_n = 0
+    missing_symbols: list[str] = []
+    partial_symbols: list[str] = []
+    for sym in identity["symbols"]:
+        sym_intervals = [
+            (c["start"], c["end"]) for c in chunks if sym in c["symbols"]
+        ]
+        merged_sym = merge_intervals(sym_intervals)
+        gaps_sym = gaps_in_window(merged_sym, window_start, window_end)
+        cs = merged_sym[0][0] if merged_sym else None
+        ce = merged_sym[-1][1] if merged_sym else None
+        sym_covered = bool(
+            cs is not None
+            and ce is not None
+            and cs <= window_start
+            and ce >= window_end
+            and len(gaps_sym) == 0
+        )
+        if sym_covered:
+            successfully_covered_n += 1
+        elif not sym_intervals:
+            missing_symbols.append(sym)
+        else:
+            partial_symbols.append(sym)
+    symbol_coverage_pass = bool(
+        identity_ok
+        and len(identity["symbols"]) > 0
+        and successfully_covered_n == len(identity["symbols"])
+    )
+    coverage_status = (
+        "PASS" if date_coverage_pass and symbol_coverage_pass else "UNKNOWN_PARTIAL"
+    )
 
     # ---- UNIQUENESS (PK = symbol, ex_date, action_type) -------------------
     duplicate_action_n = 0
@@ -448,10 +598,13 @@ def run_gate(
 
     # ---- aggregate ---------------------------------------------------------
     passes = {
+        "IDENTITY_PASS": identity_ok,
         "EXISTS_PASS": exists_status == "PASS",
         "SCHEMA_PASS": schema_status == "PASS",
         "SCOPE_PASS": scope_status == "PASS",
         "COVERAGE_PASS": coverage_status == "PASS",
+        "DATE_COVERAGE_PASS": date_coverage_pass,
+        "SYMBOL_COVERAGE_PASS": symbol_coverage_pass,
         "UNIQUENESS_PASS": uniqueness_status == "PASS",
         "PROVENANCE_PASS": provenance_status == "PASS",
     }
@@ -460,7 +613,16 @@ def run_gate(
     blocker = None
     missing_capability = None
     bounded_next = None
-    if not dataset_exists:
+    if not identity_ok:
+        blocker = "FORMAL_IDENTITY_MISMATCH"
+        missing_capability = (
+            "frozen R3 formal SH/SZ identity not reproducible from the local "
+            f"authoritative artifact (got n={identity['EXPECTED_SYMBOL_N']}, "
+            f"hash={identity['EXPECTED_SYMBOL_HASH']}; frozen reference "
+            f"n={FORMAL_IDENTITY_N}, hash={FORMAL_IDENTITY_HASH})"
+        )
+        bounded_next = "re-verify frozen R3 identity artifact; no bootstrap"
+    elif not dataset_exists:
         blocker = "CORPORATE_ACTIONS_DATASET_NOT_BUILT"
         missing_capability = (
             "corporate_actions curated dataset (no parquet under "
@@ -468,12 +630,20 @@ def run_gate(
         )
         bounded_next = "R4A0_CORPORATE_ACTION_BOUNDED_BOOTSTRAP (Sol decision required)"
     elif not passes["COVERAGE_PASS"]:
-        blocker = "COVERAGE_UNPROVEN"
-        missing_capability = (
-            "historical corporate_actions coverage proof "
-            "(successful corporate_actions ingestion run or watermark)"
+        blocker = (
+            "DATE_COVERAGE_UNPROVEN"
+            if not date_coverage_pass
+            else "SYMBOL_COVERAGE_INCOMPLETE"
         )
-        bounded_next = "bounded corporate_actions bootstrap/backfill with window evidence"
+        missing_capability = (
+            "corporate_actions coverage: a contiguous successful-receipt window "
+            "AND complete per-EXPECTED_SYMBOL coverage of "
+            f"{window_start}..{window_end}"
+        )
+        bounded_next = (
+            "bounded corporate_actions bootstrap/backfill with complete "
+            "window and symbol receipts (Sol decision)"
+        )
     elif not passes["PROVENANCE_PASS"] or not passes["UNIQUENESS_PASS"]:
         blocker = (
             "DATASET_QUALITY_UNPROVEN"
@@ -497,11 +667,22 @@ def run_gate(
 
     return {
         "R4A0_READY": ready,
+        "IDENTITY_STATUS": identity["IDENTITY_STATUS"],
+        "EXPECTED_SYMBOL_N": identity["EXPECTED_SYMBOL_N"],
+        "EXPECTED_SYMBOL_HASH": identity["EXPECTED_SYMBOL_HASH"],
+        "IDENTITY_SOURCE": identity["IDENTITY_SOURCE"],
         "DATASET_EXISTS": dataset_exists,
         "DATASET_PATH": str(dataset),
         "SCHEMA_STATUS": schema_status,
         "SCOPE_STATUS": scope_status,
         "COVERAGE_STATUS": coverage_status,
+        "DATE_COVERAGE_PASS": date_coverage_pass,
+        "SYMBOL_COVERAGE_PASS": symbol_coverage_pass,
+        "SUCCESSFULLY_COVERED_SYMBOL_N": successfully_covered_n,
+        "MISSING_SYMBOL_N": len(missing_symbols),
+        "MISSING_SYMBOL_SAMPLE": missing_symbols[:20],
+        "PARTIAL_SYMBOL_N": len(partial_symbols),
+        "PARTIAL_SYMBOL_SAMPLE": partial_symbols[:20],
         "COVERAGE_INTERVALS": [
             {"start": str(s), "end": str(e)} for s, e in intervals
         ],

@@ -314,3 +314,94 @@ NETWORK_PROVIDER_DATA_FETCH  0
 REAL_ROOT_WRITE       NO
 git diff --check      CLEAN
 ```
+
+---
+
+## 10. SYMBOL-SCOPE COMPLETENESS FIX V03 (post re-review of 2dbfa6b)
+
+Sol's independent re-review found the last P0: coverage validated only the
+date range and did not prove the successful backfill covered the complete
+SH/SZ symbol scope. Coverage is now two-dimensional:
+
+```text
+R4A0_COVERAGE_PASS = DATE_COVERAGE_PASS AND SYMBOL_COVERAGE_PASS
+```
+
+### 10.1 EXPECTED_SYMBOLS authority (frozen R3 identity)
+
+EXPECTED_SYMBOLS is reused from the frozen R3 formal SH/SZ identity, not
+invented. Default source: unique symbols of the authoritative curated
+`daily_bars`; the sorted-compact-json SHA-256 reproduces the frozen
+`r3-identity-receipt formal_identity_hash`. Any mismatch is FAIL CLOSED.
+
+```text
+EXPECTED_SYMBOL_N   5456
+EXPECTED_SYMBOL_HASH 2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f
+IDENTITY_SOURCE    CURATED_DAILY_BARS_UNIQUE_SYMBOLS (verified against
+                    r3-identity-receipt formal_identity_hash)
+```
+
+No provider is called; no active-only universe; no redefinition of identity
+semantics; historical delisted SH/SZ symbols are included in the scope.
+
+### 10.2 Per-symbol coverage via receipt symbols_json
+
+Symbol coverage is decided PER EXPECTED_SYMBOL, never by merging chunks
+globally: each symbol's successful receipt interval union must contiguously
+cover 2016-01-01..2026-08-17. Event-row presence (or absence) is not used:
+
+* 0 event rows + full-window successful receipt for a symbol -> covered (legal
+  sparse event result).
+* rows present but no successful full-window receipt -> NOT covered.
+* failed/warning/incomplete receipts and chunks without an explicit
+  symbols_json scope never contribute.
+
+Manifest reader now also reads `task_id` and `symbols_json` per batch
+(pinned CNEquity chunk receipts: status=success, dataset=corporate_actions,
+symbols_json=queried symbols are the symbol-query authority).
+
+### 10.3 Real-root result (2026-08-20, read-only re-run)
+
+```text
+IDENTITY_STATUS                  PASS
+EXPECTED_SYMBOL_N                5456
+EXPECTED_SYMBOL_HASH             2b1e7202...7be2f (frozen match)
+DATE_COVERAGE_PASS               false   (no corporate receipt)
+SYMBOL_COVERAGE_PASS             false
+SUCCESSFULLY_COVERED_SYMBOL_N    0
+MISSING_SYMBOL_N                 5456
+PARTIAL_SYMBOL_N                 0
+COVERAGE_STATUS                  UNKNOWN_PARTIAL
+DATASET_EXISTS                   false
+R4A0_READY                       false
+BLOCKER                          CORPORATE_ACTIONS_DATASET_NOT_BUILT
+PIN_CHECK_MANDATORY              true
+PIN_BYPASS_AVAILABLE             false
+GATE_EXIT                        1
+```
+
+No bootstrap / backfill / provider fetch / R4A / real-root write / sidecar
+cleanup; `-wal`/`-shm` mtime verified unchanged before/after.
+
+### 10.4 Targeted tests
+
+All 16 prior scenarios retained; 7 new symbol-scope scenarios added (all pass):
+
+```text
+A  1 of 4 expected symbols covered (others only partial/missing)  -> SYMBOL_COVERAGE=false
+B  remaining symbols only in a FAILED chunk (ignored)             -> READY=false
+C  chunk union covers every expected symbol, each full-date       -> SYMBOL_COVERAGE=true
+D  one symbol partial-date receipt                                -> PARTIAL_SYMBOL_N>0
+E  full-window receipt + 0 event rows                             -> symbol STILL covered
+F  parquet rows but no successful full-window receipt             -> symbol NOT covered
+G  R3 formal identity hash mismatch                               -> FAIL CLOSED
+
+TARGETED_TESTS  23 passed
+```
+
+```text
+MARKET_DATA_CHANGED             NO
+NETWORK_PROVIDER_DATA_FETCH     0
+REAL_ROOT_WRITE                 NO
+git diff --check                CLEAN
+```

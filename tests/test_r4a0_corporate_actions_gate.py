@@ -23,6 +23,7 @@ import pytest
 
 from ashare_data.r4a0_corporate_actions_gate import (
     CNEQUITY_PIN_SHA,
+    FORMAL_IDENTITY_HASH,
     evaluate_pin_contract,
     run_gate,
 )
@@ -152,12 +153,19 @@ def write_manifest_batches(
     intervals,
     *,
     failed_intervals=None,
+    ok_symbols=None,
+    failed_symbols=None,
+    chunk_symbols=None,
 ):
     """Write success run (no window metadata) + per-batch coverage windows.
 
     `intervals`: list of (start, end) successful batch windows.
     `failed_intervals`: list of (start, end) batches with status != success
     (must never prove completeness).
+    `ok_symbols` / `failed_symbols`: optional queried-symbol list written into
+    each successful / failed batch's symbols_json (receipted symbol scope).
+    `chunk_symbols`: optional per-successful-batch symbol lists (overrides
+    `ok_symbols` when provided).
     """
     meta = root / "meta"
     meta.mkdir(parents=True, exist_ok=True)
@@ -193,7 +201,13 @@ def write_manifest_batches(
         ("success", intervals),
         ("failed", failed_intervals or []),
     ):
-        for s, e in windows:
+        for k, (s, e) in enumerate(windows):
+            if status == "failed":
+                sym_json = json.dumps(list(failed_symbols or []), ensure_ascii=False)
+            elif chunk_symbols is not None:
+                sym_json = json.dumps(list(chunk_symbols[k] or []), ensure_ascii=False)
+            else:
+                sym_json = json.dumps(list(ok_symbols or []), ensure_ascii=False)
             con.execute(
                 "INSERT INTO ingestion_batches VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
@@ -202,7 +216,7 @@ def write_manifest_batches(
                     "corporate_actions",
                     "corporate_actions",
                     status,
-                    "[]",
+                    sym_json,
                     s,
                     e,
                     0,
@@ -220,8 +234,19 @@ def write_manifest_batches(
     con.close()
 
 
+def gate_at(root, *, expected=("600519.SH", "000001.SZ"), **kw):
+    """Inject a bounded EXPECTED_SYMBOLS scope so tests never depend on the
+    real daily_bars identity artifact."""
+    return run_gate(root, expected_symbols=list(expected), **kw)
+
+
+def full_windows(expected, span=("2016-01-01", "2026-08-17")):
+    return span
+
+
 def test_valid_dataset_pass(tmp_path):
     root = tmp_path / "root"
+    exp = ["600519.SH", "000001.SZ"]
     write_parquet(
         root,
         [
@@ -229,21 +254,27 @@ def test_valid_dataset_pass(tmp_path):
             base_row("000001.SZ", date(2026, 6, 1)),
         ],
     )
-    write_manifest(root)
-    report = run_gate(root)
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=exp)
+    report = gate_at(root, expected=exp)
     assert report["R4A0_READY"] is True
     assert report["SCHEMA_STATUS"] == "PASS"
     assert report["SCOPE_STATUS"] == "PASS"
     assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["DATE_COVERAGE_PASS"] is True
+    assert report["SYMBOL_COVERAGE_PASS"] is True
     assert report["UNIQUENESS_STATUS"] == "PASS"
     assert report["PROVENANCE_STATUS"] == "PASS"
     assert report["ROW_COUNT"] == 2
     assert report["SH_ROWS"] == 1 and report["SZ_ROWS"] == 1 and report["OTHER_ROWS"] == 0
 
+    # A successful full-window receipt with ZERO event rows still proves the
+    # symbol was queried (sparse event data): add 600519 -> 0-rows receipt only
+    # must not be treated as FAIL by row presence. Covered via E test too.
+
 
 def test_dataset_missing_fail(tmp_path):
     root = tmp_path / "root"
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH"])
     assert report["R4A0_READY"] is False
     assert report["DATASET_EXISTS"] is False
     assert report["BLOCKER"] == "CORPORATE_ACTIONS_DATASET_NOT_BUILT"
@@ -253,8 +284,8 @@ def test_required_schema_missing_fail(tmp_path):
     root = tmp_path / "root"
     bad_schema = {k: v for k, v in SCHEMA.items() if k != "cash_dividend"}
     write_parquet(root, [base_row()], schema=bad_schema)
-    write_manifest(root)
-    report = run_gate(root)
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=["600519.SH"])
+    report = gate_at(root, expected=["600519.SH"])
     assert report["R4A0_READY"] is False
     assert report["SCHEMA_STATUS"] == "FAIL"
     assert "cash_dividend" in report["missing_fields"]
@@ -264,8 +295,8 @@ def test_required_schema_missing_fail(tmp_path):
 def test_provenance_missing_fail(tmp_path):
     root = tmp_path / "root"
     write_parquet(root, [base_row(source=None, data_version=None)])
-    write_manifest(root)
-    report = run_gate(root)
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=["600519.SH"])
+    report = gate_at(root, expected=["600519.SH"])
     assert report["R4A0_READY"] is False
     assert report["PROVENANCE_STATUS"] == "FAIL"
     assert report["UNRESOLVED_N"] >= 1
@@ -280,8 +311,8 @@ def test_true_duplicate_action_fail(tmp_path):
             base_row("600519.SH", date(2016, 1, 4), "CASH_DIVIDEND", cash_dividend=0.9),
         ],
     )
-    write_manifest(root)
-    report = run_gate(root)
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=["600519.SH"])
+    report = gate_at(root, expected=["600519.SH"])
     assert report["R4A0_READY"] is False
     assert report["DUPLICATE_ACTION_N"] == 1
     assert report["UNIQUENESS_STATUS"] == "FAIL"
@@ -303,8 +334,8 @@ def test_legal_same_date_multi_component_not_duplicate(tmp_path):
             ),
         ],
     )
-    write_manifest(root)
-    report = run_gate(root)
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=["600519.SH"])
+    report = gate_at(root, expected=["600519.SH"])
     assert report["DUPLICATE_ACTION_N"] == 0
     assert report["DUPLICATE_EXDATE_GROUP_N"] == 1
     assert report["UNIQUENESS_STATUS"] == "PASS"
@@ -321,18 +352,18 @@ def test_coverage_unknown_partial_ready_false(tmp_path):
         ],
     )
     # no manifest, no watermark -> historical coverage unprovable
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH", "000001.SZ"])
     assert report["R4A0_READY"] is False
     assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
-    assert report["BLOCKER"] == "COVERAGE_UNPROVEN"
+    assert report["BLOCKER"] == "DATE_COVERAGE_UNPROVEN"
 
 
 def test_a_partial_successful_run_rejected(tmp_path):
     # successful corporate run whose covered window is only 2026-08-01..2026-08-17
     root = tmp_path / "root"
     write_parquet(root, [base_row("000001.SZ", date(2026, 8, 3))])
-    write_manifest(root, scope=("2026-08-01", "2026-08-17"))
-    report = run_gate(root)
+    write_manifest_batches(root, [("2026-08-01", "2026-08-17")], ok_symbols=["000001.SZ"])
+    report = gate_at(root, expected=["000001.SZ"])
     assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
     assert report["PARTIAL_RUN_REJECTED"] is True
     assert report["R4A0_READY"] is False
@@ -348,9 +379,11 @@ def test_b_explicit_full_window_coverage_pass(tmp_path):
             base_row("000001.SZ", date(2026, 6, 1)),
         ],
     )
-    write_manifest(root, scope=("2016-01-01", "2026-08-17"))
-    report = run_gate(root)
+    exp = ["600519.SH", "000001.SZ"]
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=exp)
+    report = gate_at(root, expected=exp)
     assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["SYMBOL_COVERAGE_PASS"] is True
     assert report["COVERED_WINDOW"] == {"start": "2016-01-01", "end": "2026-08-17"}
     assert report["R4A0_READY"] is True
 
@@ -360,7 +393,7 @@ def test_c_watermark_start_after_window_rejected(tmp_path):
     root = tmp_path / "root"
     write_parquet(root, [base_row("600519.SH", date(2020, 1, 4))])
     write_watermark(root, start="2020-01-01", end="2026-08-17")
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH"])
     assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
     assert report["R4A0_READY"] is False
 
@@ -418,8 +451,9 @@ def test_a_gap_between_successful_runs_rejected(tmp_path):
     write_manifest_batches(
         root,
         [("2016-01-01", "2018-12-31"), ("2025-01-01", "2026-08-17")],
+        ok_symbols=["600519.SH", "000001.SZ"],
     )
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH", "000001.SZ"])
     assert report["CONTIGUOUS_COVERAGE"] is False
     assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
     assert len(report["COVERAGE_GAPS"]) == 1
@@ -439,10 +473,12 @@ def test_b_contiguous_full_union_pass(tmp_path):
     write_manifest_batches(
         root,
         [("2016-01-01", "2020-12-31"), ("2021-01-01", "2026-08-17")],
+        ok_symbols=["600519.SH", "000001.SZ"],
     )
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH", "000001.SZ"])
     assert report["CONTIGUOUS_COVERAGE"] is True
     assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["SYMBOL_COVERAGE_PASS"] is True
     assert report["COVERAGE_GAPS"] == []
     assert report["R4A0_READY"] is True
 
@@ -460,9 +496,11 @@ def test_c_overlapping_full_union_pass(tmp_path):
     write_manifest_batches(
         root,
         [("2016-01-01", "2023-06-30"), ("2020-01-01", "2026-08-17")],
+        ok_symbols=["600519.SH", "000001.SZ"],
     )
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH", "000001.SZ"])
     assert report["COVERAGE_STATUS"] == "PASS"
+    assert report["SYMBOL_COVERAGE_PASS"] is True
     assert report["COVERAGE_GAPS"] == []
     assert report["R4A0_READY"] is True
 
@@ -481,8 +519,9 @@ def test_d_failed_interval_ignored(tmp_path):
         root,
         [("2016-01-01", "2018-12-31"), ("2025-01-01", "2026-08-17")],
         failed_intervals=[("2019-01-01", "2024-12-31")],
+        ok_symbols=["600519.SH", "000001.SZ"],
     )
-    report = run_gate(root)
+    report = gate_at(root, expected=["600519.SH", "000001.SZ"])
     assert report["COVERAGE_STATUS"] == "UNKNOWN_PARTIAL"
     assert len(report["COVERAGE_GAPS"]) == 1
     assert report["R4A0_READY"] is False
@@ -511,7 +550,7 @@ def test_e_formal_cli_enforces_pin_without_flag(tmp_path, monkeypatch):
         "match": False,
     }
     monkeypatch.setattr(mod, "contract_check", lambda: wrong_cc)
-    monkeypatch.setattr(mod, "run_gate", lambda root: {"dummy": True})
+    monkeypatch.setattr(mod, "run_gate", lambda root, **kwargs: {"dummy": True})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -520,3 +559,116 @@ def test_e_formal_cli_enforces_pin_without_flag(tmp_path, monkeypatch):
     # no --contract-check flag passed: pin enforcement must still fail
     rc = mod.main()
     assert rc == 2
+
+
+def test_symbol_scope_a_partial_symbol_set_rejected(tmp_path):
+    # only 1 of several EXPECTED_SYMBOLS has a full-date successful receipt
+    root = tmp_path / "root"
+    expected = ["000001.SH", "000002.SH", "000003.SH", "000004.SH"]
+    write_parquet(root, [base_row("000001.SH", date(2016, 1, 4))])
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=["000001.SH"])
+    report = gate_at(root, expected=expected)
+    assert report["DATE_COVERAGE_PASS"] is True
+    assert report["SYMBOL_COVERAGE_PASS"] is False
+    assert report["MISSING_SYMBOL_N"] == 3
+    assert len(report["MISSING_SYMBOL_SAMPLE"]) == 3
+    assert report["R4A0_READY"] is False
+
+
+def test_symbol_scope_b_failed_chunk_not_counted(tmp_path):
+    # remaining symbols are only in a FAILED chunk -> not counted -> READY=false
+    root = tmp_path / "root"
+    expected = ["600519.SH", "000001.SZ"]
+    write_parquet(root, [base_row("600519.SH", date(2016, 1, 4))])
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2026-08-17")],
+        ok_symbols=["600519.SH"],
+        failed_intervals=[("2016-01-01", "2026-08-17")],
+        failed_symbols=["000001.SZ"],
+    )
+    report = gate_at(root, expected=expected)
+    assert report["SYMBOL_COVERAGE_PASS"] is False
+    assert report["MISSING_SYMBOL_N"] == 1
+    assert report["R4A0_READY"] is False
+
+
+def test_symbol_scope_c_union_covers_all_expected(tmp_path):
+    # successful chunks' union covers every expected symbol, each full-date
+    root = tmp_path / "root"
+    expected = ["600519.SH", "000001.SZ", "000002.SZ"]
+    write_parquet(root, [base_row("000002.SZ", date(2026, 6, 1))])
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2026-08-17"), ("2016-01-01", "2026-08-17")],
+        chunk_symbols=[["600519.SH"], ["000001.SZ", "000002.SZ"]],
+    )
+    report = gate_at(root, expected=expected)
+    assert report["SYMBOL_COVERAGE_PASS"] is True
+    assert report["SUCCESSFULLY_COVERED_SYMBOL_N"] == 3
+    assert report["MISSING_SYMBOL_N"] == 0
+    assert report["R4A0_READY"] is True
+
+
+def test_symbol_scope_d_partial_symbol_rejected(tmp_path):
+    # one symbol only has a partial-date receipt -> PARTIAL_SYMBOL_N > 0
+    root = tmp_path / "root"
+    expected = ["600519.SH", "000001.SZ"]
+    write_parquet(
+        root,
+        [
+            base_row("600519.SH", date(2016, 1, 4)),
+            base_row("000001.SZ", date(2022, 6, 1)),
+        ],
+    )
+    write_manifest_batches(
+        root,
+        [("2016-01-01", "2026-08-17"), ("2020-01-01", "2023-12-31")],
+        chunk_symbols=[["600519.SH"], ["000001.SZ"]],
+    )
+    report = gate_at(root, expected=expected)
+    assert report["SYMBOL_COVERAGE_PASS"] is False
+    assert report["PARTIAL_SYMBOL_N"] == 1
+    assert "000001.SZ" in report["PARTIAL_SYMBOL_SAMPLE"]
+    assert report["R4A0_READY"] is False
+
+
+def test_symbol_scope_e_zero_event_rows_still_covered(tmp_path):
+    # full-window successful receipt for a symbol with ZERO event rows in
+    # parquet must still prove that symbol was queried (sparse event data)
+    root = tmp_path / "root"
+    expected = ["600519.SH", "000001.SZ"]
+    write_parquet(root, [base_row("600519.SH", date(2016, 1, 4))])
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=expected)
+    report = gate_at(root, expected=expected)
+    assert report["SYMBOL_COVERAGE_PASS"] is True
+    assert report["SUCCESSFULLY_COVERED_SYMBOL_N"] == 2
+    assert report["R4A0_READY"] is True
+
+
+def test_symbol_scope_f_rows_without_receipt_fail(tmp_path):
+    # parquet has rows for the symbol but no successful full-window receipt
+    root = tmp_path / "root"
+    expected = ["600519.SH"]
+    write_parquet(root, [base_row("600519.SH", date(2016, 1, 4))])
+    write_manifest_batches(root, [("2020-01-01", "2023-12-31")], ok_symbols=["600519.SH"])
+    report = gate_at(root, expected=expected)
+    assert report["SYMBOL_COVERAGE_PASS"] is False
+    assert report["PARTIAL_SYMBOL_N"] == 1
+    assert report["R4A0_READY"] is False
+
+
+def test_symbol_scope_g_identity_hash_mismatch(tmp_path):
+    # frozen R3 formal identity hash mismatch -> FAIL CLOSED
+    root = tmp_path / "root"
+    write_parquet(root, [base_row("600519.SH", date(2016, 1, 4))])
+    write_manifest_batches(root, [("2016-01-01", "2026-08-17")], ok_symbols=["600519.SH"])
+    report = run_gate(
+        root,
+        expected_symbols=["600519.SH"],
+        expected_identity_hash="0" * 64,
+        expected_identity_n=1,
+    )
+    assert report["R4A0_READY"] is False
+    assert report["IDENTITY_STATUS"] == "FAIL"
+    assert report["BLOCKER"] == "FORMAL_IDENTITY_MISMATCH"

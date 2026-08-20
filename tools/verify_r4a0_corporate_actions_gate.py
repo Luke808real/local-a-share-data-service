@@ -24,6 +24,8 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from ashare_data.r4a0_corporate_actions_gate import (  # noqa: E402
     CNEQUITY_PIN_SHA,
     CONTRACT,
+    FORMAL_IDENTITY_HASH,
+    FORMAL_IDENTITY_N,
     contract_required,
     evaluate_pin_contract,
     run_gate,
@@ -100,7 +102,11 @@ def main() -> int:
     # PINED UPSTREAM CHECK IS MANDATORY for formal execution. There is no
     # skip-pin path; --contract-check above is a no-op kept for compatibility.
     cc = contract_check()
-    report = run_gate(root)
+    report = run_gate(
+        root,
+        expected_identity_hash=FORMAL_IDENTITY_HASH,
+        expected_identity_n=FORMAL_IDENTITY_N,
+    )
     report["config"] = {
         "path": str(config_path),
         "sha256": __import__("hashlib").sha256(config_path.read_bytes()).hexdigest(),
