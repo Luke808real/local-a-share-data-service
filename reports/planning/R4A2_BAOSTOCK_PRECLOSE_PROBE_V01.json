@@ -1,0 +1,84 @@
+{
+  "date": "2026-08-20",
+  "branch": "codex/r4a2-baostock-preclose-probe-v01",
+  "base_head": "31fa2b02baab006394d00bc4a41275bf35979c74",
+  "authority": {
+    "R4A0_READY": true,
+    "ASOF": "2026-08-17",
+    "FORMAL_IDENTITY_N": 5456,
+    "PIN": "a18ee0484dfb0801650175471724def3228b8a17",
+    "method": "bounded Baostock query_history_k_data_plus frequency=d adjustflag=3, fields date,code,preclose,tradestatus"
+  },
+  "BAOSTOCK_HISTORICAL_PRECLOSE_CAPABILITY": "PASS",
+  "capability_probe": {"query_count": 16, "non_null": 16, "fails": 0, "sh_symbols": 2, "sz_symbols": 2, "years": ["2017","2020","2023","2026"]},
+  "SAMPLE_N": 280,
+  "SAMPLE_HASH_NORMAL": "c5e42e0d25cda937f54880de3219c64f6c24c0b84081bf3dfd5891e38f248f0e",
+  "SAMPLE_HASH_EXDATE_IPO_EDGE": "724fd9d17980425108d0f591aa9f8fb942d23f0c58f42a9e46d8408405857e31",
+  "NORMAL": {
+    "N": 50,
+    "EXACT_MATCH_N": 50,
+    "WITHIN_0_01_N": 50,
+    "MISMATCH_N": 0,
+    "MAX_ABS_DIFF": 0.0,
+    "PARITY_STATUS": "PASS"
+  },
+  "EX_DATE_STANDARD": {
+    "N": 100,
+    "EXACT": 88,
+    "WITHIN_0_01": 96,
+    "MISMATCH": 3,
+    "MAX_DIFF": 0.02,
+    "PARITY_STATUS": "PARTIAL",
+    "mismatch_note": "3 mismatches all cash-dividend-only, diffs 0.01-0.02 (rounding/precision) — not differential-dividend signal"
+  },
+  "EX_DATE_MULTI_ACTION": {
+    "N": 50,
+    "EXACT": 44,
+    "WITHIN_0_01": 45,
+    "MISMATCH": 4,
+    "MAX_DIFF": 0.13,
+    "PARITY_STATUS": "PARTIAL",
+    "mismatch_note": "4 mismatches are cash+bonus combinations, diffs 0.02-0.13 (e.g. 688486.SH 0.13) — candidate differential-dividend / basis; NOT auto-claimed; needs official announcement verification (Sol)"
+  },
+  "DIFFERENTIAL_DIVIDEND_COVERAGE_STATUS": "CANDIDATE",
+  "IPO": {
+    "IPO_SAMPLE_N": 40,
+    "PRECLOSE_NON_NULL_N": 40,
+    "PRECLOSE_NULL_N": 0,
+    "CROSSCHECK_REFERENCE_AVAILABLE": true,
+    "canonical_promotion": false,
+    "note": "Baostock preclose usable as crosscheck reference only; NOT canonical issue price"
+  },
+  "WINDOW_EDGE": {
+    "SAMPLE_N": 40,
+    "PRECLOSE_NON_NULL_N": 40,
+    "CROSSCHECK_AVAILABLE": true,
+    "canonical_promotion": false
+  },
+  "SPECIAL": {
+    "note": "only recorded if naturally encountered; no gap/price special inference; blocker stays OPEN"
+  },
+  "PARITY_GATE_FEASIBILITY": "PARTIAL",
+  "EX_RIGHT_DIVIDEND_FEASIBILITY": "PARTIAL",
+  "R4A_IMPLEMENTATION_READY": false,
+  "R4A1_CORRECTION": {
+    "suprerseded": ["PARITY historical reference NOT_AVAILABLE (R4A1)", "EX_RIGHT_DIVIDEND FEASIBLE (assumed, R4A1)"],
+    "replacement": [
+      "Baostock historical preclose is an independent historical CROSSCHECK source (NORMAL parity EXACT; EX_DATE high parity)",
+      "EX_RIGHT_DIVIDEND: formula (OFFICIAL_RULE) holds on 96/100 standard & 45/50 multi within 0.01; residual mismatches need differential-dividend / basis adjudication (Sol) -> PARTIAL"
+    ],
+    "not_modified": "frozen R4 V01.2 EXCHANGE_DISPLAY_PRECLOSE semantic unchanged"
+  },
+  "MARKET_DATA_WRITE": "NO",
+  "sample_composition": {"NORMAL": 50, "EX_DATE_STANDARD": 100, "EX_DATE_MULTI": 50, "IPO": 40, "WINDOW_EDGE": 40},
+  "BLOCKERS": [
+    "EX_DATE residual mismatches (cash+bonus, up to 0.13) need differential-dividend official-announcement verification (Sol decision)",
+    "IPO canonical issue_price authority still missing locally (Baostock preclose is crosscheck, not canonical issue price)",
+    "SPECIAL recognition blocker still open"
+  ],
+  "BOUNDED_NEXT_ACTION": [
+    "Sol decide differential-dividend basis (official announcement) vs accept 0.02-0.13 residual as UNKNOWN bucket",
+    "decide IPO issue-price authority approach; SPECIAL source decision",
+    "then R4A implementation may proceed"
+  ]
+}
