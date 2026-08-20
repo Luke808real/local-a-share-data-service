@@ -1,0 +1,88 @@
+{
+  "date": "2026-08-20",
+  "branch": "codex/r4a1-preclose-contract-feasibility-v01",
+  "base_head": "9d3d25eb7dca0544f1520728e73218f95bce3e70",
+  "R4A0_READY_RECHECK": true,
+  "ASOF": "2026-08-17",
+  "PRECLOSE_SEMANTIC": "EXCHANGE_DISPLAY_PRECLOSE",
+  "NORMAL": {
+    "FEASIBILITY": "FEASIBLE",
+    "REQUIRED_ROW_N": 10709989,
+    "DERIVABLE_ROW_N": 10704533,
+    "UNRESOLVED_ROW_N": 5456,
+    "unresolved_detail": {
+      "first_bar_per_symbol": 5456,
+      "IPO_FIRST_LISTING_DAY": 2645,
+      "LISTED_BEFORE_WINDOW_OR_RELIST_CANDIDATE": 2811,
+      "semantics": "per-symbol previous effective traded close; no cross-symbol / calendar-day / placeholder / volume=0 inference"
+    }
+  },
+  "IPO": {
+    "FEASIBILITY": "BLOCKED",
+    "IPO_FIRST_DAY_N": 2645,
+    "ISSUE_PRICE_AVAILABLE_N": 0,
+    "ISSUE_PRICE_MISSING_N": 2645,
+    "ISSUE_PRICE_SOURCE": "PINNED_LOCAL_NOT_AVAILABLE (CSRC pricing-mechanism rule exists; no historical issue-price field in local/pinned assets)"
+  },
+  "EX_DATE": {
+    "FORMULA_FEASIBILITY": "FEASIBLE",
+    "FORMULA_AUTHORITY": "OFFICIAL_RULE",
+    "pinned_helper_available": false,
+    "EX_DATE_SYMBOL_DAY_N": 36051,
+    "MULTI_ACTION_SAME_DAY_N": 4493,
+    "field_semantics": {
+      "cash_dividend": "per share CNY",
+      "bonus_ratio": "per share, combined 送+转 (TDX xdxr does not split; transfer_ratio rows = 0)",
+      "transfer_ratio": "always 0 in current data (TDX combined)",
+      "allotment_ratio": "per share",
+      "allotment_price": "per share CNY, not a ratio"
+    },
+    "formula": "(prev_close - cash_dividend + allotment_price*allotment_ratio) / (1 + bonus_ratio + allotment_ratio)"
+  },
+  "SPECIAL": {
+    "FEASIBILITY": "BLOCKED",
+    "IDENTIFICATION": "no authoritative local/pinned reference; frozen behavior = preclose NULL + coverage_status UNKNOWN + explicit reason enum",
+    "SPECIAL_REFERENCE_AUTHORITY": "NOT_AVAILABLE",
+    "candidate_note": "gap-reopen rows are NOT classified by gap/price inference (explicitly disallowed)"
+  },
+  "PARITY_GATE": {
+    "FEASIBILITY": "BLOCKED",
+    "CANONICAL_SOURCE": "derived NORMAL previous-close (no independent historical archive)",
+    "CROSSCHECK_ONLY": "TDX security-list pre_close",
+    "LIVE_ONLY": "TDX security-list pre_close (snapshot; not historical full coverage)",
+    "NOT_AVAILABLE": "independent historical pre_close reference",
+    "note": "no sufficient independent historical reference; parity is not fabricated"
+  },
+  "REQUIRED_ROW_N": 10709989,
+  "DAILY_BAR_ROW_N": 10709989,
+  "PK": ["symbol", "trade_date"],
+  "DUPLICATE_PK_N": 0,
+  "MISSING_REQUIRED_ROW_N": 5456,
+  "ASOF_SAFE_DESIGN": "PASS",
+  "FEASIBILITY_MATRIX": {
+    "NORMAL": "FEASIBLE",
+    "IPO": "BLOCKED",
+    "EX_RIGHT_DIVIDEND": "FEASIBLE",
+    "SPECIAL": "BLOCKED",
+    "PARITY_GATE": "BLOCKED"
+  },
+  "R4A_IMPLEMENTATION_READY": false,
+  "BLOCKERS": [
+    "IPO issue-price authority absent from local/pinned assets (2645 first-listing days)",
+    "SPECIAL relist/resumption recognition has no authoritative reference",
+    "PARITY gate has no independent historical pre_close reference (TDX security-list is live-only)"
+  ],
+  "DECISIONS_NEEDED": [
+    "IPA: introduce bounded issue-price authority (acquisition/3rd-party) or accept UNKNOWN for first-listing days",
+    "differential-dividend (差异化分红) per-share computation basis",
+    "rounding/tick semantics for reference price (ROUND_HALF_UP, 0.01)",
+    "SPECIAL: accept NULL+UNKNOWN+reason vs bounded identification source",
+    "PARITY: live-only sample + formula self-consistency transition vs historical pre_close acquisition",
+    "WINDOW_EDGE (2811 first-bar rows listed before window) preclose semantics: UNKNOWN reason accepted?"
+  ],
+  "BOUNDED_NEXT_ACTION": [
+    "Sol adjudicate BLOCKERS/DECISIONS",
+    "issue-price authority and/or historical pre_close parity acquisition would be separate bounded followup tasks",
+    "only after closure can R4A implementation proceed"
+  ]
+}
