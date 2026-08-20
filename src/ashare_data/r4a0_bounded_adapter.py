@@ -160,20 +160,47 @@ def verify_pin() -> dict[str, Any]:
     }
 
 
+def normalize_bounded_identity(idr: dict[str, Any]) -> dict[str, Any]:
+    """Canonical execution-identity contract from a frozen identity result.
+
+    IDENTITY_MATCH is true ONLY when every field is present and consistent:
+    identity_ok is True, IDENTITY_STATUS == "PASS", EXPECTED_SYMBOL_N ==
+    FORMAL_IDENTITY_N, EXPECTED_SYMBOL_HASH == FORMAL_IDENTITY_HASH, and
+    symbols exists with length == FORMAL_IDENTITY_N. Any UNKNOWN / missing /
+    contradictory field is false. This is the single normalizer shared by the
+    bounded adapter and the full-bootstrap orchestrator.
+    """
+    n = idr.get("EXPECTED_SYMBOL_N")
+    h = idr.get("EXPECTED_SYMBOL_HASH")
+    syms = idr.get("symbols")
+    match = bool(
+        idr.get("identity_ok") is True
+        and idr.get("IDENTITY_STATUS") == "PASS"
+        and isinstance(n, int)
+        and n == FORMAL_IDENTITY_N
+        and isinstance(h, str)
+        and h == FORMAL_IDENTITY_HASH
+        and isinstance(syms, list)
+        and len(syms) == FORMAL_IDENTITY_N
+    )
+    return {
+        "FORMAL_IDENTITY_N": FORMAL_IDENTITY_N,
+        "FORMAL_IDENTITY_HASH": FORMAL_IDENTITY_HASH,
+        "IDENTITY_MATCH": match,
+        "IDENTITY_SOURCE": idr.get("IDENTITY_SOURCE"),
+        "symbols": list(syms) if isinstance(syms, list) else [],
+    }
+
+
 def verify_identity(root: Path) -> dict[str, Any]:
-    """Frozen R3 formal identity gate (no provider to rebuild identity)."""
+    """Frozen R3 formal identity gate (no provider to rebuild identity), using
+    the single canonical normalizer."""
     idr = load_expected_identity(
         root,
         expected_hash=FORMAL_IDENTITY_HASH,
         expected_n=FORMAL_IDENTITY_N,
     )
-    return {
-        "FORMAL_IDENTITY_N": idr["EXPECTED_SYMBOL_N"],
-        "FORMAL_IDENTITY_HASH": idr["EXPECTED_SYMBOL_HASH"],
-        "IDENTITY_MATCH": bool(idr["identity_ok"]),
-        "symbols": sorted(idr["symbols"]),
-        "IDENTITY_SOURCE": idr["IDENTITY_SOURCE"],
-    }
+    return normalize_bounded_identity(idr)
 
 
 def validate_bounded_scope(
@@ -301,10 +328,18 @@ def run_bounded_pilot(
 
     # ---- 2) frozen identity gate ------------------------------------------
     ident = identity if identity is not None else verify_identity(root)
+    # Allow either an already-normalized dict or a raw load_expected_identity
+    # result; the single canonical normalizer handles both.
+    if "IDENTITY_MATCH" not in ident:
+        ident = normalize_bounded_identity(ident)
     if not ident.get("IDENTITY_MATCH", False):
         return {
             "STATUS": "FORMAL_IDENTITY_MISMATCH",
-            "identity": {k: v for k, v in ident.items() if k != "symbols"},
+            "identity": {
+                k: v
+                for k, v in ident.items()
+                if k not in ("symbols",)
+            },
         }
 
     # ---- 3) bounded scope + window gate -----------------------------------

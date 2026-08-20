@@ -21,6 +21,7 @@ from ashare_data.r4a0_bounded_adapter import (
     MAX_PILOT_SYMBOL_N,
     WINDOW_END,
     WINDOW_START,
+    normalize_bounded_identity,
     run_bounded_pilot,
 )
 from ashare_data.r4a0_corporate_actions_gate import (
@@ -283,14 +284,21 @@ def run_full_bootstrap(
     for tests only. Real mode: START gate -> chunks (PERIODIC every gate_every)
     -> FINAL gate, with before/after write-boundary checks.
     """
-    ident = identity if identity is not None else load_expected_identity(
+    ident_raw = identity if identity is not None else load_expected_identity(
         root, expected_hash=FORMAL_IDENTITY_HASH, expected_n=FORMAL_IDENTITY_N
     )
-    if not ident.get("identity_ok", False):
+    # Already-canonical (normalized) input is trusted; raw load_expected_identity
+    # results must pass through the single normalizer.
+    ident = (
+        ident_raw
+        if isinstance(ident_raw, dict) and "IDENTITY_MATCH" in ident_raw
+        else normalize_bounded_identity(ident_raw)
+    )
+    if not ident.get("IDENTITY_MATCH", False):
         return {
             "STATUS": "FORMAL_IDENTITY_MISMATCH",
-            "EXPECTED_SYMBOL_N": ident.get("EXPECTED_SYMBOL_N"),
-            "EXPECTED_SYMBOL_HASH": ident.get("EXPECTED_SYMBOL_HASH"),
+            "EXPECTED_SYMBOL_N": ident.get("FORMAL_IDENTITY_N"),
+            "EXPECTED_SYMBOL_HASH": ident.get("FORMAL_IDENTITY_HASH"),
         }
     expected = sorted(ident["symbols"])
     expected_set = set(expected)
@@ -315,7 +323,7 @@ def run_full_bootstrap(
     report: dict[str, Any] = {
         "STATUS": "READY",
         "EXPECTED_SYMBOL_N": len(expected),
-        "EXPECTED_SYMBOL_HASH": ident["EXPECTED_SYMBOL_HASH"],
+        "EXPECTED_SYMBOL_HASH": ident["FORMAL_IDENTITY_HASH"],
         "COVERED_SYMBOL_N": len(covered),
         "REMAINING_SYMBOL_N": len(remaining),
         "CHUNK_SIZE": plan["CHUNK_SIZE"],
@@ -425,12 +433,28 @@ def run_full_bootstrap(
             }
         )
         if not ok:
-            if out.get("CONFIG_INTEGRITY_STATUS") != "OK":
+            early_gate = (
+                "FORMAL_IDENTITY_MISMATCH",
+                "BOUNDED_ADAPTER_BLOCKED_PIN_MISMATCH",
+                "BOUNDED_SCOPE_VIOLATION",
+                "BOUNDED_ADAPTER_BLOCKED_NO_CONFIG",
+            )
+            out_status = out.get("STATUS")
+            if isinstance(out_status, str) and out_status in early_gate:
+                stop_reason = out_status
+            elif (
+                out.get("CONFIG_INTEGRITY_STATUS") is not None
+                and out["CONFIG_INTEGRITY_STATUS"] != "OK"
+            ):
                 stop_reason = "CONFIG_UNKNOWN_OR_CHANGED"
-            elif out.get("receipt_post_check", {}).get("STATUS") != "OK":
+            elif (
+                isinstance(out.get("receipt_post_check"), dict)
+                and out["receipt_post_check"].get("STATUS") is not None
+                and out["receipt_post_check"]["STATUS"] != "OK"
+            ):
                 stop_reason = "RECEIPT_MISMATCH"
             else:
-                stop_reason = out.get("STATUS") or "UNKNOWN"
+                stop_reason = out_status or "UNKNOWN"
             report.update(
                 {
                     "STATUS": "FULL_BOOTSTRAP_STOPPED",

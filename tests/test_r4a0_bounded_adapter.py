@@ -496,6 +496,81 @@ def test_no_direct_downloader_in_source():
     assert 'run_step("corporate_actions"' in src
 
 
+# ---- identity execution contract -----------------------------------------
+def raw_identity_shape(
+    n=None,
+    *,
+    identity_hash=None,
+    identity_ok=True,
+    status="PASS",
+):
+    n = adapter.FORMAL_IDENTITY_N if n is None else n
+    syms = sorted({f"{i:06d}.SH" for i in range(n)})
+    return {
+        "identity_ok": identity_ok,
+        "IDENTITY_STATUS": status,
+        "EXPECTED_SYMBOL_N": n,
+        "EXPECTED_SYMBOL_HASH": (
+            adapter.FORMAL_IDENTITY_HASH if identity_hash is None else identity_hash
+        ),
+        "IDENTITY_SOURCE": "RAW_TEST",
+        "symbols": syms,
+    }
+
+
+def test_canonical_valid_identity_pass():
+    nrm = adapter.normalize_bounded_identity(raw_identity_shape())
+    assert nrm["IDENTITY_MATCH"] is True
+    assert nrm["FORMAL_IDENTITY_N"] == adapter.FORMAL_IDENTITY_N
+    assert nrm["FORMAL_IDENTITY_HASH"] == adapter.FORMAL_IDENTITY_HASH
+    assert len(nrm["symbols"]) == adapter.FORMAL_IDENTITY_N
+
+
+def test_identity_hash_mismatch_reject():
+    nrm = adapter.normalize_bounded_identity(
+        raw_identity_shape(identity_hash="0" * 64)
+    )
+    assert nrm["IDENTITY_MATCH"] is False
+
+
+def test_identity_n_mismatch_reject():
+    nrm = adapter.normalize_bounded_identity(
+        raw_identity_shape(n=adapter.FORMAL_IDENTITY_N - 1)
+    )
+    assert nrm["IDENTITY_MATCH"] is False
+
+
+def test_identity_missing_identity_ok_reject():
+    raw = raw_identity_shape()
+    del raw["identity_ok"]
+    assert adapter.normalize_bounded_identity(raw)["IDENTITY_MATCH"] is False
+
+
+def test_identity_symbols_length_mismatch_reject():
+    raw = raw_identity_shape()
+    raw["symbols"] = raw["symbols"][: adapter.FORMAL_IDENTITY_N - 1]
+    assert adapter.normalize_bounded_identity(raw)["IDENTITY_MATCH"] is False
+
+
+def test_real_identity_shape_passes_real_adapter_identity_scope_gate(tmp_path):
+    # Real load_expected_identity-shaped dict -> canonical normalizer -> the
+    # real run_bounded_pilot must pass its identity gate and bounded-scope gate
+    # (no FORMAL_IDENTITY_MISMATCH), and must NOT enter the provider.
+    shape = raw_identity_shape()
+    two = shape["symbols"][:2]
+    report = adapter.run_bounded_pilot(
+        two,
+        root=tmp_path / "root",
+        cfg=cfg_factory(),
+        dry_run=True,
+        identity=shape,
+    )
+    assert report["STATUS"] != "FORMAL_IDENTITY_MISMATCH"
+    assert report["STATUS"] == "READY"
+    assert report["DRY_RUN_STATUS"] == "OK"
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "NO"
+
+
 # ---- CLI mode tests --------------------------------------------------------
 def _load_cli():
     import importlib.util

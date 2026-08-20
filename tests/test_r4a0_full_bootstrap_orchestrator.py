@@ -895,3 +895,36 @@ def test_zero_remaining_real_telemetry_no_writes(tmp_path):
     assert r["MANIFEST_WRITE"] == "NO"
     assert r["REAL_ROOT_WRITE"] == "NO"
     assert r["NETWORK_PROVIDER_DATA_FETCH"] == "NO"
+
+
+# ---- identity execution contract (orchestrator side) ----------------------
+def test_early_identity_mismatch_stop_reason_preserved(tmp_path):
+    ident = make_identity(30)
+
+    def no_config_adapter(symbols, **kwargs):
+        return {"STATUS": "FORMAL_IDENTITY_MISMATCH"}  # no CONFIG_INTEGRITY_STATUS
+
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=no_config_adapter,
+        run_gate_fn=gate_false, config_path=tmp_config(tmp_path),
+    )
+    assert r["STATUS"] == "FULL_BOOTSTRAP_STOPPED"
+    assert r["stop_reason"] == "FORMAL_IDENTITY_MISMATCH"
+
+
+def test_missing_config_integrity_not_misclassified(tmp_path):
+    # adapter early-gate status without CONFIG_INTEGRITY_STATUS must not be
+    # classified as CONFIG_UNKNOWN_OR_CHANGED
+    ident = make_identity(30)
+
+    def no_config_adapter(symbols, **kwargs):
+        return {"STATUS": "FORMAL_IDENTITY_MISMATCH"}
+
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=no_config_adapter,
+        run_gate_fn=gate_false, config_path=tmp_config(tmp_path),
+    )
+    assert r["stop_reason"] == "FORMAL_IDENTITY_MISMATCH"
+    assert r["stop_reason"] != "CONFIG_UNKNOWN_OR_CHANGED"

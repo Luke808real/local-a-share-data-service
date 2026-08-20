@@ -274,3 +274,73 @@ NETWORK/MANIFEST_WRITE/REAL_ROOT_WRITE NO  EXECUTION_STARTED false
 TARGETED_TESTS  52 (orchestrator) + 42 (adapter) + 23 (gate) = 117 passed
 GIT_DIFF_CHECK  CLEAN
 ```
+
+---
+
+## 10. IDENTITY EXECUTION CONTRACT FIX (post real-run chunk-1 failure)
+
+The real full-bootstrap execution exposed an orchestrator↔adapter identity-dict
+contract mismatch (`load_expected_identity` dict lacks the `IDENTITY_MATCH` key
+the adapter checks) plus a `stop_reason` misclassification. Both fixed:
+
+### 10.1 Canonical normalizer
+
+`normalize_bounded_identity(idr)` (in `r4a0_bounded_adapter.py`) is the single
+normalizer. `IDENTITY_MATCH=true` ONLY when all of: `identity_ok is True`,
+`IDENTITY_STATUS == "PASS"`, `EXPECTED_SYMBOL_N == 5456`,
+`EXPECTED_SYMBOL_HASH == 2b1e7202...`, and `symbols` length == 5456. Any
+missing/UNKNOWN/contradictory field -> false (no loose OR-across-fields PASS).
+Output is a fixed canonical dict.
+
+### 10.2 Adapter reuses it
+
+`verify_identity(root)` now does `load_expected_identity(...)` ->
+`normalize_bounded_identity(...)`; `run_bounded_pilot` accepts either a
+canonical dict (has `IDENTITY_MATCH`) or a raw identity result and normalizes
+raw input through the same helper.
+
+### 10.3 Orchestrator uses the same normalizer
+
+The orchestrator normalizes its `load_expected_identity` result before using
+it, and passes the canonical dict to each `run_bounded_pilot` call — never the
+raw gate dict. This removes the per-chunk `FORMAL_IDENTITY_MISMATCH`
+false-failure and avoids rescans. Field references use the canonical keys.
+
+### 10.4 stop_reason classification
+
+Adapter early-gate statuses (`FORMAL_IDENTITY_MISMATCH`,
+`BOUNDED_ADAPTER_BLOCKED_PIN_MISMATCH`, `BOUNDED_SCOPE_VIOLATION`,
+`BOUNDED_ADAPTER_BLOCKED_NO_CONFIG`) are preserved verbatim. `CONFIG_UNKNOWN_OR_
+CHANGED` is only assigned when `CONFIG_INTEGRITY_STATUS` is actually present
+and != OK; `RECEIPT_MISMATCH` only when `receipt_post_check.STATUS` is present
+and != OK.
+
+### 10.5 Regression tests
+
+Added canonical-valid PASS / hash mismatch / N mismatch / missing
+`identity_ok` / symbols-length mismatch / real shape -> real `run_bounded_pilot`
+identity+scope gate PASS (no provider) / early-identity stop_reason preserved /
+missing `CONFIG_INTEGRITY_STATUS` not misclassified. All suites re-run clean:
+
+```text
+TARGETED_TESTS  54 (orchestrator) + 48 (adapter) + 23 (gate) = 125 passed
+GIT_DIFF_CHECK  CLEAN
+```
+
+Real-config `--dry-run` unchanged: EXPECTED 5456 / COVERED 24 / REMAINING 5432 /
+CHUNK_COUNT 227 / PLAN_HASH 9d34dd4b... / NO write / NO network.
+
+Fixed state:
+
+```text
+R3_SHSZ_CLOSEOUT=FROZEN
+R4A0_GATE_CODE_AUDIT=PASS
+R4A0_BOUNDED_ADAPTER_CODE_AUDIT=PASS
+R4A0_REAL_PILOT_AUDIT=PASS
+R4A0_FULL_BOOTSTRAP_ORCHESTRATOR_CODE_AUDIT=PASS
+R4A0_READY=false
+FULL_BOOTSTRAP_EXECUTION=FORBIDDEN_PENDING_SOL_IDENTITY_FIX_AUDIT
+R4A_PRECLOSE_EXECUTION=FORBIDDEN
+DAILY_READY=FALSE BJ_EXTENSION=DEFERRED
+PRODUCTION=false FORWARD=false TRADEPLAN=false
+```
