@@ -201,3 +201,76 @@ PROVIDER_STEP_ENTERED NO
 TARGETED_TESTS  40 (orchestrator) + 42 (adapter) + 23 (gate) = 105 passed
 GIT_DIFF_CHECK  CLEAN
 ```
+
+---
+
+## 9. FINAL FAIL-CLOSED / TERMINATION FIX V02 (post re-review of 3a94455)
+
+### 9.1 CONFIG UNKNOWN fails closed
+
+Removed the `before is None or after is None -> ok` bug.
+`CONFIG_BOUNDARY_STATUS = OK` only when before and after both exist and are
+equal. A missing side or hash failure is `UNKNOWN`; a mismatch is `CHANGED`.
+Any non-OK status forbids `FULL_BOOTSTRAP_COMPLETE`. Tested: before-None /
+after-None / both-None -> not complete; equal non-null -> OK.
+
+### 9.2 Centralized termination boundary
+
+Every real-execution exit path now runs `apply_write_boundary` (records
+`PROTECTED_HASH_AFTER` + `CONFIG_SHA_AFTER` and compares): chunk incomplete,
+adapter error, receipt mismatch, config unknown/changed, mid-run manifest
+failure, PERIODIC_GATE_FAILURE, GATE_EXECUTION_FAILURE, normal incomplete and
+normal complete. A breach makes `WRITE_BOUNDARY_BREACH` win and preserves the
+original reason in `ORIGINAL_STOP_REASON`. START gate failure occurs before
+any adapter call -> `EXECUTION_STARTED=false` (no real-data-write claim), while
+config/protected before evidence is retained.
+
+### 9.3 Mid-run manifest failure stops
+
+The `except: covered=covered; continue` path is deleted. A manifest reload
+failure (or WAL pending) -> `MANIFEST_READ_FAILURE` + `stop_chunk_index`, no
+next adapter chunk, boundary finalizer runs, no sidecar cleanup. Tested:
+chunk1 success -> reload raises -> adapter calls == 1 -> boundary after recorded.
+
+### 9.4 Unknown receipt symbol from any trusted receipt
+
+Unknown-symbol detection now scans the union of ALL successful
+`corporate_actions_chunk` `symbols_json` (any window) against the frozen
+identity, so a partial-window successful receipt carrying an out-of-identity
+symbol fails closed (`UNKNOWN_RECEIPT_SYMBOL`), not only full-coverage rows.
+
+### 9.5 CLI exit contract
+
+`READY` and `FULL_BOOTSTRAP_COMPLETE` -> exit 0; every other terminal status
+(INCOMPLETE / STOPPED / WRITE_BOUNDARY_BREACH / GATE_EXECUTION_FAILURE /
+MANIFEST_READ_FAILURE / START_GATE_FAILURE / PERIODIC_GATE_FAILURE /
+CONFIG_BOUNDARY_UNKNOWN) -> nonzero. Tested: COMPLETE -> 0, INCOMPLETE -> != 0.
+
+### 9.6 Telemetry cleanup
+
+Zero-remaining real resume performs only a read-only FINAL gate, so it reports
+`EXECUTION_STARTED=false`, `MANIFEST_WRITE=NO`, `REAL_ROOT_WRITE=NO`,
+`NETWORK_PROVIDER_DATA_FETCH=NO`, `PROVIDER_STEP_ENTERED=NO` — no fabricated
+YES. Ordinary real chunks set the fields per real semantics once started.
+
+### 9.7 Tests / real-config dry-run
+
+`tests/test_r4a0_full_bootstrap_orchestrator.py` grew to **52 targeted tests**
+(prior 40 + config before/after/both-None + equal-passes + chunk-failure-after +
+periodic-failure-after + final-gate-exception-after + mid-run-manifest-stop +
+partial-window-unknown-receipt + CLI complete/incomplete exit + zero-remaining
+telemetry). Existing adapter (42) + gate (23) re-run clean.
+Total: **117 passed**.
+
+Real-config `--dry-run` unchanged:
+
+```text
+EXPECTED 5456 / COVERED 24 / REMAINING 5432 / CHUNK_COUNT 227
+CHUNK_PLAN_HASH 9d34dd4b214945948edee3a1d584b31c7c5124c92545e354b9af41c049da6348
+NETWORK/MANIFEST_WRITE/REAL_ROOT_WRITE NO  EXECUTION_STARTED false
+```
+
+```text
+TARGETED_TESTS  52 (orchestrator) + 42 (adapter) + 23 (gate) = 117 passed
+GIT_DIFF_CHECK  CLEAN
+```

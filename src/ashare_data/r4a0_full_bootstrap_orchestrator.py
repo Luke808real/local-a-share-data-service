@@ -160,6 +160,44 @@ def _check_unknown_receipt_symbols(covered: list[str], expected: set[str]) -> li
     return [s for s in covered if s not in expected]
 
 
+def compute_queried_symbols(rows: list[dict[str, Any]]) -> list[str]:
+    """Union of symbols_json across ALL successful corporate_actions_chunk
+    receipts regardless of window. Any trusted successful queried scope must
+    stay inside the frozen identity (partial-window successful receipts
+    included)."""
+    queried: set[str] = set()
+    for b in rows:
+        if b.get("task_id") != "corporate_actions_chunk":
+            continue
+        if b.get("dataset") != "corporate_actions":
+            continue
+        if b.get("status") != "success":
+            continue
+        raw = b.get("symbols_json")
+        syms: list[str] = []
+        if isinstance(raw, str):
+            try:
+                syms = json.loads(raw) or []
+            except Exception:
+                syms = []
+        elif isinstance(raw, list):
+            syms = [str(s) for s in raw]
+        queried.update(syms)
+    return sorted(queried)
+
+
+def unknown_queried_symbols(queried: list[str], expected: set[str]) -> list[str]:
+    return [s for s in queried if s not in expected]
+
+
+def config_boundary_status(before: str | None, after: str | None) -> str:
+    """OK only when both hashes exist and are equal; missing either side is
+    UNKNOWN (fail closed, NOT PASS); a mismatch is CHANGED."""
+    if before is None or after is None:
+        return "UNKNOWN"
+    return "CHANGED" if before != after else "OK"
+
+
 def default_formal_gate(root: Path) -> dict[str, Any]:
     """Production formal gate: the audited r4a0 run_gate with frozen identity
     and window wired in. Never a caller-injected fake in production."""
@@ -261,7 +299,8 @@ def run_full_bootstrap(
     except Exception as exc:
         return {"STATUS": "MANIFEST_READ_FAILURE", "error": str(exc)}
     covered = compute_covered_symbols(receipts)
-    unknown = _check_unknown_receipt_symbols(covered, expected_set)
+    queried = compute_queried_symbols(receipts)
+    unknown = unknown_queried_symbols(queried, expected_set)
     if unknown:
         return {
             "STATUS": "UNKNOWN_RECEIPT_SYMBOL",
@@ -292,6 +331,9 @@ def run_full_bootstrap(
         "PROTECTED_HASH_AFTER": None,
         "config_sha256_before": config_sha_before,
         "config_sha256_after": None,
+        "CONFIG_BOUNDARY_STATUS": None,
+        "ORIGINAL_STOP_REASON": None,
+        "EXECUTION_STARTED": False,
     }
     if dry_run or not plan["chunks"]:
         report["DRY_RUN_STATUS"] = "OK" if dry_run else "N/A"
@@ -301,11 +343,9 @@ def run_full_bootstrap(
         report["PROVIDER_STEP_ENTERED"] = "NO"
         report["NETWORK_PROVIDER_REQUEST_COUNT"] = "UNVERIFIED"
         if not dry_run and not plan["chunks"]:
-            # zero-remaining real resume: straight to the FINAL formal gate.
-            report["MANIFEST_WRITE"] = "YES"
-            report["REAL_ROOT_WRITE"] = "YES"
-            report["NETWORK_PROVIDER_DATA_FETCH"] = "UNKNOWN"
-            report["NETWORK_PROVIDER_REQUEST_COUNT"] = "UNVERIFIED"
+            # zero-remaining real resume: only a read-only FINAL formal gate.
+            # No adapter / provider / manifest write happened, so telemetry
+            # stays NO and EXECUTION_STARTED stays false.
             return _finalize_report(
                 report, gate_fn, root, config_sha_before, protected_before, config_path
             )
@@ -329,8 +369,11 @@ def run_full_bootstrap(
                 "start_gate": start_gate,
             }
         )
+        # no adapter ran yet and no real data was written
+        report["EXECUTION_STARTED"] = False
         return report
     report["start_gate"] = start_gate
+    report["EXECUTION_STARTED"] = True
 
     progress: list[dict[str, Any]] = []
     success_count = 0
@@ -355,8 +398,20 @@ def run_full_bootstrap(
         )
         try:
             covered_now = compute_covered_symbols(load_chunk_receipts(manifest_path))
-        except Exception:
-            covered_now = covered
+        except Exception as exc:
+            report.update(
+                {
+                    "STATUS": "MANIFEST_READ_FAILURE",
+                    "stop_reason": "MANIFEST_READ_FAILURE",
+                    "stop_chunk_index": chunk_meta["index"],
+                    "error": str(exc),
+                    "progress": progress,
+                    "periodic_gates": periodic_gates,
+                }
+            )
+            return apply_write_boundary(
+                report, root, config_sha_before, protected_before, config_path
+            )
         progress.append(
             {
                 "CHUNK_INDEX": chunk_meta["index"],
@@ -386,7 +441,9 @@ def run_full_bootstrap(
                     "periodic_gates": periodic_gates,
                 }
             )
-            return report
+            return apply_write_boundary(
+                report, root, config_sha_before, protected_before, config_path
+            )
         success_count += 1
         if success_count % gate_every == 0:
             periodic = run_gate_safely(gate_fn, root)
@@ -402,13 +459,41 @@ def run_full_bootstrap(
                         "periodic_gates": periodic_gates,
                     }
                 )
-                return report
+                return apply_write_boundary(
+                    report, root, config_sha_before, protected_before, config_path
+                )
     report["progress"] = progress
     report["periodic_gates"] = periodic_gates
     report["COVERED_SYMBOL_N"] = len(covered_now)
     return _finalize_report(
         report, gate_fn, root, config_sha_before, protected_before, config_path
     )
+
+
+def apply_write_boundary(
+    report: dict[str, Any],
+    root: Path,
+    config_sha_before: str | None,
+    protected_before: str,
+    config_path: Path | None,
+) -> dict[str, Any]:
+    """Central termination boundary for every real-execution exit path:
+    record PROTECTED_HASH_AFTER + CONFIG_SHA_AFTER and compare. A breach makes
+    WRITE_BOUNDARY_BREACH win over the original stop reason (preserved in
+    ORIGINAL_STOP_REASON)."""
+    config_sha_after = config_sha(config_path)
+    protected_after = protected_inventory_hash(root)
+    report["PROTECTED_HASH_AFTER"] = protected_after
+    report["config_sha256_after"] = config_sha_after
+    report["CONFIG_BOUNDARY_STATUS"] = config_boundary_status(
+        config_sha_before, config_sha_after
+    )
+    if protected_after != protected_before or report["CONFIG_BOUNDARY_STATUS"] == "CHANGED":
+        if report.get("STATUS") != "WRITE_BOUNDARY_BREACH":
+            report["ORIGINAL_STOP_REASON"] = report.get("STATUS")
+        report["STATUS"] = "WRITE_BOUNDARY_BREACH"
+        report["FULL_BOOTSTRAP_COMPLETE"] = False
+    return report
 
 
 def _finalize_report(
@@ -419,25 +504,26 @@ def _finalize_report(
     protected_before: str,
     config_path: Path | None,
 ) -> dict[str, Any]:
-    """FINAL formal gate + before/after write boundary for real execution."""
+    """FINAL formal gate + write boundary for real execution.
+
+    boundary is checked on every exit; CONFIG_BOUNDARY_STATUS!=OK fails closed
+    (UNKNOWN/CHANGED can never complete). Only OK + R4A0_READY=true completes.
+    """
+    report = apply_write_boundary(
+        report, root, config_sha_before, protected_before, config_path
+    )
+    if report["STATUS"] == "WRITE_BOUNDARY_BREACH":
+        return report
+    if report.get("CONFIG_BOUNDARY_STATUS") != "OK":
+        # config unknown/changed is fail-closed even if everything else passed
+        if report["CONFIG_BOUNDARY_STATUS"] == "UNKNOWN":
+            report["STATUS"] = "CONFIG_BOUNDARY_UNKNOWN"
+        report["FULL_BOOTSTRAP_COMPLETE"] = False
+        return report
     final_gate = run_gate_safely(gate_fn, root)
     report["final_formal_gate"] = final_gate
     if final_gate.get("__error__"):
         report["STATUS"] = "GATE_EXECUTION_FAILURE"
-        report["FULL_BOOTSTRAP_COMPLETE"] = False
-        return report
-    config_sha_after = config_sha(config_path)
-    protected_after = protected_inventory_hash(root)
-    report["config_sha256_after"] = config_sha_after
-    report["PROTECTED_HASH_AFTER"] = protected_after
-    config_ok = (
-        config_sha_before is None
-        or config_sha_after is None
-        or config_sha_before == config_sha_after
-    )
-    boundary_ok = protected_after == protected_before and config_ok
-    if not boundary_ok:
-        report["STATUS"] = "WRITE_BOUNDARY_BREACH"
         report["FULL_BOOTSTRAP_COMPLETE"] = False
         return report
     complete = final_gate.get("R4A0_READY") is True

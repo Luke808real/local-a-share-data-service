@@ -65,7 +65,8 @@ def main() -> int:
     report["FIRST_3_CHUNK_DETAIL"] = chunks[:3] if chunks else []
     report["LAST_3_CHUNK_DETAIL"] = chunks[-3:] if chunks else []
     print(json.dumps(report, indent=2, default=str))
-    return 0 if report.get("STATUS") == "READY" else 1
+    ok = report.get("STATUS") in ("READY", "FULL_BOOTSTRAP_COMPLETE")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

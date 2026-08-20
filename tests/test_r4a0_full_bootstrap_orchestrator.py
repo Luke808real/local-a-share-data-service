@@ -40,6 +40,12 @@ def cfg_factory():
     return SimpleNamespace(failover_enabled=True)
 
 
+def tmp_config(tmp_path):
+    p = tmp_path / "cnequity.toml"
+    p.write_text('root = "/tmp/orchestrator-test"\n', encoding="utf-8")
+    return p
+
+
 def _add_chunk(m, run_id, symbols, status="success", window=("2016-01-01", "2026-08-17")):
     import uuid
 
@@ -271,6 +277,7 @@ def test_exec_reachable_under_fake_adapter_complete(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
     )
     assert ad.calls
     assert r["STATUS"] == "FULL_BOOTSTRAP_COMPLETE"
@@ -284,6 +291,7 @@ def test_successful_chunk_advances(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert len(ad.calls) == 2  # 30 -> chunk 24 + chunk 6
     assert r["STATUS"] == "FULL_BOOTSTRAP_INCOMPLETE"
@@ -307,6 +315,7 @@ def test_incomplete_chunk_stops_immediately(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert len(ad.calls) == 2  # stopped at second chunk
     assert r["STATUS"] == "FULL_BOOTSTRAP_STOPPED"
@@ -327,6 +336,7 @@ def test_receipt_mismatch_stops(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert len(ad.calls) == 1
     assert r["STATUS"] == "FULL_BOOTSTRAP_STOPPED"
@@ -346,6 +356,7 @@ def test_config_unknown_stops(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert len(ad.calls) == 1
     assert r["STATUS"] == "FULL_BOOTSTRAP_STOPPED"
@@ -401,6 +412,7 @@ def test_final_gate_false_not_complete(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert r["STATUS"] == "FULL_BOOTSTRAP_INCOMPLETE"
     assert r["FULL_BOOTSTRAP_COMPLETE"] is False
@@ -413,6 +425,7 @@ def test_final_gate_true_complete(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
     )
     assert r["STATUS"] == "FULL_BOOTSTRAP_COMPLETE"
     assert r["FULL_BOOTSTRAP_COMPLETE"] is True
@@ -434,13 +447,13 @@ def _load_cli():
     return mod
 
 
-def _cli_run(monkeypatch, argv):
+def _cli_run(monkeypatch, argv, report=None):
     mod = _load_cli()
     calls = []
 
     def fake_orch(*args, **kwargs):
         calls.append({"args": args, "kwargs": kwargs})
-        return {"STATUS": "READY"}
+        return report if report is not None else {"STATUS": "READY"}
 
     monkeypatch.setattr(mod, "run_full_bootstrap", fake_orch)
     monkeypatch.setattr("sys.argv", ["full_bootstrap_cli"] + argv)
@@ -493,6 +506,7 @@ def test_production_default_gate_wired(tmp_path, monkeypatch):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=None,
+        config_path=tmp_config(tmp_path),
     )
     assert r["STATUS"] == "FULL_BOOTSTRAP_COMPLETE"
     assert seen  # default (production) gate was actually invoked
@@ -516,6 +530,7 @@ def test_start_gate_correctness_blocker_stops_before_adapter(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=bad_gate,
+        config_path=tmp_config(tmp_path),
     )
     assert r["STATUS"] == "START_GATE_FAILURE"
     assert ad.calls == []
@@ -534,6 +549,7 @@ def test_periodic_gate_every_10(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=cov_gate, gate_every=2,
+        config_path=tmp_config(tmp_path),
     )
     # chunks = ceil(250/24)=11; start(1) + periodic at 2,4,6,8,10 (5) + final(1)
     assert r["STATUS"] == "FULL_BOOTSTRAP_INCOMPLETE"
@@ -559,6 +575,7 @@ def test_periodic_gate_correctness_failure_stops(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=flaky_gate, gate_every=1,
+        config_path=tmp_config(tmp_path),
     )
     assert r["STATUS"] == "PERIODIC_GATE_FAILURE"
     assert "SCHEMA" in r["periodic_blockers"]
@@ -572,6 +589,7 @@ def test_zero_remaining_resume_complete_with_gate_true(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
     )
     assert ad.calls == []
     assert r["STATUS"] == "FULL_BOOTSTRAP_COMPLETE"
@@ -586,6 +604,7 @@ def test_zero_remaining_resume_incomplete_with_gate_false(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert ad.calls == []
     assert r["STATUS"] == "FULL_BOOTSTRAP_INCOMPLETE"
@@ -599,6 +618,7 @@ def test_real_telemetry_not_no(tmp_path):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
     )
     assert r["MANIFEST_WRITE"] == "YES"
     assert r["REAL_ROOT_WRITE"] == "YES"
@@ -620,6 +640,7 @@ def test_protected_dataset_mutation_boundary_breach(tmp_path, monkeypatch):
         tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
         manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
         run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
     )
     assert r["STATUS"] == "WRITE_BOUNDARY_BREACH"
     assert r["FULL_BOOTSTRAP_COMPLETE"] is False
@@ -674,3 +695,203 @@ def test_manifest_wal_pending_fail_closed(tmp_path):
         manifest_path=tmp_path / "manifest.db",
     )
     assert r["STATUS"] == "MANIFEST_READ_FAILURE"
+
+
+# ---- V02 termination / config fail-closed ---------------------------------
+def test_config_before_none_not_complete(tmp_path):
+    ident = make_identity(10)
+    ad = FakeAdapter()
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_true,
+        config_path=None,
+    )
+    assert r["CONFIG_BOUNDARY_STATUS"] == "UNKNOWN"
+    assert r["STATUS"] == "CONFIG_BOUNDARY_UNKNOWN"
+    assert r["FULL_BOOTSTRAP_COMPLETE"] is False
+
+
+def test_config_after_none_not_complete(tmp_path, monkeypatch):
+    ident = make_identity(10)
+    ad = FakeAdapter()
+    seq = {"n": 0}
+
+    def fake_sha(path):
+        seq["n"] += 1
+        return "AA" if seq["n"] == 1 else None  # before ok, after missing
+
+    monkeypatch.setattr(orch, "config_sha", fake_sha)
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
+    )
+    assert r["CONFIG_BOUNDARY_STATUS"] == "UNKNOWN"
+    assert r["FULL_BOOTSTRAP_COMPLETE"] is False
+
+
+def test_config_both_none_not_complete(tmp_path):
+    ident = make_identity(10)
+    ad = FakeAdapter()
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_true,
+        config_path=None,
+    )
+    assert r["CONFIG_BOUNDARY_STATUS"] == "UNKNOWN"
+    assert r["FULL_BOOTSTRAP_COMPLETE"] is False
+
+
+def test_config_equal_passes(tmp_path):
+    ident = make_identity(10)
+    ad = FakeAdapter()
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
+    )
+    assert r["CONFIG_BOUNDARY_STATUS"] == "OK"
+    assert r["STATUS"] == "FULL_BOOTSTRAP_COMPLETE"
+
+
+def test_chunk_failure_still_records_boundary_after(tmp_path):
+    ident = make_identity(30)
+    ad = FakeAdapter(
+        fails_at=1,
+        result_after={
+            "STATUS": "PILOT_INCOMPLETE",
+            "PILOT_COMPLETE": False,
+            "receipt_post_check": {"STATUS": "MISMATCH"},
+            "CONFIG_INTEGRITY_STATUS": "OK",
+        },
+    )
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
+    )
+    assert r["STATUS"] == "FULL_BOOTSTRAP_STOPPED"
+    assert r["PROTECTED_HASH_AFTER"] is not None
+    assert r["config_sha256_after"] is not None
+
+
+def test_periodic_failure_still_records_boundary_after(tmp_path):
+    ident = make_identity(30)
+    ad = FakeAdapter()
+    seq = {"n": 0}
+
+    def flaky(root=None):
+        seq["n"] += 1
+        if seq["n"] == 2:
+            return {"R4A0_READY": False, "SCHEMA_STATUS": "FAIL"}
+        return {"R4A0_READY": False}
+
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=flaky, gate_every=1,
+        config_path=tmp_config(tmp_path),
+    )
+    assert r["STATUS"] == "PERIODIC_GATE_FAILURE"
+    assert r["PROTECTED_HASH_AFTER"] is not None
+
+
+def test_final_gate_exception_still_records_boundary_after(tmp_path):
+    ident = make_identity(10)
+    ad = FakeAdapter()
+    seq = {"n": 0}
+
+    def failable(root=None):
+        seq["n"] += 1
+        if seq["n"] >= 2:
+            raise RuntimeError("final gate boom")
+        return {"R4A0_READY": False}
+
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=failable,
+        config_path=tmp_config(tmp_path),
+    )
+    assert r["STATUS"] == "GATE_EXECUTION_FAILURE"
+    assert r["PROTECTED_HASH_AFTER"] is not None
+
+
+def test_midrun_manifest_read_failure_stops_after_current_chunk(tmp_path, monkeypatch):
+    ident = make_identity(30)
+    ad = FakeAdapter()
+    real_load = orch.load_chunk_receipts
+    seq = {"n": 0}
+
+    def flaky_load(manifest_path):
+        seq["n"] += 1
+        if seq["n"] == 2:  # initial load ok; first chunk reload raises
+            raise RuntimeError("manifest reload boom")
+        return real_load(manifest_path)
+
+    monkeypatch.setattr(orch, "load_chunk_receipts", flaky_load)
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_false,
+        config_path=tmp_config(tmp_path),
+    )
+    assert r["STATUS"] == "MANIFEST_READ_FAILURE"
+    assert len(ad.calls) == 1
+    assert r["stop_chunk_index"] == 1
+    assert r["PROTECTED_HASH_AFTER"] is not None
+
+
+def test_partial_window_unknown_receipt_symbol_fail_closed(tmp_path):
+    ident = make_identity(10)
+    write_manifest(
+        tmp_path,
+        [{"symbols": ["999999.SH"], "window": ("2020-01-01", "2023-12-31")}],
+    )
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=True, identity=ident,
+        manifest_path=tmp_path / "manifest.db",
+    )
+    assert r["STATUS"] == "UNKNOWN_RECEIPT_SYMBOL"
+    assert r["unknown_symbol_n"] == 1
+
+
+def test_cli_complete_exit_zero(monkeypatch):
+    rc, _ = _cli_run(
+        monkeypatch,
+        ["--exec", "--config", "config/cnequity.toml"],
+        report={"STATUS": "FULL_BOOTSTRAP_COMPLETE"},
+    )
+    assert rc == 0
+
+
+def test_cli_incomplete_exit_nonzero(monkeypatch):
+    rc, _ = _cli_run(
+        monkeypatch,
+        ["--exec", "--config", "config/cnequity.toml"],
+        report={"STATUS": "FULL_BOOTSTRAP_INCOMPLETE"},
+    )
+    assert rc != 0
+
+
+def test_zero_remaining_real_telemetry_no_writes(tmp_path):
+    ident = make_identity(10)
+    write_manifest(tmp_path, [{"symbols": ident["symbols"]}])  # all covered
+    ad = FakeAdapter()
+    r = orch.run_full_bootstrap(
+        tmp_path / "root", cfg=cfg_factory(), dry_run=False, identity=ident,
+        manifest_path=tmp_path / "manifest.db", adapter_callable=ad,
+        run_gate_fn=gate_true,
+        config_path=tmp_config(tmp_path),
+    )
+    assert ad.calls == []
+    assert r["STATUS"] == "FULL_BOOTSTRAP_COMPLETE"
+    assert r["EXECUTION_STARTED"] is False
+    assert r["MANIFEST_WRITE"] == "NO"
+    assert r["REAL_ROOT_WRITE"] == "NO"
+    assert r["NETWORK_PROVIDER_DATA_FETCH"] == "NO"
