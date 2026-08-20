@@ -1,0 +1,298 @@
+{
+  "task": "R4A3_BAOSTOCK_PRECLOSE_CANONICAL_SOURCE_PILOT_V01",
+  "base_head": "44c9d758b2006c1ace8294fccebdc33e1b8640fe",
+  "formal_identity_n": 5456,
+  "formal_identity_hash": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+  "identity_source": "CURATED_DAILY_BARS_UNIQUE_SYMBOLS (R3 formal SH/SZ identity, verified against r3-identity-receipt formal_identity_hash)",
+  "identity_receipt_match": true,
+  "pilot_symbol_n": 24,
+  "pilot_symbol_hash": "5fa9f5c9ef376f0c453d3f543dc3a8ee9d61f73cec3a0fd35a9bea5081e17843",
+  "pilot_symbols": [
+    "000001.SZ",
+    "000002.SZ",
+    "000006.SZ",
+    "000009.SZ",
+    "000049.SZ",
+    "000404.SZ",
+    "000564.SZ",
+    "000615.SZ",
+    "000661.SZ",
+    "000686.SZ",
+    "000728.SZ",
+    "000750.SZ",
+    "000797.SZ",
+    "600000.SH",
+    "600004.SH",
+    "600005.SH",
+    "600008.SH",
+    "600089.SH",
+    "600179.SH",
+    "600515.SH",
+    "600580.SH",
+    "603007.SH",
+    "688486.SH",
+    "688489.SH"
+  ],
+  "pilot_categories": {
+    "000001.SZ": [
+      "listed_before_2016",
+      "cash_only"
+    ],
+    "000002.SZ": [
+      "listed_before_2016",
+      "many_corporate_actions",
+      "cash_only"
+    ],
+    "000006.SZ": [
+      "listed_before_2016",
+      "cash_only",
+      "long_suspension_resume"
+    ],
+    "000009.SZ": [
+      "listed_before_2016",
+      "many_corporate_actions",
+      "multi_action"
+    ],
+    "000049.SZ": [
+      "listed_before_2016",
+      "rights_issue"
+    ],
+    "000404.SZ": [
+      "listed_before_2016",
+      "rights_issue"
+    ],
+    "000564.SZ": [
+      "listed_before_2016",
+      "special_reorganization",
+      "long_suspension_resume"
+    ],
+    "000615.SZ": [
+      "listed_before_2016",
+      "special_reorganization",
+      "long_suspension_resume"
+    ],
+    "000661.SZ": [
+      "listed_before_2016",
+      "rights_issue"
+    ],
+    "000686.SZ": [
+      "listed_before_2016",
+      "rights_issue"
+    ],
+    "000728.SZ": [
+      "listed_before_2016",
+      "rights_issue",
+      "suspension_resume"
+    ],
+    "000750.SZ": [
+      "listed_before_2016",
+      "rights_issue",
+      "suspension_resume"
+    ],
+    "000797.SZ": [
+      "listed_before_2016",
+      "rights_issue"
+    ],
+    "600000.SH": [
+      "listed_before_2016",
+      "many_corporate_actions"
+    ],
+    "600004.SH": [
+      "listed_before_2016",
+      "cash_only"
+    ],
+    "600005.SH": [
+      "listed_before_2016",
+      "long_suspension_resume",
+      "formal_delisted"
+    ],
+    "600008.SH": [
+      "listed_before_2016"
+    ],
+    "600089.SH": [
+      "listed_before_2016",
+      "differential_dividend",
+      "multi_action"
+    ],
+    "600179.SH": [
+      "listed_before_2016",
+      "special_reorganization",
+      "suspension_resume"
+    ],
+    "600515.SH": [
+      "listed_before_2016",
+      "special_reorganization",
+      "long_suspension_resume"
+    ],
+    "600580.SH": [
+      "listed_before_2016",
+      "differential_dividend",
+      "multi_action"
+    ],
+    "603007.SH": [
+      "ipo_within_window",
+      "special_reorganization"
+    ],
+    "688486.SH": [
+      "ipo_within_window",
+      "differential_dividend",
+      "mandatory_official_case"
+    ],
+    "688489.SH": [
+      "ipo_within_window",
+      "differential_dividend"
+    ]
+  },
+  "window_start": "2016-01-01",
+  "window_end": "2026-08-17",
+  "sample_deterministic": true,
+  "sample_balanced_stratified": false,
+  "normal_sample_reused": true,
+  "announcement_review_expanded": false,
+  "max_gap_summary": {
+    "000001.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000002.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000006.SZ": {
+      "max_calendar_gap_days": 181,
+      "gap_before": "2017-09-08",
+      "gap_after": "2018-03-08",
+      "long_suspension_resume_observed": true
+    },
+    "000009.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000049.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000404.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000564.SZ": {
+      "max_calendar_gap_days": 235,
+      "gap_before": "2017-11-27",
+      "gap_after": "2018-07-20",
+      "long_suspension_resume_observed": true
+    },
+    "000615.SZ": {
+      "max_calendar_gap_days": 58,
+      "gap_before": "2017-09-11",
+      "gap_after": "2017-11-08",
+      "long_suspension_resume_observed": true
+    },
+    "000661.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000686.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "000728.SZ": {
+      "max_calendar_gap_days": 31,
+      "gap_before": "2016-06-07",
+      "gap_after": "2016-07-08",
+      "long_suspension_resume_observed": true
+    },
+    "000750.SZ": {
+      "max_calendar_gap_days": 37,
+      "gap_before": "2016-12-14",
+      "gap_after": "2017-01-20",
+      "long_suspension_resume_observed": true
+    },
+    "000797.SZ": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "600000.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "600004.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "600005.SH": {
+      "max_calendar_gap_days": 108,
+      "gap_before": "2016-06-24",
+      "gap_after": "2016-10-10",
+      "long_suspension_resume_observed": true
+    },
+    "600008.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "600089.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "600179.SH": {
+      "max_calendar_gap_days": 49,
+      "gap_before": "2018-02-01",
+      "gap_after": "2018-03-22",
+      "long_suspension_resume_observed": true
+    },
+    "600515.SH": {
+      "max_calendar_gap_days": 203,
+      "gap_before": "2018-01-22",
+      "gap_after": "2018-08-13",
+      "long_suspension_resume_observed": true
+    },
+    "600580.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "603007.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "688486.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    },
+    "688489.SH": {
+      "max_calendar_gap_days": 0,
+      "gap_before": null,
+      "gap_after": null,
+      "long_suspension_resume_observed": false
+    }
+  }
+}
