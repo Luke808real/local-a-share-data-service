@@ -1,0 +1,54 @@
+{
+  "status": "CODE_CHANGE_REQUIRED",
+  "terminal_status": "FULL_BOOTSTRAP_STOPPED",
+  "date": "2026-08-20",
+  "branch": "codex/r4a0-resumable-full-bootstrap-v01",
+  "base_head": "5aea707c8b02b799436e1092d1e67cd69b765c10",
+  "execution_attempt": {
+    "command": "tools/run_r4a0_full_bootstrap_plan.py --config config/cnequity.toml --exec",
+    "single_run": true,
+    "auto_retry": false,
+    "execution_started": true,
+    "start_gate": {"R4A0_READY": false, "BLOCKER": "SYMBOL_COVERAGE_INCOMPLETE", "correctness_blockers": []},
+    "stop_chunk_index": 1,
+    "stop_reason": "CONFIG_UNKNOWN_OR_CHANGED",
+    "progress_len": 1
+  },
+  "adapter_result_on_chunk_1": {
+    "STATUS": "FORMAL_IDENTITY_MISMATCH",
+    "run_id": null,
+    "identity_reported": {
+      "IDENTITY_STATUS": "PASS",
+      "EXPECTED_SYMBOL_N": 5456,
+      "EXPECTED_SYMBOL_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+      "identity_ok": true
+    }
+  },
+  "root_cause": {
+    "module": "ashare_data.r4a0_bounded_adapter.py run_bounded_pilot identity gate",
+    "check": "ident.get('IDENTITY_MATCH', False)",
+    "orchestrator_identity_source": "ashare_data.r4a0_corporate_actions_gate.load_expected_identity",
+    "orchestrator_identity_keys": ["IDENTITY_STATUS", "EXPECTED_SYMBOL_N", "EXPECTED_SYMBOL_HASH", "IDENTITY_SOURCE", "identity_ok", "symbols"],
+    "bug": "gate load_expected_identity dict lacks key 'IDENTITY_MATCH' which the adapter checks; real path mis-fails before start_run -> no run, no data, no receipt",
+    "test_gap": "orchestrator tests used fake adapter (never the real run_bounded_pilot); adapter tests injected identity dicts that DID contain IDENTITY_MATCH"
+  },
+  "write_boundary": {
+    "PROTECTED_HASH_BEFORE": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+    "PROTECTED_HASH_AFTER": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+    "protected_unchanged": true,
+    "config_sha256_before": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+    "config_sha256_after": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+    "config_unchanged": true,
+    "new_manifest_run": false,
+    "new_corporate_actions_rows": 0,
+    "new_corporate_actions_parquet": 0,
+    "site_preserved": true
+  },
+  "recommended_fix_direction": [
+    "orchestrator: before calling adapter, ensure identity dict carries IDENTITY_MATCH (e.g. ident['IDENTITY_MATCH'] = bool(ident.get('identity_ok'))), or",
+    "adapter: accept IDENTITY_STATUS=='PASS' or identity_ok as valid identity proof in addition to IDENTITY_MATCH",
+    "then add an orchestrator test that runs the real run_bounded_pilot identity gate against a load_expected_identity-shaped dict"
+  ],
+  "no_auto_r4a": true,
+  "no_code_change_in_this_task": true
+}
