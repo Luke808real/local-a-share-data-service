@@ -1,0 +1,12 @@
+{
+  "date": "2026-08-20",
+  "PROTECTED_HASH_BEFORE": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+  "PROTECTED_HASH_AFTER": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+  "protected_unchanged": true,
+  "protected_scope": ["curated/daily_bars", "curated/instruments", "curated/trading_calendar", "staging/daily_bars", "staging/instruments", "staging/trading_calendar"],
+  "config_sha256_before": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+  "config_sha256_after": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+  "CONFIG_BOUNDARY_STATUS": "OK",
+  "WRITE_BOUNDARY_STATUS": "OK",
+  "allowed_changes": ["corporate_actions curated", "manifest/runtime receipts"]
+}

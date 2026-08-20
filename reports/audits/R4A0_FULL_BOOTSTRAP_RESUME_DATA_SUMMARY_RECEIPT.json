@@ -1,0 +1,17 @@
+{
+  "date": "2026-08-20",
+  "ROW_COUNT": 40544,
+  "SYMBOL_WITH_EVENT_N": 5141,
+  "ZERO_EVENT_COVERED_SYMBOL_N": 315,
+  "MIN_EX_DATE": "2016-01-07",
+  "MAX_EX_DATE": "2026-08-17",
+  "SOURCE_COUNTS": {"tdx_protocol": 40544},
+  "DATA_VERSION_COUNTS": {"v1": 40544},
+  "DUPLICATE_PK_N": 0,
+  "UNEXPECTED_SYMBOL_N": 0,
+  "OUT_OF_WINDOW_ROW_N": 0,
+  "curated_partition_count": 11,
+  "chunk_receipts_total": 228,
+  "covered_symbols_final": 5456,
+  "remaining_symbols_final": 0
+}

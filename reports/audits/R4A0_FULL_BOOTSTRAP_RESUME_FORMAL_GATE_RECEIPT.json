@@ -1,0 +1,23 @@
+{
+  "date": "2026-08-20",
+  "source": "independent read-only verify_r4a0_corporate_actions_gate (post-resume)",
+  "R4A0_READY": true,
+  "EXPECTED_SYMBOL_N": 5456,
+  "SUCCESSFULLY_COVERED_SYMBOL_N": 5456,
+  "MISSING_SYMBOL_N": 0,
+  "PARTIAL_SYMBOL_N": 0,
+  "DATE_COVERAGE_PASS": true,
+  "SYMBOL_COVERAGE_PASS": true,
+  "COVERAGE_STATUS": "PASS",
+  "ROW_COUNT": 40544,
+  "DUPLICATE_ACTION_N": 0,
+  "UNRESOLVED_N": 0,
+  "BLOCKER": null,
+  "IDENTITY_STATUS": "PASS",
+  "SCHEMA_STATUS": "PASS",
+  "SCOPE_STATUS": "PASS",
+  "UNIQUENESS_STATUS": "PASS",
+  "PROVENANCE_STATUS": "PASS",
+  "PIN_MATCH": true,
+  "upstream_contract_match": true
+}
