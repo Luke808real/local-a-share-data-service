@@ -100,3 +100,104 @@ PRODUCTION=false FORWARD=false TRADEPLAN=false
 ```
 
 No parquet / manifest.db / cache / credentials uploaded.
+
+---
+
+## 8. EXECUTION HARDENING V01 (post re-review of 8f114de)
+
+The production-execution blockers from the independent Sol re-review were
+closed:
+
+### 8.1 Formal CLI exec mode
+
+`--exec` is reachable and calls `run_full_bootstrap(..., dry_run=False)`; the
+hard-coded `FULL_BOOTSTRAP_EXECUTION_FORBIDDEN` rejection was removed.
+`--dry-run`/`--exec` are a mutually-exclusive group and the default is
+dry-run. CLI tests: default→dry-run, `--dry-run`→dry-run, `--exec`→
+dry_run=False with the orchestrator invoked once, conflict→exit 2.
+
+### 8.2 Real formal gate wired
+
+The production default gate is the audited `r4a0_corporate_actions_gate.run_gate`
+called with `root`, `expected_identity_n=5456`,
+`expected_identity_hash=2b1e7202...`, and the frozen window. Dependency
+injection is test-only; gate execution failure is FAIL CLOSED
+(`GATE_EXECUTION_FAILURE`).
+
+### 8.3 START / PERIODIC / FINAL gates
+
+Real mode runs START gate → chunks → PERIODIC gate every `gate_every` (10)
+successful chunks → FINAL gate.
+
+- START: `R4A0_READY=false` allowed only for the expected coverage-incomplete
+  blocker; identity/schema/scope/uniqueness/provenance correctness blockers
+  stop before any adapter call (`START_GATE_FAILURE`).
+- PERIODIC: new correctness blockers stop (`PERIODIC_GATE_FAILURE`); READY=true
+  is not required mid-run.
+- FINAL: `R4A0_READY=true` ⇒ `FULL_BOOTSTRAP_COMPLETE=true`; otherwise
+  `FULL_BOOTSTRAP_INCOMPLETE` + blocker.
+
+### 8.4 Zero-remaining resume
+
+If remaining=0 in real execution the orchestrator runs the FINAL gate directly
+with zero adapter calls: gate true ⇒ COMPLETE, gate false ⇒ INCOMPLETE
+(tested both). Dry-run still reports the (empty) plan.
+
+### 8.5 Real-mode telemetry
+
+Real execution reports `MANIFEST_WRITE=YES`, `REAL_ROOT_WRITE=YES`,
+`NETWORK_PROVIDER_DATA_FETCH=UNKNOWN` (no exact provider telemetry),
+`NETWORK_PROVIDER_REQUEST_COUNT=UNVERIFIED`. Chunk `PROVIDER_STEP_ENTERED`
+values are aggregated; request counts are never fabricated. Dry-run keeps
+NO/NO/NO.
+
+### 8.6 Full-run write boundary
+
+Before/after inventory hash over protected R3 datasets
+(curated+staging daily_bars / instruments / trading_calendar; path+size+
+mtime_ns, no content SHA) and config SHA must match; any change ⇒
+`WRITE_BOUNDARY_BREACH` and `FULL_BOOTSTRAP_COMPLETE=false`. Allowed changes:
+corporate_actions + manifest/runtime metadata.
+
+### 8.7 Coverage alignment
+
+`compute_covered_symbols` now requires `dataset == "corporate_actions"` and
+reuses the formal gate's per-symbol union semantics
+(`merge_intervals`/`gaps_in_window`): a symbol is covered when its SUCCESSFUL
+receipt intervals' union contiguously covers the window — equal to the gate, so
+it can neither falsely skip nor falsely claim. A non-corporate dataset receipt
+is never coverage.
+
+### 8.8 WAL / manifest read failure
+
+`load_chunk_receipts` failures (WAL pending / other) return a structured
+`MANIFEST_READ_FAILURE` status instead of a traceback; no sidecar cleanup.
+
+### 8.9 Progress
+
+Per-chunk progress entries are retained; they are
+`NON_AUTHORITY_DIAGNOSTIC_ONLY`. The manifest remains the sole coverage
+authority.
+
+### 8.10 Tests and real-config dry-run (2026-08-20)
+
+`tests/test_r4a0_full_bootstrap_orchestrator.py` grew to **40 targeted tests**
+(prior 25 + CLI 4 + production-gate wired + start-gate blocker + periodic
+every-10 + periodic failure + zero-remaining true/false + real telemetry +
+protected-mutation boundary + config-mutation boundary + wrong-dataset filter +
+WAL-pending fail-closed). Existing adapter (42) + gate (23) re-run clean.
+Total: **105 passed**.
+
+Real-config `--dry-run` (unchanged):
+
+```text
+EXPECTED 5456 / COVERED 24 / REMAINING 5432 / CHUNK 24 / CHUNK_COUNT 227
+CHUNK_PLAN_HASH 9d34dd4b214945948edee3a1d584b31c7c5124c92545e354b9af41c049da6348
+NETWORK_PROVIDER_DATA_FETCH NO  MANIFEST_WRITE NO  REAL_ROOT_WRITE NO
+PROVIDER_STEP_ENTERED NO
+```
+
+```text
+TARGETED_TESTS  40 (orchestrator) + 42 (adapter) + 23 (gate) = 105 passed
+GIT_DIFF_CHECK  CLEAN
+```

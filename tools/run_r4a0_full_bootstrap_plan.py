@@ -44,17 +44,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.exec:
-        print(
-            json.dumps(
-                {
-                    "STATUS": "FULL_BOOTSTRAP_EXECUTION_FORBIDDEN",
-                    "reason": "FULL_BOOTSTRAP_EXECUTION=FORBIDDEN_PENDING_SOL_ORCHESTRATOR_AUDIT",
-                },
-                indent=2,
-            )
-        )
-        return 3
+    dry_run = not args.exec  # default mode is dry-run
 
     config_path = (REPO_ROOT / args.config).resolve()
     with config_path.open("rb") as fh:
@@ -65,7 +55,7 @@ def main() -> int:
     report = run_full_bootstrap(
         root,
         cfg=cfg,
-        dry_run=True,
+        dry_run=dry_run,
         manifest_path=manifest_path,
         config_path=config_path,
     )

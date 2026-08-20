@@ -26,7 +26,10 @@ from ashare_data.r4a0_bounded_adapter import (
 from ashare_data.r4a0_corporate_actions_gate import (
     FORMAL_IDENTITY_HASH,
     FORMAL_IDENTITY_N,
+    gaps_in_window,
     load_expected_identity,
+    merge_intervals,
+    run_gate,
 )
 
 
@@ -39,24 +42,37 @@ def _sha(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
 
 
+def _parse_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except Exception:
+        return None
+
+
 def compute_covered_symbols(rows: list[dict[str, Any]]) -> list[str]:
     """FULLY_COVERED_SYMBOLS from manifest chunk receipts (resume authority).
 
-    A symbol is covered iff it appears in the symbols_json of a SUCCESSFUL
-    ``corporate_actions_chunk`` receipt whose window is exactly the requested
-    window (2016-01-01 .. 2026-08-17). failed / warning / wrong-window receipts
-    never count. Zero event rows are irrelevant here (query coverage, not row
-    presence).
+    Aligned with the formal gate's per-symbol coverage semantics: collect every
+    SUCCESSFUL corporate_actions chunk receipt (dataset=corporate_actions)
+    window for a symbol, merge overlapping/adjacent intervals, and a symbol is
+    covered when its union contiguously covers the full window. failed /
+    warning receipts never count; multiple partial successful receipts whose
+    union covers the window DO count (same as the gate, so it is neither
+    looser nor stricter: it cannot false-skip). Zero event rows are irrelevant.
     """
-    covered: set[str] = set()
+    by_symbol: dict[str, list[tuple[date, date]]] = {}
     for b in rows:
         if b.get("task_id") != "corporate_actions_chunk":
             continue
+        if b.get("dataset") != "corporate_actions":
+            continue
         if b.get("status") != "success":
             continue
-        if b.get("window_start") != WINDOW_START_STR or b.get(
-            "window_end"
-        ) != WINDOW_END_STR:
+        w_s = _parse_date(b.get("window_start"))
+        w_e = _parse_date(b.get("window_end"))
+        if w_s is None or w_e is None or w_s > w_e:
             continue
         raw = b.get("symbols_json")
         syms: list[str] = []
@@ -67,7 +83,22 @@ def compute_covered_symbols(rows: list[dict[str, Any]]) -> list[str]:
                 syms = []
         elif isinstance(raw, list):
             syms = [str(s) for s in raw]
-        covered.update(str(s) for s in syms)
+        for s in syms:
+            by_symbol.setdefault(s, []).append((w_s, w_e))
+    covered = []
+    for s, intervals in by_symbol.items():
+        merged = merge_intervals(intervals)
+        gaps = gaps_in_window(merged, WINDOW_START, WINDOW_END)
+        cs = merged[0][0] if merged else None
+        ce = merged[-1][1] if merged else None
+        if (
+            cs is not None
+            and ce is not None
+            and cs <= WINDOW_START
+            and ce >= WINDOW_END
+            and len(gaps) == 0
+        ):
+            covered.append(s)
     return sorted(covered)
 
 
@@ -129,6 +160,70 @@ def _check_unknown_receipt_symbols(covered: list[str], expected: set[str]) -> li
     return [s for s in covered if s not in expected]
 
 
+def default_formal_gate(root: Path) -> dict[str, Any]:
+    """Production formal gate: the audited r4a0 run_gate with frozen identity
+    and window wired in. Never a caller-injected fake in production."""
+    return run_gate(
+        root,
+        expected_identity_n=FORMAL_IDENTITY_N,
+        expected_identity_hash=FORMAL_IDENTITY_HASH,
+        window_start=WINDOW_START,
+        window_end=WINDOW_END,
+    )
+
+
+def run_gate_safely(gate_fn: Callable[..., dict[str, Any]], root: Path) -> dict[str, Any]:
+    try:
+        return gate_fn(root)
+    except Exception as exc:  # fail closed; never traceback out
+        return {"__error__": str(exc)}
+
+
+def gate_correctness_blockers(gate: dict[str, Any]) -> list[str]:
+    """Non-coverage correctness blockers from a formal gate result (identity /
+    schema / scope / uniqueness / provenance). Coverage-incomplete is allowed;
+    these are not."""
+    if not isinstance(gate, dict) or gate.get("__error__"):
+        return ["GATE_UNEXECUTABLE"]
+    blockers: list[str] = []
+    if gate.get("IDENTITY_STATUS") is not None and gate["IDENTITY_STATUS"] != "PASS":
+        blockers.append("IDENTITY")
+    for key in ("SCHEMA_STATUS", "SCOPE_STATUS", "UNIQUENESS_STATUS", "PROVENANCE_STATUS"):
+        if gate.get(key) is not None and gate[key] != "PASS":
+            blockers.append(key[: -len("_STATUS")])
+    return blockers
+
+
+def protected_inventory_hash(root: Path) -> str:
+    """path+size+mtime_ns inventory hash of protected R3 datasets (no content
+    SHA-256)."""
+    rows: list[dict[str, Any]] = []
+    for sub in ("curated", "staging"):
+        for ds in ("daily_bars", "instruments", "trading_calendar"):
+            d = root / sub / ds
+            if not d.is_dir():
+                continue
+            for p in sorted(d.rglob("*")):
+                if p.is_file():
+                    st = p.stat()
+                    rows.append(
+                        {
+                            "path": str(p.relative_to(root)),
+                            "size": st.st_size,
+                            "mtime_ns": st.st_mtime_ns,
+                        }
+                    )
+    return hashlib.sha256(
+        json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def config_sha(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def run_full_bootstrap(
     root: Path,
     *,
@@ -143,7 +238,13 @@ def run_full_bootstrap(
     run_gate_fn: Callable[..., dict[str, Any]] | None = None,
     adapter_callable: Callable[..., dict[str, Any]] = run_bounded_pilot,
 ) -> dict[str, Any]:
-    """Resume from manifest -> remaining -> deterministic plan -> (dry)run."""
+    """Resume from manifest -> remaining -> deterministic plan -> (dry)run.
+
+    Production default gate is the audited real run_gate (frozen identity +
+    window); dependency injection (run_gate_fn / adapter_callable / engine) is
+    for tests only. Real mode: START gate -> chunks (PERIODIC every gate_every)
+    -> FINAL gate, with before/after write-boundary checks.
+    """
     ident = identity if identity is not None else load_expected_identity(
         root, expected_hash=FORMAL_IDENTITY_HASH, expected_n=FORMAL_IDENTITY_N
     )
@@ -155,7 +256,10 @@ def run_full_bootstrap(
         }
     expected = sorted(ident["symbols"])
     expected_set = set(expected)
-    receipts = load_chunk_receipts(manifest_path)
+    try:
+        receipts = load_chunk_receipts(manifest_path)
+    except Exception as exc:
+        return {"STATUS": "MANIFEST_READ_FAILURE", "error": str(exc)}
     covered = compute_covered_symbols(receipts)
     unknown = _check_unknown_receipt_symbols(covered, expected_set)
     if unknown:
@@ -166,6 +270,9 @@ def run_full_bootstrap(
         }
     remaining = sorted(expected_set - set(covered))
     plan = build_chunk_plan(remaining)
+    config_sha_before = config_sha(config_path)
+    protected_before = protected_inventory_hash(root)
+    gate_fn = run_gate_fn if run_gate_fn is not None else default_formal_gate
     report: dict[str, Any] = {
         "STATUS": "READY",
         "EXPECTED_SYMBOL_N": len(expected),
@@ -177,19 +284,58 @@ def run_full_bootstrap(
         "CHUNK_PLAN_HASH": plan["CHUNK_PLAN_HASH"],
         "chunks": plan["chunks"],
         "MANIFEST_IS_RESUME_AUTHORITY": True,
-        "NETWORK_PROVIDER_DATA_FETCH": "NO",
-        "MANIFEST_WRITE": "NO",
-        "REAL_ROOT_WRITE": "NO",
-        "DRY_RUN_STATUS": "OK" if dry_run else "N/A",
         "progress": [],
+        "periodic_gates": [],
         "final_formal_gate": None,
         "FULL_BOOTSTRAP_COMPLETE": False,
+        "PROTECTED_HASH_BEFORE": protected_before,
+        "PROTECTED_HASH_AFTER": None,
+        "config_sha256_before": config_sha_before,
+        "config_sha256_after": None,
     }
     if dry_run or not plan["chunks"]:
+        report["DRY_RUN_STATUS"] = "OK" if dry_run else "N/A"
+        report["NETWORK_PROVIDER_DATA_FETCH"] = "NO"
+        report["MANIFEST_WRITE"] = "NO"
+        report["REAL_ROOT_WRITE"] = "NO"
+        report["PROVIDER_STEP_ENTERED"] = "NO"
+        report["NETWORK_PROVIDER_REQUEST_COUNT"] = "UNVERIFIED"
+        if not dry_run and not plan["chunks"]:
+            # zero-remaining real resume: straight to the FINAL formal gate.
+            report["MANIFEST_WRITE"] = "YES"
+            report["REAL_ROOT_WRITE"] = "YES"
+            report["NETWORK_PROVIDER_DATA_FETCH"] = "UNKNOWN"
+            report["NETWORK_PROVIDER_REQUEST_COUNT"] = "UNVERIFIED"
+            return _finalize_report(
+                report, gate_fn, root, config_sha_before, protected_before, config_path
+            )
         return report
 
-    # ---- future / testable real mode: deterministic chunk sequence ---------
+    # ---- REAL MODE: gates + deterministic chunk sequence ------------------
+    report["MANIFEST_WRITE"] = "YES"
+    report["REAL_ROOT_WRITE"] = "YES"
+    report["NETWORK_PROVIDER_DATA_FETCH"] = "UNKNOWN"
+    report["NETWORK_PROVIDER_REQUEST_COUNT"] = "UNVERIFIED"
+    report["DRY_RUN_STATUS"] = "N/A"
+
+    # START gate: coverage-incomplete is expected; new correctness blockers stop.
+    start_gate = run_gate_safely(gate_fn, root)
+    start_blockers = gate_correctness_blockers(start_gate)
+    if start_blockers:
+        report.update(
+            {
+                "STATUS": "START_GATE_FAILURE",
+                "start_blockers": start_blockers,
+                "start_gate": start_gate,
+            }
+        )
+        return report
+    report["start_gate"] = start_gate
+
     progress: list[dict[str, Any]] = []
+    success_count = 0
+    periodic_gates: list[dict[str, Any]] = []
+    covered_now: list[str] = covered
     for chunk_meta in plan["chunks"]:
         symbols = chunk_meta["symbols"]
         out = adapter_callable(
@@ -207,8 +353,10 @@ def run_full_bootstrap(
             and out.get("receipt_post_check", {}).get("STATUS") == "OK"
             and out.get("CONFIG_INTEGRITY_STATUS") == "OK"
         )
-        receipts = load_chunk_receipts(manifest_path)
-        covered_now = compute_covered_symbols(receipts)
+        try:
+            covered_now = compute_covered_symbols(load_chunk_receipts(manifest_path))
+        except Exception:
+            covered_now = covered
         progress.append(
             {
                 "CHUNK_INDEX": chunk_meta["index"],
@@ -235,19 +383,70 @@ def run_full_bootstrap(
                     "stop_chunk_index": chunk_meta["index"],
                     "chunk_result": out,
                     "progress": progress,
+                    "periodic_gates": periodic_gates,
                 }
             )
             return report
+        success_count += 1
+        if success_count % gate_every == 0:
+            periodic = run_gate_safely(gate_fn, root)
+            periodic_blockers = gate_correctness_blockers(periodic)
+            periodic_gates.append(periodic)
+            if periodic_blockers:
+                report.update(
+                    {
+                        "STATUS": "PERIODIC_GATE_FAILURE",
+                        "periodic_blockers": periodic_blockers,
+                        "periodic_gate_after_chunk": chunk_meta["index"],
+                        "progress": progress,
+                        "periodic_gates": periodic_gates,
+                    }
+                )
+                return report
     report["progress"] = progress
+    report["periodic_gates"] = periodic_gates
     report["COVERED_SYMBOL_N"] = len(covered_now)
-    # final formal gate (read-only) decides completeness
-    gate = run_gate_fn() if run_gate_fn is not None else None
-    report["final_formal_gate"] = gate
-    if gate is not None and gate.get("R4A0_READY") is True:
+    return _finalize_report(
+        report, gate_fn, root, config_sha_before, protected_before, config_path
+    )
+
+
+def _finalize_report(
+    report: dict[str, Any],
+    gate_fn: Callable[..., dict[str, Any]],
+    root: Path,
+    config_sha_before: str | None,
+    protected_before: str,
+    config_path: Path | None,
+) -> dict[str, Any]:
+    """FINAL formal gate + before/after write boundary for real execution."""
+    final_gate = run_gate_safely(gate_fn, root)
+    report["final_formal_gate"] = final_gate
+    if final_gate.get("__error__"):
+        report["STATUS"] = "GATE_EXECUTION_FAILURE"
+        report["FULL_BOOTSTRAP_COMPLETE"] = False
+        return report
+    config_sha_after = config_sha(config_path)
+    protected_after = protected_inventory_hash(root)
+    report["config_sha256_after"] = config_sha_after
+    report["PROTECTED_HASH_AFTER"] = protected_after
+    config_ok = (
+        config_sha_before is None
+        or config_sha_after is None
+        or config_sha_before == config_sha_after
+    )
+    boundary_ok = protected_after == protected_before and config_ok
+    if not boundary_ok:
+        report["STATUS"] = "WRITE_BOUNDARY_BREACH"
+        report["FULL_BOOTSTRAP_COMPLETE"] = False
+        return report
+    complete = final_gate.get("R4A0_READY") is True
+    report["FULL_BOOTSTRAP_COMPLETE"] = bool(complete)
+    if complete:
         report["STATUS"] = "FULL_BOOTSTRAP_COMPLETE"
-        report["FULL_BOOTSTRAP_COMPLETE"] = True
     else:
         report["STATUS"] = "FULL_BOOTSTRAP_INCOMPLETE"
+        report["FULL_BOOTSTRAP_BLOCKER"] = final_gate.get("BLOCKER")
     return report
 
 
