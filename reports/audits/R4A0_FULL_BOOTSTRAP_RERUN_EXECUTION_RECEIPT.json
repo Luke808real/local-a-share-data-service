@@ -1,0 +1,74 @@
+{
+  "date": "2026-08-20",
+  "branch": "codex/r4a0-resumable-full-bootstrap-v01",
+  "base_head": "f6af077717f2f507cc0fc1ab4f16a02456e99b9c",
+  "terminal_status": "FULL_BOOTSTRAP_STOPPED",
+  "FULL_BOOTSTRAP_COMPLETE": false,
+  "stop_reason": "RECEIPT_MISMATCH",
+  "stop_chunk_index": 182,
+  "EXECUTION_STARTED": true,
+  "EXECUTED_CHUNK_N": 182,
+  "LAST_COMPLETED_CHUNK": 181,
+  "CHUNK_1": {
+    "STATUS": "PILOT_COMPLETE",
+    "RUN_ID": "49e0f563-02f2-43f0-be4d-dc731f0b3001",
+    "REQUESTED_SYMBOL_N": 24,
+    "RECEIPT_STATUS": "OK",
+    "CONFIG_INTEGRITY_STATUS": "OK",
+    "identity_mismatch_regression": "not present (identity gate PASS)"
+  },
+  "coverage_after_stop": {
+    "EXPECTED_SYMBOL_N": 5456,
+    "INITIAL_COVERED_SYMBOL_N": 24,
+    "INITIAL_REMAINING_SYMBOL_N": 5432,
+    "COVERED_SYMBOL_N": 4368,
+    "REMAINING_SYMBOL_N": 1088,
+    "chunk_receipts_total": 182,
+    "chunk_receipts_success": 182
+  },
+  "failed_chunk_182": {
+    "REQUESTED_SYMBOLS": ["603321.SH", "603322.SH", "603323.SH", "603324.SH", "603325.SH", "603326.SH", "603327.SH", "603328.SH", "603329.SH", "603330.SH", "603331.SH", "603332.SH", "603333.SH", "603334.SH", "603335.SH", "603336.SH", "603337.SH", "603338.SH", "603339.SH", "603341.SH", "603344.SH", "603345.SH", "603348.SH", "603350.SH"],
+    "adapter_status": "PILOT_INCOMPLETE",
+    "final_status": "failed",
+    "compact_status": "success",
+    "market_data_written": "NO",
+    "likely_cause": "provider (TDX) fetch failure for the whole chunk; no code/contract issue observed"
+  },
+  "write_boundary": {
+    "PROTECTED_HASH_BEFORE": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+    "PROTECTED_HASH_AFTER": "e5504cb0cda4b84683b733290c3bc50405f7abf7143cb0521c6da3104feef010",
+    "protected_unchanged": true,
+    "config_sha256_before": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+    "config_sha256_after": "fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5",
+    "CONFIG_BOUNDARY_STATUS": "OK"
+  },
+  "data_summary": {
+    "ROW_COUNT": 33484,
+    "SYMBOL_WITH_EVENT_N": 4120,
+    "ZERO_EVENT_COVERED_N": 248,
+    "MIN_EX_DATE": "2016-01-07",
+    "MAX_EX_DATE": "2026-08-14",
+    "SOURCE_COUNTS": {"tdx_protocol": 33484},
+    "DATA_VERSION_COUNTS": {"v1": 33484},
+    "DUPLICATE_PK_N": 0,
+    "UNEXPECTED_SYMBOL_N": 0,
+    "OUT_OF_WINDOW_ROW_N": 0,
+    "curated_partition_count": 11
+  },
+  "formal_gate_after": {
+    "R4A0_READY": false,
+    "SUCCESSFULLY_COVERED_SYMBOL_N": 4368,
+    "MISSING_SYMBOL_N": 1088,
+    "PARTIAL_SYMBOL_N": 0,
+    "DATE_COVERAGE_PASS": true,
+    "SYMBOL_COVERAGE_PASS": false,
+    "ROW_COUNT": 33484,
+    "DUPLICATE_ACTION_N": 0,
+    "UNRESOLVED_N": 0,
+    "BLOCKER": "SYMBOL_COVERAGE_INCOMPLETE"
+  },
+  "no_auto_r4a": true,
+  "no_auto_retry": true,
+  "site_preserved": true,
+  "CODE_CHANGE_REQUIRED": false
+}
