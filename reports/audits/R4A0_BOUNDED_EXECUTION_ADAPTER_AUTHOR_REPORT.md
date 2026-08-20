@@ -124,3 +124,116 @@ Sol: audit the exact pushed commit. On audit pass,
 `BOUNDED_PILOT_EXECUTION` may advance from FORBIDDEN to a Sol-signed pilot run
 using the exact 24-symbol scope recorded here (dry-run already validated it).
 Until then no real execution.
+
+---
+
+## 7. EXECUTION HARDENING V01 (post re-review of 1531da8)
+
+Seven correctness fixes from the independent Sol re-review, all applied:
+
+### 7.1 CLI exec mode
+
+```text
+CLI_EXEC_REACHABLE  true
+DEFAULT_MODE        dry-run
+```
+
+- Removed the broken `--dry-run store_true default=True` that made `--exec`
+  always error. Now `--dry-run` / `--exec` are a mutually exclusive group and
+  `dry_run = not args.exec` (no flag => dry-run). Conflicting flags are
+  rejected with exit 2. The contradictory "this run did not execute" message
+  behind `--exec` was deleted.
+- CLI tests: default dry-run / `--dry-run` dry-run / `--exec` reachable with
+  `dry_run=False` and adapter called once / conflicting flags rejected.
+
+### 7.2 PILOT_COMPLETE includes compaction and final status
+
+```text
+PILOT_COMPLETE =
+  corporate_status == success
+  AND failed_symbols empty
+  AND compact_status == success
+  AND final_status == success
+  AND NOT persistent-config mutation
+```
+
+Invariant: `PILOT_COMPLETE=true => final_status=="success"`. Compact
+failed/warning => `PILOT_INCOMPLETE` (tested).
+
+### 7.3 Real write telemetry is truthful
+
+```text
+dry-run:            MANIFEST_WRITE=NO  REAL_ROOT_WRITE=NO
+real execution:     MANIFEST_WRITE=YES REAL_ROOT_WRITE=YES
+                    (manifest is real-root runtime state)
+MARKET_DATA_WRITE_STATUS  YES/NO/UNKNOWN, judged from actual pre/post
+                    corporate_actions artifact evidence, never from
+                    final_status. PILOT_INCOMPLETE != MARKET_DATA_WRITE=NO
+                    (pinned lifecycle compacts partial/failed sweeps).
+```
+
+### 7.4 Network telemetry is not fabricated
+
+`24 if complete else 0` was deleted. Now:
+
+```text
+NETWORK_PROVIDER_DATA_FETCH  NO      (dry-run only)
+                             YES     (real execution entered provider step)
+                             UNKNOWN (failed before provider path)
+NETWORK_PROVIDER_REQUEST_COUNT     UNVERIFIED
+```
+
+REQUESTED_SYMBOL_N is never conflated with provider request count (tested for
+partial/failed execution reporting a truthful non-NO value).
+
+### 7.5 In-memory config restored
+
+`failover_enabled` / `_backfill` / `_backfill_start` / `_backfill_end` are
+snapshotted; the execution-local override (failover_enabled=false during the
+bounded run) is restored for success / failure / exception / dry-run (all
+tested). The original "failover disabled after run" assertion was corrected to
+the right semantics: disabled DURING, restored AFTER.
+
+### 7.6 Config hash is a real check
+
+```text
+CONFIG_SHA_BEFORE / CONFIG_SHA_AFTER  real SHA-256 of the config file
+PERSISTENT_CONFIG_CHANGED  = before != after   (never hard-coded false)
+config path unknown/missing  -> CONFIG_INTEGRITY_STATUS=UNKNOWN
+```
+
+A detected mutation is `WRITE_BOUNDARY_BREACH` and `PILOT_COMPLETE=false`
+even if provider/compact succeeded (tested).
+
+### 7.7 Receipt post-check (best-effort, no fabricated COMPLETE)
+
+After real execution the adapter reads the run's `corporate_actions_chunk`
+success receipts and reports requested vs covered: no unexpected symbol, each
+requested symbol receipted, window exact, failed chunks never contribute. If
+unverifiable it reports UNKNOWN; it never invents an unverified COMPLETE. It
+does not restructure the R4A0 gate.
+
+### 7.8 Tests and real-config dry-run (2026-08-20)
+
+`tests/test_r4a0_bounded_adapter.py` grew to **34 targeted tests** (offline;
+fake engine/manifest, mocked pin, injected identity; no provider/network):
+original 20 kept (corrected semantics) + CLI-mode (4) + execution hardening
+(10). Existing `tests/test_r4a0_corporate_actions_gate.py` (23) re-run clean.
+Total: **57 passed**.
+
+Real-config `--dry-run` (read-only):
+
+```text
+STATUS READY / DRY_RUN_STATUS OK / DRY_RUN_SYMBOL_N 24
+MANIFEST_WRITE NO  REAL_ROOT_WRITE NO
+NETWORK_PROVIDER_DATA_FETCH NO  NETWORK_PROVIDER_REQUEST_COUNT UNVERIFIED
+MARKET_DATA_WRITE_STATUS NO
+PERSISTENT_CONFIG_CHANGED false  CONFIG_INTEGRITY_STATUS OK
+CONFIG_STATE_RESTORED true
+sidecar -wal/-shm mtime unchanged
+```
+
+```text
+TARGETED_TESTS  34 (adapter) + 23 (gate) = 57 passed
+GIT_DIFF_CHECK  CLEAN
+```

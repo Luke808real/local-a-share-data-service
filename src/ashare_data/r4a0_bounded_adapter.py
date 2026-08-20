@@ -45,6 +45,85 @@ WINDOW_END = date(2026, 8, 17)
 MAX_PILOT_SYMBOL_N = 24
 FAILOVER_BACKUP_UNBOUNDED = True  # eastmoney snapshot has no symbol parameter
 
+def config_changed(before: str | None, after: str | None) -> bool:
+    return before is not None and after is not None and before != after
+
+
+def config_integrity_status(before: str | None, after: str | None) -> str:
+    if before is None or after is None:
+        return "UNKNOWN"
+    return "CHANGED" if before != after else "OK"
+
+
+def ca_artifact_digest(root: Path) -> dict[str, list[str]]:
+    """Read-only inventory of corporate_actions artifact paths (evidence for
+    MARKET_DATA_WRITE_STATUS; never guesses from final_status)."""
+    out: dict[str, list[str]] = {}
+    for sub in ("curated", "staging"):
+        d = root / sub / "corporate_actions"
+        if d.is_dir():
+            out[f"{sub}/corporate_actions"] = sorted(
+                str(p.relative_to(root)) for p in d.rglob("*.parquet")
+            )
+    return out
+
+
+def market_data_write_status(
+    before: dict[str, list[str]] | None,
+    after: dict[str, list[str]] | None,
+) -> str:
+    if before is None or after is None:
+        return "UNKNOWN"
+    return "YES" if before != after else "NO"
+
+
+def receipt_post_check(
+    eng: Any,
+    run_id: str,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> dict[str, Any]:
+    """Requested vs successful corporate_actions_chunk receipts (best-effort
+    evidence; never fabricates a COMPLETE claim)."""
+    try:
+        rows = eng.manifest.get_batches_for_run(run_id)
+    except Exception:
+        return {"STATUS": "UNKNOWN"}
+    chunks = [
+        b
+        for b in rows
+        if b.get("task_id") == "corporate_actions_chunk"
+        and b.get("status") == "success"
+    ]
+    covered: set[str] = set()
+    windows_ok = True
+    for b in chunks:
+        raw = b.get("symbols_json")
+        syms: list[str] = []
+        if isinstance(raw, str):
+            try:
+                syms = json.loads(raw) or []
+            except Exception:
+                syms = []
+        elif isinstance(raw, list):
+            syms = [str(s) for s in raw]
+        covered.update(syms)
+        if b.get("window_start") != start.isoformat() or b.get(
+            "window_end"
+        ) != end.isoformat():
+            windows_ok = False
+    requested = set(symbols)
+    ok = bool(covered == requested and windows_ok and len(chunks) > 0)
+    return {
+        "STATUS": "OK" if ok else "MISMATCH",
+        "no_unexpected_symbols": (covered - requested) == set(),
+        "each_requested_symbol_receipted": requested <= covered,
+        "window_exact": windows_ok,
+        "failed_chunk_contributes": False,
+    }
+
+
 _CANON = re.compile(r"^\d{6}\.(SH|SZ)$")
 
 
@@ -138,12 +217,13 @@ def _run_lifecycle(
     end: date,
     engine: Any | None,
     today: date,
-    failed_before_warn: bool = True,
+    state: dict[str, Any],
 ) -> dict[str, Any]:
     """Pinned backfill lifecycle, identical ordering to the CLI
     ``_finish_backfill_run``: fresh run -> run_step -> compact -> finish_run.
     ``context['_retry_symbols']`` is the BOUNDED_EXECUTION_SCOPE (an explicit
-    symbol scope, never a fabricated retry of a prior run)."""
+    symbol scope, never a fabricated retry of a prior run). ``state`` records
+    whether the corporate_actions (provider) execution path was entered."""
     eng = engine if engine is not None else JobEngine(cfg)
     trade_day = today
     metadata = {
@@ -161,10 +241,11 @@ def _run_lifecycle(
         "trade_date": trade_day,
         "_retry_symbols": list(symbols),
     }
+    state["provider_entered"] = True  # about to enter the pinned provider step
     result = eng.run_step("corporate_actions", trade_day, run_id, context)
-    # compact then finish — same ordering as pinned CLI `_finish_backfill_run`.
-    result["compact"] = eng.run_step("compact", trade_day, run_id)
-    compact_status = result["compact"].get("status", "success")
+    compact = eng.run_step("compact", trade_day, run_id)
+    result["compact"] = compact
+    compact_status = compact.get("status", "success")
     if result.get("status") == "failed" or compact_status == "failed":
         final_status = "failed"
     elif result.get("status") == "warning" or compact_status == "warning":
@@ -183,6 +264,7 @@ def _run_lifecycle(
         "recorded_metadata": metadata,
         "execution_context_symbols": list(symbols),
         "step_result": result,
+        "compact_status": compact_status,
         "final_status": final_status,
     }
 
@@ -201,29 +283,24 @@ def run_bounded_pilot(
     identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run all fail-closed gates, then (unless dry-run) execute the bounded
-    pilot through the pinned lifecycle. Never touches persistent config."""
+    pilot through the pinned lifecycle, restoring in-memory config afterwards.
+    Never touches the persistent config file."""
     from cnequity.domain.market_time import shanghai_today
 
     trade_day = today or shanghai_today()
-    cfg_before = {"failover_enabled": getattr(cfg, "failover_enabled", None)}
     config_sha_before = sha256_text(config_path)
 
     # ---- 1) pinned upstream gate ------------------------------------------
     pin = verify_pin()
     if not pin["PIN_MATCH"]:
-        return {
-            "STATUS": "BOUNDED_ADAPTER_BLOCKED_PIN_MISMATCH",
-            "pin": pin,
-        }
+        return {"STATUS": "BOUNDED_ADAPTER_BLOCKED_PIN_MISMATCH", "pin": pin}
 
     # ---- 2) frozen identity gate ------------------------------------------
     ident = identity if identity is not None else verify_identity(root)
     if not ident.get("IDENTITY_MATCH", False):
         return {
             "STATUS": "FORMAL_IDENTITY_MISMATCH",
-            "identity": {
-                k: v for k, v in ident.items() if k != "symbols"
-            },
+            "identity": {k: v for k, v in ident.items() if k != "symbols"},
         }
 
     # ---- 3) bounded scope + window gate -----------------------------------
@@ -234,26 +311,20 @@ def run_bounded_pilot(
         end=end,
     )
     if not scope["valid"]:
-        return {
-            "STATUS": "BOUNDED_SCOPE_VIOLATION",
-            "errors": scope["errors"],
-        }
+        return {"STATUS": "BOUNDED_SCOPE_VIOLATION", "errors": scope["errors"]}
 
     # ---- 4) failover boundedness: disable EastMoney snapshots in-memory ----
     if cfg is None:
-        return {
-            "STATUS": "BOUNDED_ADAPTER_BLOCKED_NO_CONFIG",
-        }
+        return {"STATUS": "BOUNDED_ADAPTER_BLOCKED_NO_CONFIG"}
     failover_was_enabled = bool(getattr(cfg, "failover_enabled", False))
-    cfg.failover_enabled = False
-    cfg._backfill = True
-    cfg._backfill_start = start
-    cfg._backfill_end = end
 
-    plan = {
-        "STATUS": "READY"
-        if dry_run
-        else "EXECUTION_RUN",
+    cfg_snapshot = {
+        "failover_enabled": getattr(cfg, "failover_enabled", None),
+        "_backfill": getattr(cfg, "_backfill", None),
+        "_backfill_start": getattr(cfg, "_backfill_start", None),
+        "_backfill_end": getattr(cfg, "_backfill_end", None),
+    }
+    base = {
         "pin": pin,
         "identity": {
             "FORMAL_IDENTITY_N": ident["FORMAL_IDENTITY_N"],
@@ -271,52 +342,130 @@ def run_bounded_pilot(
         "FAILOVER_BACKUP_ENABLED": False,
         "FAILOVER_BACKUP_UNBOUNDED": FAILOVER_BACKUP_UNBOUNDED,
         "FAILOVER_WAS_ENABLED_IN_CONFIG": failover_was_enabled,
-        "PERSISTENT_CONFIG_CHANGED": False,
-        "config_sha256_before": config_sha_before,
-        "config_sha256_after": sha256_text(config_path),
+        "BOUNDED_NEXT_ACTION": (
+            "Sol adapter fix re-audit; then bounded pilot execution (requires --exec, "
+            "still FORBIDDEN until then)"
+        ),
     }
+    try:
+        # execution-local override; the persistent config file is never modified
+        cfg.failover_enabled = False
+        cfg._backfill = True
+        cfg._backfill_start = start
+        cfg._backfill_end = end
 
-    if dry_run:
-        plan["DRY_RUN_STATUS"] = "OK"
-        plan["DRY_RUN_SYMBOL_N"] = len(symbols)
-        plan["MANIFEST_WRITE"] = False
-        plan["REAL_ROOT_WRITE"] = False
-        plan["NETWORK_PROVIDER_DATA_FETCH"] = 0
-        plan["PILOT_COMPLETE"] = False
-        plan["BOUNDED_NEXT_ACTION"] = (
-            "Sol adapter audit; then bounded pilot execution with this exact scope"
+        if dry_run:
+            config_sha_after = sha256_text(config_path)
+            return {
+                **base,
+                "STATUS": "READY",
+                "DRY_RUN_STATUS": "OK",
+                "DRY_RUN_SYMBOL_N": len(symbols),
+                "MANIFEST_WRITE": "NO",
+                "REAL_ROOT_WRITE": "NO",
+                "NETWORK_PROVIDER_DATA_FETCH": "NO",
+                "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
+                "MARKET_DATA_WRITE_STATUS": "NO",
+                "PILOT_COMPLETE": False,
+                "PERSISTENT_CONFIG_CHANGED": config_changed(
+                    config_sha_before, config_sha_after
+                ),
+                "CONFIG_INTEGRITY_STATUS": config_integrity_status(
+                    config_sha_before, config_sha_after
+                ),
+                "config_sha256_before": config_sha_before,
+                "config_sha256_after": config_sha_after,
+                "CONFIG_STATE_RESTORED": True,
+            }
+
+        art_before = ca_artifact_digest(root)
+        state: dict[str, Any] = {"provider_entered": False}
+        execution_error = None
+        try:
+            lifecycle = _run_lifecycle(
+                cfg,
+                symbols,
+                start=start,
+                end=end,
+                engine=engine,
+                today=trade_day,
+                state=state,
+            )
+        except Exception as exc:
+            execution_error = exc
+        config_sha_after = sha256_text(config_path)
+        config_dirty = config_changed(config_sha_before, config_sha_after)
+        network = "YES" if state["provider_entered"] else "UNKNOWN"
+        art_after = ca_artifact_digest(root)
+        market_data = market_data_write_status(art_before, art_after)
+
+        if execution_error is not None:
+            return {
+                **base,
+                "STATUS": "EXECUTION_ERROR",
+                "MANIFEST_WRITE": "YES",
+                "REAL_ROOT_WRITE": "YES",
+                "NETWORK_PROVIDER_DATA_FETCH": network,
+                "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
+                "MARKET_DATA_WRITE_STATUS": market_data,
+                "PILOT_COMPLETE": False,
+                "PERSISTENT_CONFIG_CHANGED": config_dirty,
+                "CONFIG_INTEGRITY_STATUS": config_integrity_status(
+                    config_sha_before, config_sha_after
+                ),
+                "config_sha256_before": config_sha_before,
+                "config_sha256_after": config_sha_after,
+                "error": str(execution_error),
+                "CONFIG_STATE_RESTORED": True,
+            }
+
+        result = lifecycle["step_result"]
+        step_status = result.get("status", "success")
+        failed_symbols = list(result.get("failed_symbols") or [])
+        compact_status = lifecycle["compact_status"]
+        final_status = lifecycle["final_status"]
+        effective_eng = engine if engine is not None else JobEngine(cfg)
+        post = receipt_post_check(
+            effective_eng, lifecycle["run_id"], symbols, start, end
         )
-        return plan
-
-    lifecycle = _run_lifecycle(
-        cfg,
-        symbols,
-        start=start,
-        end=end,
-        engine=engine,
-        today=trade_day,
-    )
-    result = lifecycle["step_result"]
-    step_status = result.get("status", "success")
-    failed_symbols = list(result.get("failed_symbols") or [])
-    pilot_complete = step_status == "success" and len(failed_symbols) == 0
-
-    plan.update(
-        {
-            "STATUS": "PILOT_COMPLETE" if pilot_complete else "PILOT_INCOMPLETE",
+        # PILOT_COMPLETE invariant: corporate success AND no failed symbol AND
+        # compact success AND final success AND no persistent-config mutation.
+        pilot_complete = bool(
+            step_status == "success"
+            and len(failed_symbols) == 0
+            and compact_status == "success"
+            and final_status == "success"
+            and not config_dirty
+        )
+        status = (
+            "WRITE_BOUNDARY_BREACH"
+            if config_dirty
+            else ("PILOT_COMPLETE" if pilot_complete else "PILOT_INCOMPLETE")
+        )
+        return {
+            **base,
+            "STATUS": status,
             "DRY_RUN_STATUS": "N/A",
-            "MANIFEST_WRITE": True,
-            "REAL_ROOT_WRITE": lifecycle["final_status"] == "success",
-            "NETWORK_PROVIDER_DATA_FETCH": 24 if pilot_complete else 0,
+            "MANIFEST_WRITE": "YES",
+            "REAL_ROOT_WRITE": "YES",
+            "NETWORK_PROVIDER_DATA_FETCH": network,
+            "NETWORK_PROVIDER_REQUEST_COUNT": "UNVERIFIED",
+            "MARKET_DATA_WRITE_STATUS": market_data,
             "PILOT_COMPLETE": pilot_complete,
-            "run_id": lifecycle["run_id"],
-            "final_status": lifecycle["final_status"],
-            "step_result": result,
+            "final_status": final_status,
+            "compact_status": compact_status,
             "failed_symbols": failed_symbols,
-            "execution_context_symbols": lifecycle["execution_context_symbols"],
-            "recorded_metadata": lifecycle["recorded_metadata"],
-            "PERSISTENT_CONFIG_CHANGED": False,
-            "config_sha256_after": sha256_text(config_path),
+            "step_result": result,
+            "run_id": lifecycle["run_id"],
+            "receipt_post_check": post,
+            "PERSISTENT_CONFIG_CHANGED": config_dirty,
+            "CONFIG_INTEGRITY_STATUS": config_integrity_status(
+                config_sha_before, config_sha_after
+            ),
+            "config_sha256_before": config_sha_before,
+            "config_sha256_after": config_sha_after,
+            "CONFIG_STATE_RESTORED": True,
         }
-    )
-    return plan
+    finally:
+        for key, val in cfg_snapshot.items():
+            setattr(cfg, key, val)

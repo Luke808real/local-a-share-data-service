@@ -6,6 +6,7 @@ no real data root, no manifest on the real lake, no network.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -89,13 +90,18 @@ class FakeManifest:
                 "task_id": task_id,
                 "dataset": dataset,
                 "symbols": list(symbols or []),
+                "symbols_json": json.dumps(list(symbols or []), ensure_ascii=False),
                 "window_start": window_start,
                 "window_end": window_end,
+                "status": "success",
             }
         )
 
     def finish_batch(self, *args, **kwargs):
         pass
+
+    def get_batches_for_run(self, run_id):
+        return [dict(b) for b in self.batches if b["run_id"] == run_id]
 
 
 class FakeEngine:
@@ -103,6 +109,7 @@ class FakeEngine:
         self.manifest = FakeManifest()
         self.calls = []
         self.contexts = []
+        self.compact_result = {"status": "success"}
         self.corp_result = {
             "status": "success",
             "rows_read": 0,
@@ -130,7 +137,7 @@ class FakeEngine:
                 )
             return dict(self.corp_result)
         if name == "compact":
-            return {"status": "success"}
+            return dict(self.compact_result)
         return {"status": "success"}
 
 
@@ -337,9 +344,11 @@ def test_failover_disabled_for_bounded_run(tmp_path):
         engine=eng,
         identity=make_identity(VALID),
     )
-    assert cfg.failover_enabled is False
     assert report["FAILOVER_BACKUP_ENABLED"] is False
     assert report["FAILOVER_BACKUP_UNBOUNDED"] is True
+    # the bounded run disabled the backup, then restored the caller's value
+    assert report["CONFIG_STATE_RESTORED"] is True
+    assert cfg.failover_enabled is True
 
 
 def test_persistent_config_unchanged(tmp_path):
@@ -373,7 +382,7 @@ def test_dry_run_zero_manifest_write(tmp_path):
         identity=make_identity(VALID),
     )
     assert report["DRY_RUN_STATUS"] == "OK"
-    assert report["MANIFEST_WRITE"] is False
+    assert report["MANIFEST_WRITE"] == "NO"
     assert eng.manifest.runs == [] and eng.manifest.finishes == []
     assert eng.calls == []
 
@@ -389,8 +398,9 @@ def test_dry_run_zero_provider_call(tmp_path):
         engine=eng,
         identity=make_identity(VALID),
     )
-    assert report["NETWORK_PROVIDER_DATA_FETCH"] == 0
-    assert report["REAL_ROOT_WRITE"] is False
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "NO"
+    assert report["REAL_ROOT_WRITE"] == "NO"
+    assert report["CONFIG_STATE_RESTORED"] is True
     assert eng.calls == []
 
 
@@ -414,6 +424,9 @@ def test_step_failure_not_complete(tmp_path):
     assert report["PILOT_COMPLETE"] is False
     assert report["failed_symbols"] == ["600000.SH"]
     assert report["final_status"] == "failed"
+    # provider (corporate_actions) execution path was entered -> NOT "NO"
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "YES"
+    assert report["MANIFEST_WRITE"] == "YES"
 
 
 def test_compact_finish_ordering_matches_pinned_lifecycle(tmp_path):
@@ -469,3 +482,231 @@ def test_no_direct_downloader_in_source():
         assert banned not in src, f"banned downloader path in adapter source: {banned}"
     # wrapper-only proof: the ONLY fetch path is the pinned registered step
     assert 'run_step("corporate_actions"' in src
+
+
+# ---- CLI mode tests --------------------------------------------------------
+def _load_cli():
+    import importlib.util
+
+    tool_p = (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "run_r4a0_corporate_actions_pilot.py"
+    )
+    spec = importlib.util.spec_from_file_location("r4a0_cli", tool_p)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _cli_run(monkeypatch, argv, report=None):
+    mod = _load_cli()
+    calls = []
+
+    def fake_pilot(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return report if report is not None else {"STATUS": "READY"}
+
+    monkeypatch.setattr(mod, "run_bounded_pilot", fake_pilot)
+    monkeypatch.setattr("sys.argv", ["r4a0_cli"] + argv)
+    rc = mod.main()
+    return rc, calls, mod
+
+
+def test_cli_default_dry_run(monkeypatch):
+    rc, calls, _ = _cli_run(monkeypatch, ["--symbols", "600000.SH"])
+    assert rc == 0
+    assert calls and calls[0]["kwargs"]["dry_run"] is True
+
+
+def test_cli_dry_run_flag(monkeypatch):
+    rc, calls, _ = _cli_run(monkeypatch, ["--dry-run", "--symbols", "600000.SH"])
+    assert rc == 0
+    assert calls and calls[0]["kwargs"]["dry_run"] is True
+
+
+def test_cli_exec_reachable(monkeypatch):
+    rc, calls, _ = _cli_run(monkeypatch, ["--exec", "--symbols", "600000.SH"])
+    assert rc == 0
+    assert calls is not None and len(calls) == 1
+    assert calls[0]["kwargs"]["dry_run"] is False
+
+
+def test_cli_conflicting_flags_rejected(monkeypatch):
+    with pytest.raises(SystemExit) as excinfo:
+        _cli_run(monkeypatch, ["--dry-run", "--exec", "--symbols", "600000.SH"])
+    assert excinfo.value.code == 2
+
+
+# ---- execution hardening tests --------------------------------------------
+def test_compact_failed_incomplete(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.compact_result = {"status": "failed"}
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+    )
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+    assert report["PILOT_COMPLETE"] is False
+    assert report["compact_status"] == "failed"
+
+
+def test_compact_warning_incomplete(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.compact_result = {"status": "warning"}
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+    )
+    assert report["STATUS"] == "PILOT_INCOMPLETE"
+    assert report["PILOT_COMPLETE"] is False
+    assert report["compact_status"] == "warning"
+
+
+def test_incomplete_never_reports_network_no(tmp_path):
+    root = tmp_path / "root"
+    eng = FakeEngine()
+    eng.compact_result = {"status": "failed"}
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=eng,
+        identity=make_identity(VALID),
+    )
+    assert report["PILOT_COMPLETE"] is False
+    # the corporate provider execution path was entered -> never "NO"
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "YES"
+    assert report["NETWORK_PROVIDER_REQUEST_COUNT"] == "UNVERIFIED"
+
+
+def test_real_execution_manifest_write_yes(tmp_path):
+    root = tmp_path / "root"
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=FakeEngine(),
+        identity=make_identity(VALID),
+    )
+    assert report["MANIFEST_WRITE"] == "YES"
+
+
+def test_real_execution_real_root_write_yes(tmp_path):
+    root = tmp_path / "root"
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg_factory(),
+        engine=FakeEngine(),
+        identity=make_identity(VALID),
+    )
+    assert report["REAL_ROOT_WRITE"] == "YES"
+
+
+def test_success_config_restored(tmp_path):
+    root = tmp_path / "root"
+    cfg = cfg_factory()
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg,
+        engine=FakeEngine(),
+        identity=make_identity(VALID),
+    )
+    assert report["STATUS"] == "PILOT_COMPLETE"
+    assert cfg.failover_enabled is True
+    assert cfg._backfill is False
+    assert cfg._backfill_start is None
+    assert cfg._backfill_end is None
+
+
+def test_failure_config_restored(tmp_path):
+    root = tmp_path / "root"
+    cfg = cfg_factory()
+    eng = FakeEngine()
+    eng.corp_result = {
+        "status": "failed",
+        "failed_symbols": ["600000.SH"],
+        "rows_read": 0,
+        "rows_written": 0,
+    }
+    adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg,
+        engine=eng,
+        identity=make_identity(VALID),
+    )
+    assert cfg.failover_enabled is True
+
+
+def test_exception_config_restored(tmp_path):
+    root = tmp_path / "root"
+    cfg = cfg_factory()
+
+    class RaisingEngine(FakeEngine):
+        def run_step(self, name, trade_date, run_id, context=None):
+            self.calls.append(name)
+            raise RuntimeError("boom")
+
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg,
+        engine=RaisingEngine(),
+        identity=make_identity(VALID),
+    )
+    assert report["STATUS"] == "EXECUTION_ERROR"
+    assert report["PILOT_COMPLETE"] is False
+    assert report["NETWORK_PROVIDER_DATA_FETCH"] == "YES"
+    assert cfg.failover_enabled is True
+
+
+def test_dry_run_config_restored(tmp_path):
+    root = tmp_path / "root"
+    cfg = cfg_factory()
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg,
+        dry_run=True,
+        identity=make_identity(VALID),
+    )
+    assert report["DRY_RUN_STATUS"] == "OK"
+    assert cfg.failover_enabled is True
+    assert report["CONFIG_STATE_RESTORED"] is True
+
+
+def test_config_hash_mutation_boundary_breach(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    seq = {"n": 0}
+
+    def fake_sha(path):
+        seq["n"] += 1
+        return "AA" if seq["n"] == 1 else "BB"
+
+    monkeypatch.setattr(adapter, "sha256_text", fake_sha)
+    cfg = cfg_factory()
+    report = adapter.run_bounded_pilot(
+        VALID[:2],
+        root=root,
+        cfg=cfg,
+        engine=FakeEngine(),
+        identity=make_identity(VALID),
+        config_path=tmp_path / "cnequity.toml",
+    )
+    assert report["STATUS"] == "WRITE_BOUNDARY_BREACH"
+    assert report["PILOT_COMPLETE"] is False
+    assert report["PERSISTENT_CONFIG_CHANGED"] is True
+    assert report["CONFIG_INTEGRITY_STATUS"] == "CHANGED"
+    assert cfg.failover_enabled is True  # restored even on boundary breach

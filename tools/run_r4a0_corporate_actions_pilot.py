@@ -31,22 +31,23 @@ def main() -> int:
         required=True,
         help="Comma-separated canonical SH/SZ symbols, 1..24",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--dry-run",
         action="store_true",
-        default=True,
-        help="Validate gates + print execution plan; no manifest/provider/root write.",
+        default=False,
+        help="Validate gates + print execution plan; no manifest/provider/root "
+        "write. This is also the default when no mode flag is given.",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--exec",
         action="store_true",
-        help="REAL bounded execution. FORBIDDEN until Sol adapter audit. "
-        "Requires explicitly passing --exec (and --dry-run stays off).",
+        help="REAL bounded execution (dry_run=False). FORBIDDEN until Sol "
+        "adapter fix re-audit. Conflicting with --dry-run is rejected.",
     )
     args = parser.parse_args()
 
-    if args.exec and args.dry_run:
-        parser.error("--exec and --dry-run are mutually exclusive")
+    dry_run = not args.exec  # default mode is dry-run
 
     config_path = (REPO_ROOT / args.config).resolve()
     with config_path.open("rb") as fh:
@@ -59,16 +60,10 @@ def main() -> int:
         symbols,
         root=root,
         cfg=cfg,
-        dry_run=not args.exec,
+        dry_run=dry_run,
         config_path=config_path,
     )
     print(json.dumps(report, indent=2, default=str))
-    if args.exec:
-        print(
-            "NOTE: real execution is forbidden until Sol adapter audit; "
-            "this run did not execute.",
-            file=sys.stderr,
-        )
     return 0 if report.get("STATUS") in ("READY", "PILOT_COMPLETE") else 1
 
 
