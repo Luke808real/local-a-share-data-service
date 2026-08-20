@@ -1,0 +1,20 @@
+{
+  "date": "2026-08-20",
+  "branch": "codex/r4a0-resumable-full-bootstrap-v01",
+  "STATUS": "READY",
+  "DRY_RUN_STATUS": "OK",
+  "EXPECTED_SYMBOL_N": 5456,
+  "EXPECTED_SYMBOL_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+  "COVERED_SYMBOL_N": 24,
+  "REMAINING_SYMBOL_N": 5432,
+  "CHUNK_SIZE": 24,
+  "CHUNK_COUNT": 227,
+  "CHUNK_PLAN_HASH": "9d34dd4b214945948edee3a1d584b31c7c5124c92545e354b9af41c049da6348",
+  "FIRST_3_CHUNKS": [1, 2, 3],
+  "LAST_3_CHUNKS": [225, 226, 227],
+  "MANIFEST_IS_RESUME_AUTHORITY": true,
+  "NETWORK_PROVIDER_DATA_FETCH": "NO",
+  "MANIFEST_WRITE": "NO",
+  "REAL_ROOT_WRITE": "NO",
+  "covered_source": "manifest corporate_actions_chunk success full-window receipts"
+}
