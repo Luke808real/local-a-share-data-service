@@ -29,7 +29,7 @@
     "MISMATCH": 3,
     "MAX_DIFF": 0.02,
     "PARITY_STATUS": "PARTIAL",
-    "mismatch_note": "3 mismatches all cash-dividend-only, diffs 0.01-0.02 (rounding/precision) — not differential-dividend signal"
+    "mismatch_note": "Historical probe note superseded: cash-only rows require row-specific official authority; no generalized non-differential or rounding conclusion is permitted"
   },
   "EX_DATE_MULTI_ACTION": {
     "N": 50,

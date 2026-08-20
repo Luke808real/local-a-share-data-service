@@ -1,5 +1,10 @@
 # R4A2 BAOSTOCK HISTORICAL PRECLOSE PROBE — V01
 
+> SUPERSEDED_HISTORICAL_REPORT: The row-level diagnosis below is retained as
+> historical evidence only. The current authority is
+> `R4A2_1_PRECLOSE_PARITY_EVIDENCE_HARDENING_V01.md`; no general conclusion
+> that a cash-only mismatch is non-differential may be inferred from this file.
+
 DATE: 2026-08-20
 BRANCH: codex/r4a2-baostock-preclose-probe-v01
 BASE_HEAD: 31fa2b02baab006394d00bc4a41275bf35979c74
@@ -63,12 +68,15 @@ EX_DATE_STANDARD_PARITY_STATUS        PARTIAL
 EX_DATE_MULTI_ACTION_PARITY_STATUS    PARTIAL
 ```
 
-### 5.1 Mismatch diagnosis (7)
+### 5.1 Mismatch diagnosis (historical; not a final classification)
 
-- 3 cash-dividend-only mismatches, diff 0.01–0.02: rounding/precision of the
-  source (e.g. 002304.SZ cash 3.00 -> 195.18 vs 195.20). Not a formula error.
-- 4 cash+bonus combinations, diff 0.02–0.13 (e.g. 688486.SH 0.13): candidate
-  differential-dividend / per-share basis issue. **Not auto-claimed.**
+- The earlier probe did not have sufficient official row-level evidence to
+  classify cash-only mismatches. They remain an explicit official-authority
+  check item in the hardening report; no generalized rounding or
+  non-differential conclusion is valid.
+- Cash+bonus combinations remain subject to official differential-dividend /
+  per-share-basis evidence. The current hardening receipt records the
+  row-specific official terms and preserves unresolved display-precision cases.
 
 ```text
 DIFFERENTIAL_DIVIDEND_COVERAGE_STATUS = CANDIDATE
@@ -121,7 +129,7 @@ outputs only /tmp JSON + report/receipt. Market lake untouched.
 ```text
 BAOSTOCK_HISTORICAL_PRECLOSE_CAPABILITY   PASS
 NORMAL_PARITY_STATUS                      PASS        (50/50 EXACT)
-EX_DATE_STANDARD_PARITY_STATUS            PARTIAL     (96/100 within 0.01; 3 cash-only 0.01-0.02)
+EX_DATE_STANDARD_PARITY_STATUS            HISTORICAL_PARTIAL (superseded row-level diagnosis)
 EX_DATE_MULTI_ACTION_PARITY_STATUS        PARTIAL     (45/50 within 0.01; 4 combos 0.02-0.13 -> Sol)
 IPO_CROSSCHECK_REFERENCE_AVAILABLE        true
 WINDOW_EDGE_CROSSCHECK_AVAILABLE          true
