@@ -1,0 +1,54 @@
+{
+  "status": "BOOTSTRAP_PILOT_BLOCKED_NO_BOUNDED_SYMBOL_INTERFACE",
+  "date": "2026-08-20",
+  "branch": "codex/r4a0-corporate-actions-bootstrap-pilot-v01",
+  "base_head": "6a7b76320f91003bd59b123d5f86c07edd599616",
+  "upstream": {
+    "repo": "rootSunc/CNEquity",
+    "version": "v0.7.2",
+    "pin_sha": "a18ee0484dfb0801650175471724def3228b8a17"
+  },
+  "window": {
+    "start": "2016-01-01",
+    "end": "2026-08-17"
+  },
+  "block_reasons": [
+    "cne backfill --symbols rejects corporate_actions via _override_scope (SCOPED_DATASETS excludes it)",
+    "step_corporate_actions symbol source is only load_symbols(config)=full instruments or context._retry_symbols (retry-of-prior-failed-subset only)",
+    "no first-time arbitrary-subset bounded interface exists in pinned CLI/engine"
+  ],
+  "evidence": [
+    "cnequity/cli/main.py backfill(): symbols branch -> _override_scope; SCOPED_DATASETS={minute_bars,minute_bars_5m,trade_ticks}",
+    "cnequity/steps/events.py step_corporate_actions(): symbols = context.get('_retry_symbols') or load_symbols(config)",
+    "cnequity/orchestrator/engine.py _retry_run(): sets context['_retry_symbols'] from prior run failed batches",
+    "cnequity/steps/common.py load_symbols(): curated instruments full universe"
+  ],
+  "pilot_candidate": {
+    "n": 24,
+    "composition": {
+      "active_sh": 6,
+      "active_sz": 6,
+      "delisted_sh": 6,
+      "delisted_sz": 6
+    },
+    "symbols": [
+      "000001.SZ", "000002.SZ", "000004.SZ", "000005.SZ",
+      "000006.SZ", "000007.SZ", "000008.SZ", "000009.SZ",
+      "000018.SZ", "000022.SZ", "000023.SZ", "000033.SZ",
+      "600000.SH", "600004.SH", "600005.SH", "600006.SH",
+      "600007.SH", "600008.SH", "600009.SH", "600068.SH",
+      "600069.SH", "600070.SH", "600074.SH", "600077.SH"
+    ],
+    "symbol_hash": "e846331eae6cc090eb8b4f9109f0f25f2692e7ad759acd41b3eb4d62241f3661",
+    "identity_source": "curated/daily_bars unique symbols (5456) + r3-identity-receipt shsz_formal_delisted (248)",
+    "not_executed": true
+  },
+  "real_root_write": false,
+  "network_provider_data_fetch": 0,
+  "market_data_changed": "NO",
+  "bounded_next_action": [
+    "Sol to authorize a minimal audited arbitrary-symbol scope for corporate_actions backfill, or",
+    "confirm an existing official bounded interface, or",
+    "close the pilot"
+  ]
+}
