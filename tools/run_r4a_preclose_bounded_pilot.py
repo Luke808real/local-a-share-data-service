@@ -2,10 +2,10 @@
 """Bounded R4A preclose adapter pilot (dry-run by default; real exec forbidden).
 
 The bounded adapter builds the formal preclose_facts row contract for the
-frozen R4A3 24-symbol pilot from a BaoStock query_history_k_data_plus response.
-This task is implementation + offline regression + real-root dry-run only:
-provider fetch is forbidden, real --exec is forbidden, and no preclose market
-dataset is written.
+frozen R4A3 24-symbol pilot from a BaoStock query_history_k_data_plus response
+under the hardened V01.1 authority. This task is minimal correctness patch +
+offline regression + read-only real-root dry-run only: provider fetch is
+forbidden, real --exec is forbidden, and no preclose market dataset is written.
 """
 
 from __future__ import annotations
@@ -22,44 +22,38 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from ashare_data.r4a_preclose_bounded_adapter import (  # noqa: E402
     AS_OF,
+    CNEQUITY_PIN,
     DATA_ROOT_DEFAULT,
+    EXPECTED_ADAPTER_SHA,
     WINDOW_START,
     build_query_plan,
     load_frozen_sentinel_evidence,
     load_pilot_symbols,
-    real_root_identity,
-    verify_frozen_sentinels,
+    r4a0_prerequisite,
 )
 
 OUTPUT_DIR = REPO_ROOT / "reports" / "implementation"
-REPORT_PATH = OUTPUT_DIR / "R4A5_PRECLOSE_BOUNDED_ADAPTER_V01.md"
+REPORT_PATH = OUTPUT_DIR / "R4A5_PRECLOSE_BOUNDED_ADAPTER_V01_1.md"
 
 
 def _render_report(result: dict[str, Any]) -> str:
     lines = [
-        "# R4A5 PRECLOSE BOUNDED ADAPTER — V01 (author report)",
+        "# R4A5.1 PRECLOSE BOUNDED ADAPTER HARDENING — V01_1 (author report)",
         "",
         "DATE: 2026-08-21",
-        "BRANCH: codex/r4a5-preclose-bounded-adapter-v01",
+        "BRANCH: codex/r4a5-1-preclose-adapter-hardening-v01",
         f"CONTRACT_HEAD: {result['CONTRACT_HEAD']}",
         f"AS_OF: {AS_OF.isoformat()}",
-        f"PINNED_CNEquity: {result.get('CNEQUITY_PIN', '')}",
+        f"PINNED_CNEquity: {CNEQUITY_PIN}",
         "",
         f"## ADAPTER_STATUS={result.get('ADAPTER_STATUS')}",
         "",
-        "## FILES_CHANGED",
+        "## R4A0 PREREQUISITE (independent fields)",
         "",
-        "src/ashare_data/r4a_preclose_bounded_adapter.py",
-        "tools/run_r4a_preclose_bounded_pilot.py",
-        "tests/test_r4a_preclose_bounded_adapter.py",
-        "reports/implementation/R4A5_PRECLOSE_BOUNDED_ADAPTER_V01.md",
-        "",
-        "## TESTS",
-        "",
-        "TARGETED_TESTS=25 passed (offline, fake provider, zero real calls)",
-        "adapter normalization 1-11, clean-normal parity 12-17, sentinels 18-19,",
-        "query-plan determinism 20, dry-run zero-write 21, superset non-block,",
-        "required-key loader, real-root identity shape.",
+        f"R4A0_READY={result.get('R4A0_READY')}   (r4a0 run_gate)",
+        f"R3_IDENTITY_MATCH={result.get('R3_IDENTITY_MATCH')}   (independent)",
+        f"FORMAL_IDENTITY_N={result.get('FORMAL_IDENTITY_N')}",
+        f"FORMAL_IDENTITY_HASH={result.get('FORMAL_IDENTITY_HASH')}",
         "",
         "## DRY_RUN",
         "",
@@ -71,26 +65,24 @@ def _render_report(result: dict[str, Any]) -> str:
         f"NETWORK_PROVIDER_DATA_FETCH={result.get('NETWORK_PROVIDER_DATA_FETCH')}",
         f"MARKET_DATA_WRITE={result.get('MARKET_DATA_WRITE')}",
         "",
-        "## REAL-ROOT IDENTITY",
+        "## OFFICIAL SENTINELS (expected contract; runtime NOT_RUN in dry-run)",
         "",
-        f"R4A0_READY={result.get('R4A0_READY')}",
-        f"FORMAL_IDENTITY_N={result.get('FORMAL_IDENTITY_N')}",
-        f"FORMAL_IDENTITY_HASH={result.get('FORMAL_IDENTITY_HASH')}",
+        f"FROZEN_SENTINEL_EXPECTED_N={result.get('FROZEN_SENTINEL_EXPECTED_N')}",
+        f"FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS={result.get('FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS')}",
         "",
-        "## OFFICIAL SENTINELS (frozen evidence, no re-fetch)",
+        "## QUERY PLAN HASH CONTRACT",
         "",
-        f"SENTINEL_N={result.get('SENTINEL_N')}",
-        f"SENTINEL_EXACT_N={result.get('SENTINEL_EXACT_N')}",
-        f"SENTINEL_MISMATCH_N={result.get('SENTINEL_MISMATCH_N')}",
-        f"FROZEN_OFFICIAL_SENTINEL_PASS={result.get('FROZEN_OFFICIAL_SENTINEL_PASS')}",
+        "QUERY_PLAN_HASH covers symbol, bs_code, year, start, end, fields,",
+        "frequency, adjustflag, source_version, query_contract_version, AS_OF,",
+        "WINDOW_START, CNEQUITY_PIN. Same executable contract -> same hash.",
         "",
         "## QUALITY_GATE_CONTRACT",
         "",
         "QUALITY_GATE_PASS=true only if FORMAL_FACT_ROW_N==REQUIRED_ROW_N AND",
         "MISSING_REQUIRED_N=0 AND UNEXPECTED_TRADED_N=0 AND TRADESTATUS_UNKNOWN_N=0",
-        "AND IDENTITY_FAILURE_N=0 AND DUPLICATE_N=0 AND POST_ASOF_N=0",
-        "AND INVALID_PRECLOSE_N=0 AND every formal row has provider_tradestatus=1,",
-        "finite positive preclose, coverage_status=COVERED.",
+        "AND IDENTITY_FAILURE_N=0 AND WINDOW_SCOPE_FAILURE_N=0 AND DUPLICATE_N=0",
+        "AND POST_ASOF_N=0 AND INVALID_PRECLOSE_N=0 AND every formal row has",
+        "provider_tradestatus=1, finite positive preclose, coverage_status=COVERED.",
         "PROVIDER_SUSPENDED_SUPERSET_N may be >0 (non-blocking).",
         "",
         "## FORMAL_ROW_CONTRACT",
@@ -100,6 +92,7 @@ def _render_report(result: dict[str, Any]) -> str:
         "source=BAOSTOCK_HISTORY_K_PRECLOSE, source_version=baostock-0.9.3,",
         "query_contract_version=R4A_PRECLOSE_V01, provider_tradestatus=1,",
         "coverage_status=COVERED. Audit rows never enter preclose_facts.",
+        "adapter_version requires expected+runtime SHA match in real execution.",
         "",
         "## WRITE_BOUNDARY",
         "",
@@ -107,6 +100,7 @@ def _render_report(result: dict[str, Any]) -> str:
         "MARKET_DATA_WRITE=NO",
         "MANIFEST_MUTATION=NO",
         "REAL_ROOT_ACCESS=READ_ONLY",
+        "PROVIDER_DATA_FETCH=NO",
         "",
         "## KNOWN_UNIMPLEMENTED",
         "",
@@ -117,7 +111,7 @@ def _render_report(result: dict[str, Any]) -> str:
         "",
         "Sol independent audit of the exact pushed commit; upon code-audit",
         "approval, a separate bounded real pilot may reuse this adapter with a",
-        "real BaoStock session (provider fetch).",
+        "real BaoStock session (provider fetch) under the hardened gates.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -154,42 +148,47 @@ def main() -> int:
 
     try:
         pilot = load_pilot_symbols(REPO_ROOT)
-        identity = real_root_identity(args.data_root)
+        prereq = r4a0_prerequisite(args.data_root)
         plan = build_query_plan(pilot["pilot_symbols"], window_start=WINDOW_START, as_of=AS_OF)
         sentinels = load_frozen_sentinel_evidence(REPO_ROOT)
-        sentinel_result = verify_frozen_sentinels(sentinels)
+        sentinel_expected = len(sentinels)
     except Exception as exc:  # noqa: BLE001 - CLI surface
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
     result: dict[str, Any] = {
         "CONTRACT_HEAD": "e0b6c9325c2a2951c4c51dff4c2ee2332115d48c",
-        "BRANCH": "codex/r4a5-preclose-bounded-adapter-v01",
-        "CNEQUITY_PIN": "a18ee0484dfb0801650175471724def3228b8a17",
-        "ADAPTER_VERSION": _git_head(),
+        "BRANCH": "codex/r4a5-1-preclose-adapter-hardening-v01",
         "ADAPTER_STATUS": "IMPLEMENTED_DRY_RUN_ONLY",
-        "DRY_RUN_STATUS": "OK",
+        "R4A0_READY": prereq["R4A0_READY"],
+        "R3_IDENTITY_MATCH": prereq["R3_IDENTITY_MATCH"],
+        "FORMAL_IDENTITY_N": prereq["FORMAL_IDENTITY_N"],
+        "FORMAL_IDENTITY_HASH": prereq["FORMAL_IDENTITY_HASH"],
         "PILOT_SYMBOL_N": len(pilot["pilot_symbols"]),
         "PILOT_SYMBOL_HASH": pilot["pilot_symbol_hash"],
         "QUERY_WINDOW_N": plan["QUERY_WINDOW_N"],
         "QUERY_PLAN_HASH": plan["QUERY_PLAN_HASH"],
-        "NETWORK_PROVIDER_DATA_FETCH": "NO",
-        "MARKET_DATA_WRITE": "NO",
-        "R4A0_READY": identity["R4A0_READY"],
-        "FORMAL_IDENTITY_N": identity["formal_identity_n"],
-        "FORMAL_IDENTITY_HASH": identity["formal_identity_hash"],
-        "SENTINEL_N": sentinel_result["SENTINEL_N"],
-        "SENTINEL_EXACT_N": sentinel_result["SENTINEL_EXACT_N"],
-        "SENTINEL_MISMATCH_N": sentinel_result["SENTINEL_MISMATCH_N"],
-        "FROZEN_OFFICIAL_SENTINEL_PASS": sentinel_result["FROZEN_OFFICIAL_SENTINEL_PASS"],
+        "EXPECTED_ADAPTER_SHA": EXPECTED_ADAPTER_SHA,
+        "RUNTIME_HEAD": _git_head(),
+        "FROZEN_SENTINEL_EXPECTED_N": sentinel_expected,
     }
+    if not prereq["R4A0_READY"]:
+        result["DRY_RUN_STATUS"] = "BLOCKED"
+        result["FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS"] = "NOT_RUN_DRY_RUN"
+        result["NETWORK_PROVIDER_DATA_FETCH"] = "NO"
+        result["MARKET_DATA_WRITE"] = "NO"
+    else:
+        result["DRY_RUN_STATUS"] = "OK"
+        result["FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS"] = "NOT_RUN_DRY_RUN"
+        result["NETWORK_PROVIDER_DATA_FETCH"] = "NO"
+        result["MARKET_DATA_WRITE"] = "NO"
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if args.report:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         REPORT_PATH.write_text(_render_report(result), encoding="utf-8")
         print(f"\nreport written: {REPORT_PATH}")
-    return 0
+    return 1 if not prereq["R4A0_READY"] else 0
 
 
 if __name__ == "__main__":

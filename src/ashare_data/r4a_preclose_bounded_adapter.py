@@ -1,4 +1,4 @@
-"""R4A bounded BaoStock preclose adapter (implementation stage, V01).
+"""R4A bounded BaoStock preclose adapter (hardened V01.1, V01_1).
 
 Frozen contract authority:
   docs/plans/R4A_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01.md (V01.1)
@@ -6,14 +6,24 @@ Frozen contract authority:
 This module builds the formal preclose_facts rows for a bounded symbol set
 from a BaoStock query_history_k_data_plus response (fields
 date,code,preclose,tradestatus; frequency d; adjustflag 3), strictly
-normalizing every provider row and failing closed. It never fetches from the
-provider itself and never writes market data; all results are in-memory and
-offline tests use a fake provider.
+normalizing every provider row and failing closed. It never writes market
+data; all results are in-memory and offline tests use a fake provider.
 
-The real BaoStock login/query capability is deliberately not executed in this
-task. BaostockSessionProvider is the thin production wrapper that reuses
-BaoStock login/query_history_k_data_plus; it exists only as the future real
-path and is never called here (dry-run and tests do not enter it).
+Hardening (R4A5.1) corrections:
+  1. R4A0 prerequisite reuses r4a0_corporate_actions_gate.run_gate; the old
+     "R3 identity match -> R4A0_READY" mapping is removed. R3_IDENTITY_MATCH
+     is reported independently.
+  2. Frozen sentinel gate compares current formal rows against official
+     references; old receipt baostock_preclose is no longer the observed value.
+  3. Provider PK duplicate gate runs after identity/date form the PK but
+     before tradestatus / required / preclose classification.
+  4. Clean-NORMAL parity is fail-closed (REQUIRED == COMPARABLE, UNCOMPARED=0).
+  5. Real BaostockSessionProvider wrapper is implemented but never called in
+     this task (lazy import; login/query/logout + result normalization).
+  6. Query-window identity: every returned row must match requested code and
+     lie inside the requested window.
+  7. QUERY_PLAN_HASH covers the full executable contract.
+  8. adapter_version provenance: real execution requires expected+runtime SHA.
 """
 
 from __future__ import annotations
@@ -58,6 +68,10 @@ CLOSURE_RECEIPT_REL = Path(
     "reports/research/R4A3_1_BAOSTOCK_PRECLOSE_SOURCE_CLOSURE_RECEIPT.json"
 )
 
+# Expected implementation HEAD the real execution may use as code authority.
+# Offline fixtures may inject "TEST"; real pilot must match an explicit SHA.
+EXPECTED_ADAPTER_SHA = "710a7c80cb434955c38475f3bdd4a1403d5c6a41"
+
 
 def bs_code(symbol: str) -> str:
     code, exchange = symbol.split(".")
@@ -91,8 +105,8 @@ def display_equal(left: Any, right: Any) -> bool:
     """Exact equality at exchange display precision (0.01, ROUND_HALF_UP).
 
     This is not a +-0.01 tolerance: two values must be identical after the
-    same deterministic display normalization. CLEAN_NORMAL parity PASS
-    requires raw values to be display-exact; no mismatch window is allowed.
+    same deterministic display normalization. Parity PASS requires raw values
+    to be display-exact; no mismatch window is allowed.
     """
     try:
         left_dec = Decimal(str(left)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -103,11 +117,7 @@ def display_equal(left: Any, right: Any) -> bool:
 
 
 class BaoStockPrecloseProvider(Protocol):
-    """Provider contract for the bounded adapter.
-
-    The real implementation (BaostockSessionProvider) is never invoked in this
-    task. Tests inject a fake provider implementing this shape.
-    """
+    """Provider contract for the bounded adapter (real wrapper / fake)."""
 
     def query_history_k_data_plus(
         self,
@@ -121,16 +131,29 @@ class BaoStockPrecloseProvider(Protocol):
 
 
 class BaostockSessionProvider:
-    """Thin production wrapper over the real BaoStock login/query capability.
+    """Minimal real BaoStock wrapper. Implemented, never called in this task.
 
-    Present for the future real execution path only. It is intentionally never
-    called in the bounded-adapter task (no provider fetch allowed) and would
-    import BaoStock lazily on first use. Both login and query raise a hard
-    NotImplementedError so this task cannot accidentally run a real fetch.
+    Reuses baostock==0.9.3 query_history_k_data_plus with fields
+    date,code,preclose,tradestatus; frequency=d; adjustflag=3. BaoStock is
+    imported lazily so the adapter can be loaded offline. The wrapper validates
+    error_code == "0" and enforces row field identity. In this task neither
+    login nor query may actually run; offline tests monkeypatch a fake module.
     """
 
-    def login(self) -> str:
-        raise NotImplementedError("real BaoStock login is FORBIDDEN in this task")
+    def __init__(self) -> None:
+        self._bs: Any = None
+        self._logged_in = False
+
+    def login(self) -> None:
+        # pylint: disable=import-outside-toplevel
+        import baostock as bs  # type: ignore[import-not-found]
+
+        self._bs = bs
+        result = bs.login()
+        error_code = str(getattr(result, "error_code", ""))
+        if error_code != "0":
+            raise RuntimeError(f"baostock login failed: {getattr(result, 'error_msg', '')}")
+        self._logged_in = True
 
     def query_history_k_data_plus(
         self,
@@ -140,8 +163,38 @@ class BaostockSessionProvider:
         end_date: str,
         frequency: str,
         adjustflag: str,
-    ) -> Iterable[list[str]]:
-        raise NotImplementedError("real BaoStock query is FORBIDDEN in this task")
+    ) -> list[list[str]]:
+        """Query BaoStock and return raw row fields (date,code,preclose,tradestatus)."""
+        if not self._logged_in or self._bs is None:
+            raise RuntimeError("must login before query")
+        result = self._bs.query_history_k_data_plus(
+            code,
+            fields,
+            start_date=start_date,
+            end_date=end_date,
+            frequency=frequency,
+            adjustflag=adjustflag,
+        )
+        error_code = str(getattr(result, "error_code", ""))
+        if error_code != "0":
+            raise RuntimeError(
+                f"baostock query failed for {code}: {getattr(result, 'error_msg', '')}"
+            )
+        rows: list[list[str]] = []
+        while result.next():
+            row = list(result.get_row_data())
+            if len(row) != len(fields.split(",")):
+                raise RuntimeError(f"baostock row field count mismatch for {code}")
+            rows.append(row)
+        return rows
+
+    def logout(self) -> None:
+        if self._bs is not None and self._logged_in:
+            self._bs.logout()
+        self._logged_in = False
+
+    def close(self) -> None:
+        self.logout()
 
 
 def load_pilot_symbols(repo_root: Path | None = None) -> dict[str, Any]:
@@ -165,6 +218,19 @@ def load_pilot_symbols(repo_root: Path | None = None) -> dict[str, Any]:
     return {"pilot_symbols": symbols, "pilot_symbol_hash": computed_hash}
 
 
+def _scan_daily_bars(root: Path, symbol_list: list[str]) -> pl.DataFrame:
+    return (
+        pl.scan_parquet(str(root / "curated" / "daily_bars" / "**" / "*.parquet"))
+        .select(["symbol", "trade_date"])
+        .filter(pl.col("symbol").is_in(symbol_list))
+        .collect()
+        .with_columns(
+            pl.col("symbol").cast(pl.String),
+            pl.col("trade_date").cast(pl.Date),
+        )
+    )
+
+
 def load_required_keys(
     root: Path,
     symbols: Iterable[str],
@@ -181,19 +247,8 @@ def load_required_keys(
     universe.
     """
     symbol_list = sorted(set(symbols))
-    all_bars = (
-        pl.scan_parquet(str(root / "curated" / "daily_bars" / "**" / "*.parquet"))
-        .select(["symbol", "trade_date"])
-        .filter(pl.col("symbol").is_in(symbol_list))
-        .collect()
-        .with_columns(
-            pl.col("symbol").cast(pl.String),
-            pl.col("trade_date").cast(pl.Date),
-        )
-    )
-    post_asof_n = int(
-        all_bars.filter(pl.col("trade_date") > as_of).height
-    )
+    all_bars = _scan_daily_bars(root, symbol_list)
+    post_asof_n = int(all_bars.filter(pl.col("trade_date") > as_of).height)
     bars = all_bars.filter(
         (pl.col("trade_date") >= window_start) & (pl.col("trade_date") <= as_of)
     )
@@ -222,21 +277,42 @@ def load_required_keys(
     }
 
 
+def _identity_and_window_failure(
+    row: dict[str, Any],
+    expected_code: str,
+    requested_window: dict[str, Any] | None,
+) -> str | None:
+    """Return failure enum if the row fails identity/window, else None."""
+    parsed_date = parse_date(row.get("date"))
+    if parsed_date is None or row.get("code") != expected_code:
+        return "IDENTITY_FAILURE"
+    if requested_window is not None:
+        start = parse_date(requested_window.get("start"))
+        end = parse_date(requested_window.get("end"))
+        if start is None or end is None or not (start <= parsed_date <= end):
+            return "WINDOW_SCOPE_FAILURE"
+    return None
+
+
 def normalize_baostock_preclose_rows(
     provider_rows: Iterable[dict[str, Any]],
     required_keys: set[tuple[str, date]],
     symbols: Iterable[str],
     *,
     as_of: date = AS_OF,
+    requested_window: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Strictly classify provider rows into the frozen contract's bins.
 
-    Output classifications: ELIGIBLE_REQUIRED_ROW, PROVIDER_SUSPENDED_SUPERSET,
-    UNEXPECTED_TRADED, TRADESTATUS_UNKNOWN, IDENTITY_FAILURE, POST_ASOF,
-    DUPLICATE.
+    Classifications:
+      ELIGIBLE_REQUIRED_ROW / PROVIDER_SUSPENDED_SUPERSET / UNEXPECTED_TRADED /
+      TRADESTATUS_UNKNOWN / IDENTITY_FAILURE / WINDOW_SCOPE_FAILURE /
+      POST_ASOF / DUPLICATE / INVALID_PRECLOSE
 
-    A formal candidate must be: required key, tradestatus == "1", preclose
-    finite positive, provider code exact, provider date exact, <= AS_OF.
+    Duplicate detection runs on the provider PK (symbol, date) after
+    identity/date form the PK but BEFORE tradestatus/required/preclose
+    classification, so any duplicate (status0+status0, status0+status1,
+    invalid+valid, unexpected, eligible) is a blocker.
     """
     expected_code = {symbol: bs_code(symbol) for symbol in symbols}
     counts = {
@@ -245,6 +321,7 @@ def normalize_baostock_preclose_rows(
         "UNEXPECTED_TRADED": 0,
         "TRADESTATUS_UNKNOWN": 0,
         "IDENTITY_FAILURE": 0,
+        "WINDOW_SCOPE_FAILURE": 0,
         "POST_ASOF": 0,
         "DUPLICATE": 0,
         "INVALID_PRECLOSE": 0,
@@ -252,29 +329,37 @@ def normalize_baostock_preclose_rows(
     eligible: list[dict[str, Any]] = []
     audit: list[dict[str, Any]] = []
     eligible_keys: set[tuple[str, date]] = set()
+    seen_provider_pk: set[tuple[str, date]] = set()
 
     for row in provider_rows:
         symbol = str(row.get("symbol", ""))
-        raw_date = row.get("date")
-        parsed_date = parse_date(raw_date)
-        provider_code = row.get("code")
-        tradestatus = row.get("tradestatus")
-        preclose = parse_float(row.get("preclose"))
-
-        if parsed_date is None or provider_code != expected_code.get(symbol):
-            counts["IDENTITY_FAILURE"] += 1
+        parsed_date = parse_date(row.get("date"))
+        issue = _identity_and_window_failure(
+            row, expected_code.get(symbol, ""), requested_window
+        )
+        if issue is not None:
+            counts[issue] += 1
             audit.append(
-                {"symbol": symbol, "date": str(raw_date), "issue": "IDENTITY_FAILURE"}
+                {"symbol": symbol, "date": str(row.get("date")), "issue": issue}
             )
             continue
-        key = (symbol, parsed_date)
+        assert parsed_date is not None
+        pk = (symbol, parsed_date)
+        # Global provider PK duplicate gate: before tradestatus/preclose logic.
+        if pk in seen_provider_pk:
+            counts["DUPLICATE"] += 1
+            audit.append(
+                {"symbol": symbol, "date": parsed_date.isoformat(), "issue": "DUPLICATE"}
+            )
+            continue
+        seen_provider_pk.add(pk)
         if parsed_date > as_of:
             counts["POST_ASOF"] += 1
             audit.append(
                 {"symbol": symbol, "date": parsed_date.isoformat(), "issue": "POST_ASOF"}
             )
             continue
-        ts = str(tradestatus).strip() if tradestatus is not None else None
+        ts = str(row.get("tradestatus", "")).strip() if row.get("tradestatus") is not None else None
         if ts not in {"0", "1"}:
             counts["TRADESTATUS_UNKNOWN"] += 1
             audit.append(
@@ -296,25 +381,20 @@ def normalize_baostock_preclose_rows(
             )
             continue
         # tradestatus == "1"
-        if key not in required_keys:
+        if pk not in required_keys:
             counts["UNEXPECTED_TRADED"] += 1
             audit.append(
                 {"symbol": symbol, "date": parsed_date.isoformat(), "issue": "UNEXPECTED_TRADED"}
             )
             continue
+        preclose = parse_float(row.get("preclose"))
         if preclose is None or not (math.isfinite(preclose) and preclose > 0):
             counts["INVALID_PRECLOSE"] += 1
             audit.append(
                 {"symbol": symbol, "date": parsed_date.isoformat(), "issue": "INVALID_PRECLOSE"}
             )
             continue
-        if key in eligible_keys:
-            counts["DUPLICATE"] += 1
-            audit.append(
-                {"symbol": symbol, "date": parsed_date.isoformat(), "issue": "DUPLICATE"}
-            )
-            continue
-        eligible_keys.add(key)
+        eligible_keys.add(pk)
         eligible.append(
             {
                 "symbol": symbol,
@@ -358,6 +438,36 @@ def build_formal_facts(
     ]
 
 
+def adapter_authority_status(
+    adapter_version: str,
+    *,
+    expected_sha: str | None,
+    runtime_sha: str | None,
+) -> dict[str, Any]:
+    """Provenance gate: real execution requires expected+runtime SHA match.
+
+    Offline fixtures may inject "TEST" (fixture_ok=True path). Real pilot must
+    supply an expected SHA and a runtime SHA that both equal adapter_version.
+    """
+    fixture_ok = adapter_version == "TEST"
+    expected_ok = (adapter_version == expected_sha) if expected_sha else (not fixture_ok)
+    runtime_ok = (adapter_version == runtime_sha) if runtime_sha else (not fixture_ok)
+    if fixture_ok:
+        return {
+            "ADAPTER_AUTHORITY_PASS": True,
+            "ADAPTER_AUTHORITY_MODE": "OFFLINE_FIXTURE",
+        }
+    if expected_ok and runtime_ok:
+        return {
+            "ADAPTER_AUTHORITY_PASS": True,
+            "ADAPTER_AUTHORITY_MODE": "EXACT_SHA",
+        }
+    return {
+        "ADAPTER_AUTHORITY_PASS": False,
+        "ADAPTER_AUTHORITY_MODE": "UNVALIDATED" if not expected_ok and not runtime_ok else "SHA_MISMATCH",
+    }
+
+
 def quality_gate_pass(
     *,
     required_row_n: int,
@@ -374,6 +484,7 @@ def quality_gate_pass(
         "UNEXPECTED_TRADED",
         "TRADESTATUS_UNKNOWN",
         "IDENTITY_FAILURE",
+        "WINDOW_SCOPE_FAILURE",
         "DUPLICATE",
         "POST_ASOF",
         "INVALID_PRECLOSE",
@@ -396,7 +507,7 @@ def build_query_plan(
     window_start: date = WINDOW_START,
     as_of: date = AS_OF,
 ) -> dict[str, Any]:
-    """Deterministic per (symbol, year) query plan over the frozen window."""
+    """Deterministic per (symbol, year) plan; hash covers the full contract."""
     symbol_list = sorted(set(symbols))
     plan: list[dict[str, Any]] = []
     for symbol in symbol_list:
@@ -419,16 +530,98 @@ def build_query_plan(
                     },
                 }
             )
+    executable_contract = {
+        "query_contract_version": QUERY_CONTRACT_VERSION,
+        "source_version": SOURCE_VERSION,
+        "fields": QUERY_FIELDS,
+        "frequency": QUERY_FREQUENCY,
+        "adjustflag": QUERY_ADJUSTFLAG,
+        "as_of": as_of.isoformat(),
+        "window_start": window_start.isoformat(),
+        "cnequity_pin": CNEQUITY_PIN,
+        "windows": [
+            [p["symbol"], p["bs_code"], p["year"], p["start"], p["end"]]
+            for p in plan
+        ],
+    }
     plan_hash = hashlib.sha256(
-        json.dumps(
-            [[p["symbol"], p["year"], p["start"], p["end"]] for p in plan],
-            separators=(",", ":"),
-        ).encode()
+        json.dumps(executable_contract, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     return {
         "query_plan": plan,
         "QUERY_WINDOW_N": len(plan),
         "QUERY_PLAN_HASH": plan_hash,
+    }
+
+
+def r3_identity_match(root: Path) -> dict[str, Any]:
+    """Independent R3 identity match (real daily_bars unique symbols + receipt).
+
+    This is intentionally separate from R4A0_READY (run_gate). It only reports
+    whether the frozen R3 formal SH/SZ identity is reproducible.
+    """
+    receipt_path = root / "meta" / "asl" / "r3" / "r3-identity-receipt.json"
+    receipt_ok = False
+    if receipt_path.exists():
+        try:
+            original = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt_ok = bool(
+                original.get("formal_identity_n") == FORMAL_IDENTITY_N
+                and original.get("formal_identity_hash") == FORMAL_IDENTITY_HASH
+                and original.get("shsz_identity_complete") is True
+            )
+        except (OSError, ValueError):
+            receipt_ok = False
+    actual_symbols = []
+    daily_glob = sorted((root / "curated" / "daily_bars").rglob("*.parquet"))
+    if daily_glob:
+        actual_symbols = sorted(
+            {
+                str(s)
+                for s in (
+                    pl.scan_parquet(str(root / "curated" / "daily_bars" / "**" / "*.parquet"))
+                    .select("symbol")
+                    .collect()
+                    .get_column("symbol")
+                    .to_list()
+                )
+            }
+        )
+    actual_n = len(actual_symbols)
+    actual_hash = symbol_hash(actual_symbols)
+    return {
+        "R3_IDENTITY_MATCH": bool(
+            receipt_ok
+            and actual_n == FORMAL_IDENTITY_N
+            and actual_hash == FORMAL_IDENTITY_HASH
+        ),
+        "FORMAL_IDENTITY_N": actual_n,
+        "FORMAL_IDENTITY_HASH": actual_hash,
+        "IDENTITY_RECEIPT_MATCH": receipt_ok,
+        "IDENTITY_SOURCE": "real root daily_bars unique symbols + r3-identity-receipt",
+    }
+
+
+def r4a0_prerequisite(root: Path) -> dict[str, Any]:
+    """Formal R4A0 prerequisite: reuse the audited read-only gate."""
+    from ashare_data.r4a0_corporate_actions_gate import run_gate
+
+    try:
+        gate = run_gate(root)
+        gate_status = "PASS" if bool(gate["R4A0_READY"]) else "FAIL"
+        blocker = None
+    except Exception as exc:  # noqa: BLE001 - fail closed on unreadable gate
+        gate_status = "FAIL"
+        blocker = f"R4A0_GATE_ERROR: {type(exc).__name__}: {exc}"
+        gate = {"R4A0_READY": False}
+    identity = r3_identity_match(root)
+    return {
+        "R4A0_READY": bool(gate["R4A0_READY"]) and gate_status == "PASS",
+        "R4A0_GATE_STATUS": gate_status,
+        "R4A0_BLOCKER": blocker,
+        "R3_IDENTITY_MATCH": identity["R3_IDENTITY_MATCH"],
+        "FORMAL_IDENTITY_N": identity["FORMAL_IDENTITY_N"],
+        "FORMAL_IDENTITY_HASH": identity["FORMAL_IDENTITY_HASH"],
     }
 
 
@@ -440,35 +633,119 @@ def run_bounded_adapter(
     dry_run: bool,
     adapter_version: str,
     fetched_at: str,
+    expected_adapter_sha: str | None = None,
+    runtime_adapter_sha: str | None = None,
     as_of: date = AS_OF,
     window_start: date = WINDOW_START,
 ) -> dict[str, Any]:
     """Run the bounded adapter (in-memory) for an explicit symbol subset."""
     symbol_list = sorted(set(symbols))
     plan = build_query_plan(symbol_list, window_start=window_start, as_of=as_of)
+    prereq = r4a0_prerequisite(root)
+    base = {
+        "REQUESTED_SYMBOL_N": len(symbol_list),
+        "REQUESTED_SYMBOL_HASH": symbol_hash(symbol_list),
+        "R4A0_READY": prereq["R4A0_READY"],
+        "R3_IDENTITY_MATCH": prereq["R3_IDENTITY_MATCH"],
+        "FORMAL_IDENTITY_N": prereq["FORMAL_IDENTITY_N"],
+        "FORMAL_IDENTITY_HASH": prereq["FORMAL_IDENTITY_HASH"],
+        "QUERY_WINDOW_N": plan["QUERY_WINDOW_N"],
+        "QUERY_PLAN_HASH": plan["QUERY_PLAN_HASH"],
+    }
     if dry_run:
+        if not prereq["R4A0_READY"]:
+            return {
+                **base,
+                "STATUS": "BLOCKED_R4A0_PREREQUISITE",
+                "DRY_RUN_STATUS": "BLOCKED",
+                "FORMAL_FACT_ROW_N": 0,
+                "MISSING_REQUIRED_N": 0,
+                "PROVIDER_SUSPENDED_SUPERSET_N": 0,
+                "UNEXPECTED_TRADED_N": 0,
+                "TRADESTATUS_UNKNOWN_N": 0,
+                "IDENTITY_FAILURE_N": 0,
+                "WINDOW_SCOPE_FAILURE_N": 0,
+                "DUPLICATE_N": 0,
+                "POST_ASOF_N": 0,
+                "INVALID_PRECLOSE_N": 0,
+                "QUALITY_GATE_PASS": None,
+                "NETWORK_PROVIDER_DATA_FETCH": "NO",
+                "MARKET_DATA_WRITE": "NO",
+                "FROZEN_SENTINEL_EXPECTED_N": 24,
+                "FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS": "NOT_RUN_DRY_RUN",
+                "formal_rows": [],
+                "audit_summary": [],
+                "query_plan": plan["query_plan"],
+            }
         return {
+            **base,
             "STATUS": "DRY_RUN_OK",
-            "REQUESTED_SYMBOL_N": len(symbol_list),
-            "REQUESTED_SYMBOL_HASH": symbol_hash(symbol_list),
-            "REQUIRED_ROW_N": 0,
+            "DRY_RUN_STATUS": "OK",
             "FORMAL_FACT_ROW_N": 0,
             "MISSING_REQUIRED_N": 0,
             "PROVIDER_SUSPENDED_SUPERSET_N": 0,
             "UNEXPECTED_TRADED_N": 0,
             "TRADESTATUS_UNKNOWN_N": 0,
             "IDENTITY_FAILURE_N": 0,
+            "WINDOW_SCOPE_FAILURE_N": 0,
             "DUPLICATE_N": 0,
             "POST_ASOF_N": 0,
             "INVALID_PRECLOSE_N": 0,
             "QUALITY_GATE_PASS": None,
             "NETWORK_PROVIDER_DATA_FETCH": "NO",
             "MARKET_DATA_WRITE": "NO",
+            "FROZEN_SENTINEL_EXPECTED_N": 24,
+            "FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS": "NOT_RUN_DRY_RUN",
             "formal_rows": [],
             "audit_summary": [],
-            "QUERY_WINDOW_N": plan["QUERY_WINDOW_N"],
-            "QUERY_PLAN_HASH": plan["QUERY_PLAN_HASH"],
             "query_plan": plan["query_plan"],
+        }
+    # Non-dry-run: R4A0 prerequisite is a hard gate before any provider step.
+    if not prereq["R4A0_READY"]:
+        return {
+            **base,
+            "STATUS": "R4A0_PREREQUISITE_FAILED",
+            "FORMAL_FACT_ROW_N": 0,
+            "MISSING_REQUIRED_N": 0,
+            "PROVIDER_SUSPENDED_SUPERSET_N": 0,
+            "UNEXPECTED_TRADED_N": 0,
+            "TRADESTATUS_UNKNOWN_N": 0,
+            "IDENTITY_FAILURE_N": 0,
+            "WINDOW_SCOPE_FAILURE_N": 0,
+            "DUPLICATE_N": 0,
+            "POST_ASOF_N": 0,
+            "INVALID_PRECLOSE_N": 0,
+            "QUALITY_GATE_PASS": False,
+            "NETWORK_PROVIDER_DATA_FETCH": "NO",
+            "MARKET_DATA_WRITE": "NO",
+            "formal_rows": [],
+            "audit_summary": [],
+        }
+    authority = adapter_authority_status(
+        adapter_version,
+        expected_sha=expected_adapter_sha or EXPECTED_ADAPTER_SHA,
+        runtime_sha=runtime_adapter_sha,
+    )
+    if not authority["ADAPTER_AUTHORITY_PASS"]:
+        return {
+            **base,
+            "STATUS": "ADAPTER_AUTHORITY_FAILED",
+            "ADAPTER_AUTHORITY_MODE": authority["ADAPTER_AUTHORITY_MODE"],
+            "FORMAL_FACT_ROW_N": 0,
+            "MISSING_REQUIRED_N": 0,
+            "PROVIDER_SUSPENDED_SUPERSET_N": 0,
+            "UNEXPECTED_TRADED_N": 0,
+            "TRADESTATUS_UNKNOWN_N": 0,
+            "IDENTITY_FAILURE_N": 0,
+            "WINDOW_SCOPE_FAILURE_N": 0,
+            "DUPLICATE_N": 0,
+            "POST_ASOF_N": 0,
+            "INVALID_PRECLOSE_N": 0,
+            "QUALITY_GATE_PASS": False,
+            "NETWORK_PROVIDER_DATA_FETCH": "NO",
+            "MARKET_DATA_WRITE": "NO",
+            "formal_rows": [],
+            "audit_summary": [],
         }
     if provider_fetch is None:
         raise ValueError("provider_fetch is required for non-dry-run bounded adapter")
@@ -480,11 +757,45 @@ def run_bounded_adapter(
     if required["post_asof_n"] != 0:
         raise RuntimeError("post-ASOF required keys detected")
     provider_rows: list[dict[str, Any]] = []
+    window_failures = 0
     for window in plan["query_plan"]:
         fetched = provider_fetch(window)
-        provider_rows.extend(fetched or [])
+        for row in fetched or []:
+            issue = _identity_and_window_failure(
+                row,
+                expected_code=window["bs_code"],
+                requested_window=window,
+            )
+            if issue is not None:
+                window_failures += 1
+                continue
+            provider_rows.append(row)
+    if window_failures != 0:
+        return {
+            **base,
+            "STATUS": "FAILED_QUALITY_GATE",
+            "REQUIRED_ROW_N": required["required_row_n"],
+            "FORMAL_FACT_ROW_N": 0,
+            "MISSING_REQUIRED_N": required["required_row_n"],
+            "PROVIDER_SUSPENDED_SUPERSET_N": 0,
+            "UNEXPECTED_TRADED_N": 0,
+            "TRADESTATUS_UNKNOWN_N": 0,
+            "IDENTITY_FAILURE_N": window_failures,
+            "WINDOW_SCOPE_FAILURE_N": window_failures,
+            "DUPLICATE_N": 0,
+            "POST_ASOF_N": 0,
+            "INVALID_PRECLOSE_N": 0,
+            "QUALITY_GATE_PASS": False,
+            "NETWORK_PROVIDER_DATA_FETCH": "YES",
+            "MARKET_DATA_WRITE": "NO",
+            "formal_rows": [],
+            "audit_summary": [],
+        }
     normalized = normalize_baostock_preclose_rows(
-        provider_rows, required["required_keys"], symbol_list, as_of=as_of
+        provider_rows,
+        required["required_keys"],
+        symbol_list,
+        as_of=as_of,
     )
     formal_rows = build_formal_facts(
         normalized["eligible_rows"],
@@ -500,9 +811,8 @@ def run_bounded_adapter(
         formal_rows=formal_rows,
     )
     return {
+        **base,
         "STATUS": "COMPLETE" if gate else "FAILED_QUALITY_GATE",
-        "REQUESTED_SYMBOL_N": len(symbol_list),
-        "REQUESTED_SYMBOL_HASH": symbol_hash(symbol_list),
         "REQUIRED_ROW_N": required["required_row_n"],
         "FORMAL_FACT_ROW_N": len(formal_rows),
         "MISSING_REQUIRED_N": normalized["missing_required_n"],
@@ -510,6 +820,7 @@ def run_bounded_adapter(
         "UNEXPECTED_TRADED_N": counts["UNEXPECTED_TRADED"],
         "TRADESTATUS_UNKNOWN_N": counts["TRADESTATUS_UNKNOWN"],
         "IDENTITY_FAILURE_N": counts["IDENTITY_FAILURE"],
+        "WINDOW_SCOPE_FAILURE_N": counts["WINDOW_SCOPE_FAILURE"],
         "DUPLICATE_N": counts["DUPLICATE"],
         "POST_ASOF_N": counts["POST_ASOF"],
         "INVALID_PRECLOSE_N": counts["INVALID_PRECLOSE"],
@@ -518,8 +829,6 @@ def run_bounded_adapter(
         "MARKET_DATA_WRITE": "NO",
         "formal_rows": formal_rows,
         "audit_summary": normalized["audit_rows"][:50],
-        "QUERY_WINDOW_N": plan["QUERY_WINDOW_N"],
-        "QUERY_PLAN_HASH": plan["QUERY_PLAN_HASH"],
     }
 
 
@@ -573,6 +882,16 @@ def compute_resumption_candidates(
     }
 
 
+def _normalize_key(row: dict[str, Any]) -> tuple[str, date]:
+    trade_date = row["trade_date"]
+    if isinstance(trade_date, date):
+        return (str(row["symbol"]), trade_date)
+    parsed = parse_date(trade_date)
+    if parsed is None:
+        raise ValueError(f"unparseable trade_date in formal row: {trade_date}")
+    return (str(row["symbol"]), parsed)
+
+
 def verify_clean_normal_parity(
     *,
     formal_rows: list[dict[str, Any]],
@@ -582,11 +901,13 @@ def verify_clean_normal_parity(
     resumption_keys: set[tuple[str, date]],
     known_special_keys: set[tuple[str, date]],
 ) -> dict[str, Any]:
-    """Production clean-NORMAL full-parity verifier primitive.
+    """Production clean-NORMAL full-parity verifier (fail-closed).
 
     CLEAN_NORMAL excludes IPO first-listing days, corporate-action ex-dates,
-    resumption candidates, and known special rows. PASS requires every
-    comparable row to be display-exact; no +-0.01 mismatch is tolerated.
+    resumption candidates, and known special rows. PASS requires
+    CLEAN_NORMAL_REQUIRED_N == CLEAN_NORMAL_COMPARABLE_N, UNCOMPARED_N == 0,
+    MISMATCH_N == 0. A missing local previous close is an explicit
+    UNCOMPARED row (never silently continued). no +-0.01 mismatch tolerated.
     """
     prev_map: dict[tuple[str, date], float | None] = {}
     for group in bars.partition_by("symbol", as_dict=False):
@@ -599,43 +920,57 @@ def verify_clean_normal_parity(
     excluded.update(first_listing_dates)
     excluded.update(resumption_keys)
     excluded.update(known_special_keys)
-    clean: list[dict[str, Any]] = []
+    required_n = 0
+    comparable_n = 0
+    uncompared_n = 0
+    mismatch_n = 0
+    exact_n = 0
     max_diff = 0.0
+    rows_compared: list[dict[str, Any]] = []
     for row in formal_rows:
-        key = (str(row["symbol"]), row["trade_date"])
+        key = _normalize_key(row)
         if key in excluded:
             continue
+        required_n += 1
         local = prev_map.get(key)
         if local is None:
+            uncompared_n += 1
             continue
         observed = float(row["preclose"])
         exact = display_equal(observed, local)
         diff = abs(observed - local)
         max_diff = max(max_diff, diff)
-        trade_date_str = (
-            row["trade_date"].isoformat()
-            if isinstance(row["trade_date"], date)
-            else str(row["trade_date"])
-        )
-        clean.append(
+        if exact:
+            exact_n += 1
+        else:
+            mismatch_n += 1
+        comparable_n += 1
+        rows_compared.append(
             {
                 "symbol": row["symbol"],
-                "trade_date": trade_date_str,
+                "trade_date": key[1].isoformat(),
                 "previous_effective_close": round(float(local), 6),
                 "baostock_preclose": round(observed, 6),
                 "exact": exact,
                 "diff": round(diff, 9),
             }
         )
-    mismatch_n = sum(1 for item in clean if not item["exact"])
+    pass_status = bool(
+        required_n > 0
+        and required_n == comparable_n
+        and uncompared_n == 0
+        and mismatch_n == 0
+    )
     return {
-        "CLEAN_NORMAL_N": len(clean),
-        "CLEAN_NORMAL_EXACT_N": len(clean) - mismatch_n,
+        "CLEAN_NORMAL_REQUIRED_N": required_n,
+        "CLEAN_NORMAL_COMPARABLE_N": comparable_n,
+        "CLEAN_NORMAL_UNCOMPARED_N": uncompared_n,
+        "CLEAN_NORMAL_EXACT_N": exact_n,
         "CLEAN_NORMAL_MISMATCH_N": mismatch_n,
         "CLEAN_NORMAL_MAX_DIFF": round(max_diff, 9),
-        "CLEAN_NORMAL_PARITY_STATUS": "PASS"
-        if len(clean) > 0 and mismatch_n == 0
-        else "FAIL",
+        "CLEAN_NORMAL_PARITY_STATUS": "PASS" if pass_status else "FAIL",
+        "NORMAL_FULL_PARITY_PASS": pass_status,
+        "rows_compared": rows_compared,
     }
 
 
@@ -645,18 +980,17 @@ FROZEN_000564_CASE: dict[str, Any] = {
     "classification": "RESUMPTION_CANDIDATE/SPECIAL (suspension-resume)",
     "previous_effective_close": 4.78,
     "suspended_period_ex_date": "2018-07-13",
-    "official_ex_price": 4.77,
-    "baostock_resume_preclose": 4.77,
+    "official_reference": 4.77,
 }
 
 
 def load_frozen_sentinel_evidence(repo_root: Path | None = None) -> list[dict[str, Any]]:
-    """Load the frozen sentinel evidence set from local receipts + frozen case.
+    """Load the frozen sentinel contract from local receipts + frozen case.
 
-    Sentinels: 20 official event rows, 3 official IPO rows, and the single
-    frozen 000564 2018-07-20 case. All come from local read-only receipts or
-    the single FROZEN_000564_CASE constant above; no announcement re-fetch and
-    no sentinel values scattered across production logic.
+    The loader emits only expected sentinel values: symbol, trade_date,
+    official_reference, kind, and authority/provenance when available. It never
+    emits an observed baostock_preclose; the runtime gate compares current
+    formal rows against these expected official references.
     """
     root = (repo_root or REPO_ROOT).resolve()
     closure_path = root / CLOSURE_RECEIPT_REL
@@ -674,103 +1008,95 @@ def load_frozen_sentinel_evidence(repo_root: Path | None = None) -> list[dict[st
         sentinels.append(
             {
                 "symbol": row["symbol"],
-                "date": str(row["ex_date"]),
+                "trade_date": str(row["ex_date"]),
                 "official_reference": float(row["official_display_preclose"]),
-                "baostock_preclose": float(row["baostock_preclose"]),
                 "kind": "OFFICIAL_EVENT",
+                "authority_url": row.get("authority_url"),
             }
         )
     for row in ipos:
         sentinels.append(
             {
                 "symbol": row["symbol"],
-                "date": str(row["listing_date"]),
+                "trade_date": str(row["listing_date"]),
                 "official_reference": float(row["official_issue_price"]),
-                "baostock_preclose": float(row["baostock_preclose"]),
                 "kind": "IPO",
+                "authority_url": row.get("authority_url"),
             }
         )
     sentinels.append(
         {
             "symbol": FROZEN_000564_CASE["symbol"],
-            "date": FROZEN_000564_CASE["trade_date"],
-            "official_reference": float(FROZEN_000564_CASE["official_ex_price"]),
-            "baostock_preclose": float(FROZEN_000564_CASE["baostock_resume_preclose"]),
+            "trade_date": FROZEN_000564_CASE["trade_date"],
+            "official_reference": float(FROZEN_000564_CASE["official_reference"]),
             "kind": "FROZEN_SPECIAL_CASE",
+            "authority_provenance": "R4A4 V01.1 frozen case + R4A3.1 extra-row audit",
         }
     )
+    if len(sentinels) != 24:
+        raise ValueError(f"frozen sentinel expected 24, got {len(sentinels)}")
     return sentinels
 
 
-def verify_frozen_sentinels(sentinels: list[dict[str, Any]]) -> dict[str, Any]:
-    """Sentinel gate: every frozen official sentinel must be exact vs BaoStock."""
-    if not sentinels:
-        return {
-            "SENTINEL_N": 0,
-            "SENTINEL_EXACT_N": 0,
-            "SENTINEL_MISMATCH_N": 0,
-            "FROZEN_OFFICIAL_SENTINEL_PASS": False,
-        }
-    mismatch_n = sum(
-        1
-        for row in sentinels
-        if not display_equal(
-            float(row["official_reference"]), float(row["baostock_preclose"])
+def verify_frozen_sentinels(
+    expected_sentinels: list[dict[str, Any]],
+    current_formal_rows: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Sentinel gate against the CURRENT extraction's formal rows.
+
+    Every frozen sentinel must be present as an exact (symbol, trade_date) key in
+    current_formal_rows and its current preclose must equal official_reference
+    at exact display equality. PASS requires REQUIRED=PRESENT=EXACT=24 and
+    MISSING=MISMATCH=0.
+    """
+    formal_map = {_normalize_key(row): float(row["preclose"]) for row in current_formal_rows}
+    required_n = len(expected_sentinels)
+    present_n = 0
+    missing_n = 0
+    exact_n = 0
+    mismatch_n = 0
+    missing_cases: list[dict[str, Any]] = []
+    mismatch_cases: list[dict[str, Any]] = []
+    for sentinel in expected_sentinels:
+        key = (
+            str(sentinel["symbol"]),
+            parse_date(sentinel["trade_date"]),
         )
-    )
-    total = len(sentinels)
-    return {
-        "SENTINEL_N": total,
-        "SENTINEL_EXACT_N": total - mismatch_n,
-        "SENTINEL_MISMATCH_N": mismatch_n,
-        "FROZEN_OFFICIAL_SENTINEL_PASS": mismatch_n == 0,
-    }
-
-
-def real_root_identity(root: Path) -> dict[str, Any]:
-    """Read-only R3 identity recheck from the real root receipt + scan."""
-    receipt_path = root / "meta" / "asl" / "r3" / "r3-identity-receipt.json"
-    receipt_ok = False
-    receipt_n = receipt_hash = None
-    if receipt_path.exists():
-        try:
-            original = json.loads(receipt_path.read_text(encoding="utf-8"))
-            receipt_n = original.get("formal_identity_n")
-            receipt_hash = original.get("formal_identity_hash")
-            receipt_ok = bool(
-                receipt_n == FORMAL_IDENTITY_N
-                and receipt_hash == FORMAL_IDENTITY_HASH
-                and original.get("shsz_identity_complete") is True
+        if key[1] is None or key not in formal_map:
+            missing_n += 1
+            missing_cases.append(
+                {"symbol": sentinel["symbol"], "trade_date": sentinel["trade_date"]}
             )
-        except (OSError, ValueError):
-            receipt_ok = False
-    daily_glob = sorted((root / "curated" / "daily_bars").rglob("*.parquet"))
-    if daily_glob:
-        actual_symbols = sorted(
-            {
-                str(s)
-                for s in (
-                    pl.scan_parquet(str(root / "curated" / "daily_bars" / "**" / "*.parquet"))
-                    .select("symbol")
-                    .collect()
-                    .get_column("symbol")
-                    .to_list()
-                )
-            }
-        )
-    else:
-        actual_symbols = []
-    actual_n = len(actual_symbols)
-    actual_hash = symbol_hash(actual_symbols)
-    identity_match = bool(
-        receipt_ok
-        and actual_n == FORMAL_IDENTITY_N
-        and actual_hash == FORMAL_IDENTITY_HASH
+            continue
+        present_n += 1
+        current = formal_map[key]
+        expected = float(sentinel["official_reference"])
+        if display_equal(current, expected):
+            exact_n += 1
+        else:
+            mismatch_n += 1
+            mismatch_cases.append(
+                {
+                    "symbol": sentinel["symbol"],
+                    "trade_date": sentinel["trade_date"],
+                    "current": current,
+                    "official_reference": expected,
+                }
+            )
+    pass_status = bool(
+        required_n == 24
+        and present_n == 24
+        and exact_n == 24
+        and missing_n == 0
+        and mismatch_n == 0
     )
     return {
-        "R4A0_READY": identity_match,
-        "formal_identity_n": actual_n,
-        "formal_identity_hash": actual_hash,
-        "receipt_match": receipt_ok,
-        "IDENTITY_SOURCE": "real root daily_bars unique symbols + r3-identity-receipt",
+        "SENTINEL_REQUIRED_N": required_n,
+        "SENTINEL_PRESENT_N": present_n,
+        "SENTINEL_EXACT_N": exact_n,
+        "SENTINEL_MISSING_N": missing_n,
+        "SENTINEL_MISMATCH_N": mismatch_n,
+        "FROZEN_OFFICIAL_SENTINEL_PASS": pass_status,
+        "missing_cases": missing_cases,
+        "mismatch_cases": mismatch_cases,
     }
