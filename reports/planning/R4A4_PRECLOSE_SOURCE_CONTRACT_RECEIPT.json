@@ -1,36 +1,43 @@
 {
   "task": {
-    "id": "R4A4_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01",
-    "base_head": "9f72519e09389ce97c49d79ebabe182dc3c56f48",
+    "id": "R4A4_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01_1",
+    "version": "V01.1",
+    "supersedes": "V01 (commit 1ee343ce)",
+    "base_head": "1ee343ce9791ba8d1c128c93bf343022ad6e11b7",
     "branch": "codex/r4a4-preclose-source-contract-v01",
-    "mode": "contract_freeze_and_implementation_plan",
+    "mode": "docs_only_contract_correction",
     "as_of": "2026-08-17",
     "pinned_cnequity": "a18ee0484dfb0801650175471724def3228b8a17"
   },
-  "SOURCE_CONTRACT_STATUS": "FROZEN",
+  "SOURCE_CONTRACT_STATUS": "FROZEN_V01_1_PENDING_SOL_AUDIT",
   "AUTHOR_STATUS": "PASS_PENDING_SOL_AUDIT",
-  "PRIMARY_SOURCE": {
-    "name": "BAOSTOCK_HISTORY_K_PRECLOSE",
-    "api": "query_history_k_data_plus",
-    "frequency": "d",
-    "adjustflag": 3,
-    "minimum_fields": ["date", "code", "preclose", "tradestatus"],
-    "source_tier": "T2_VALIDATED_PROVIDER_CANONICAL",
-    "exchange_primary_claim": false,
-    "role": "authoritative provider source for canonical Market Fact preclose, constrained by frozen validation gates"
+  "SOURCE_DECISION_PRESERVED": {
+    "PRECLOSE_SEMANTIC": "EXCHANGE_DISPLAY_PRECLOSE",
+    "PRIMARY_CANONICAL_SOURCE": "BAOSTOCK_HISTORY_K_PRECLOSE",
+    "SOURCE_TIER": "T2_VALIDATED_PROVIDER_CANONICAL",
+    "EXCHANGE_PRIMARY_CLAIM": false,
+    "CORPORATE_ACTIONS_ROLE": "VALIDATION_DIAGNOSTIC_ONLY"
   },
-  "PRECLOSE_SEMANTIC": "EXCHANGE_DISPLAY_PRECLOSE",
-  "SEMANTIC_UNCHANGED": true,
-  "CORPORATE_ACTIONS_ROLE": "VALIDATION_DIAGNOSTIC_ONLY_NOT_RECONSTRUCTION_PATH",
+  "SOURCE_VERSION_PROVENANCE": {
+    "BAOSTOCK_RUNTIME_VERSION": "0.9.3",
+    "baostock_version_evidence": "repo uv.lock exact resolution (registry pypi.org/simple, sdist+wheel hash-pinned)",
+    "CNEQUITY_PIN": "a18ee0484dfb0801650175471724def3228b8a17",
+    "QUERY_API": "query_history_k_data_plus",
+    "QUERY_FIELDS": ["date", "code", "preclose", "tradestatus"],
+    "FREQUENCY": "d",
+    "ADJUSTFLAG": 3,
+    "formal_provenance": {
+      "source": "BAOSTOCK_HISTORY_K_PRECLOSE",
+      "source_version": "baostock-0.9.3",
+      "adapter_code_authority": "exact implementation commit (recorded in runtime receipt)",
+      "query_contract_version": "R4A_PRECLOSE_V01",
+      "fetched_at": "actual fetch time"
+    }
+  },
   "REQUIRED_SCOPE": {
     "required_key_authority": "R3 authoritative daily_bars ACTUAL_TRADED sessions",
     "required_pk": ["symbol", "trade_date"],
-    "formal_row_scope": "only required keys produce formal preclose",
-    "classification": {
-      "tradestatus_1": "ELIGIBLE_REQUIRED_ROW_OBSERVATION",
-      "tradestatus_0": "PROVIDER_SUSPENDED_SUPERSET",
-      "tradestatus_unknown": "TRADESTATUS_UNKNOWN_FAIL_CLOSED"
-    },
+    "formal_row_scope": "only required keys receive formal preclose",
     "frozen_evidence": {
       "REQUIRED_ROW_N": 55053,
       "REQUIRED_PROVIDER_PRESENT_N": 55053,
@@ -45,12 +52,44 @@
       "WINDOW": "2016-01-01..2026-08-17"
     }
   },
+  "FORMAL_DATASET_ROW_CONTRACT": {
+    "dataset": "preclose_facts",
+    "write_requires_all": [
+      "(symbol, trade_date) in R3 actual-traded required keys",
+      "provider_tradestatus == 1",
+      "preclose finite positive",
+      "coverage_status == COVERED"
+    ],
+    "forbidden_in_formal_dataset": [
+      "PROVIDER_SUSPENDED_SUPERSET",
+      "MISSING_REQUIRED",
+      "UNEXPECTED_TRADED",
+      "TRADESTATUS_UNKNOWN",
+      "IDENTITY_FAILURE",
+      "POST_ASOF",
+      "SPECIAL_UNKNOWN"
+    ],
+    "forbidden_statuses_go_to": "quality receipt / audit artifact only",
+    "audit_statuses_never_in_canonical_facts": true
+  },
+  "SPECIAL_RESUMPTION_SOURCE_RULE": {
+    "obsolete_removed": "SPECIAL without exchange formula -> NULL preclose",
+    "new_frozen_rule": "For any required actual-traded row: BaoStock tradestatus=1 AND valid finite positive preclose AND identity/AS_OF gate PASS -> canonical preclose observation",
+    "applies_to": ["NORMAL", "IPO", "EX_DATE", "RESUMPTION", "SPECIAL"],
+    "exchange_formula_required_per_special": false,
+    "official_announcements_role": "VALIDATION/SENTINEL/DIAGNOSTIC",
+    "fail_closed_conditions": [
+      "frozen official sentinel mismatches BaoStock",
+      "provider observation missing/invalid"
+    ],
+    "null_formal_fact": "never produced; missing/invalid -> FAIL CLOSED"
+  },
   "QUALITY_GATES": {
     "per_row_identity": [
       "provider code exact",
       "provider date exact",
       "preclose finite and positive",
-      "tradestatus exact enum 0|1",
+      "tradestatus exactly 1",
       "trade_date <= AS_OF"
     ],
     "fail_conditions": [
@@ -61,73 +100,80 @@
       "UNKNOWN != PASS"
     ],
     "extra_provider_row_classification": {
-      "PROVIDER_SUSPENDED_SUPERSET": "non_blocking_audit_evidence",
-      "UNEXPECTED_TRADED_ROW": "blocking",
-      "TRADESTATUS_UNKNOWN": "blocking"
+      "PROVIDER_SUSPENDED_SUPERSET": {"status": "audit_only", "blocking": false, "enters_preclose_facts": false},
+      "UNEXPECTED_TRADED": {"status": "blocker", "blocking": true, "enters_preclose_facts": false},
+      "TRADESTATUS_UNKNOWN": {"status": "blocker", "blocking": true, "enters_preclose_facts": false}
     }
   },
-  "FIRST_LISTING_DAY": {
-    "implementation_redownload_2645_issue_prices": false,
-    "first_listing_day_preclose_source": "BaoStock first-listing-day preclose",
-    "first_listing_day_status": "CANONICAL_CANDIDATE_OBSERVATION",
-    "validation_evidence": {
-      "IPO_OFFICIAL_N": 3,
-      "IPO_EXACT_N": 3,
-      "IPO_PARITY_STATUS": "PASS",
-      "rows": [
-        {"symbol": "603007.SH", "listing_date": "2016-08-26", "official_issue_price": 11.66, "preclose": 11.66, "exact": true},
-        {"symbol": "688486.SH", "listing_date": "2023-02-21", "official_issue_price": 64.76, "preclose": 64.76, "exact": true},
-        {"symbol": "688489.SH", "listing_date": "2022-12-02", "official_issue_price": 78.89, "preclose": 78.89, "exact": true}
-      ]
-    },
-    "validation_hook": "future IPO parity mismatch -> FAIL CLOSED + source investigation"
-  },
   "PARITY_GATES": {
-    "clean_normal": {
-      "definition": "excludes corporate-action event, first listing day, resumption candidate, known special",
-      "contract": "preclose == previous_effective_close (exact)",
-      "frozen_evidence": {
+    "NORMAL_FULL_PARITY_PASS": {
+      "definition": "in the full extraction, for ALL CLEAN_NORMAL required rows: BaoStock preclose == previous effective local close (exact display equality)",
+      "clean_normal_excludes": [
+        "first listing day",
+        "corporate-action ex-date",
+        "resumption candidate",
+        "known special"
+      ],
+      "any_mismatch_means": "PRECLOSE_COMPLETE=false",
+      "bounded_evidence": {
         "CLEAN_NORMAL_N": 54756,
         "CLEAN_NORMAL_EXACT_N": 54756,
         "CLEAN_NORMAL_MISMATCH_N": 0,
-        "CLEAN_NORMAL_MAX_DIFF": 0.0,
-        "CLEAN_NORMAL_PARITY_STATUS": "PASS"
+        "CLEAN_NORMAL_MAX_DIFF": 0.0
       }
     },
-    "event_special": {
-      "crosscheck": "corporate_actions + bounded official authority",
-      "frozen_evidence": {
+    "FROZEN_OFFICIAL_SENTINEL_PASS": {
+      "definition": "all frozen official sentinels exact",
+      "frozen_sentinels": [
+        "20 official event rows",
+        "3 official IPO rows",
+        "000564.SZ 2018-07-20"
+      ],
+      "future_sentinels_may_append": true,
+      "formula_rebuild_required_per_special": false,
+      "frozen_event_evidence": {
         "OFFICIAL_EVENT_N": 20,
         "OFFICIAL_EVENT_EXACT_N": 20,
-        "OFFICIAL_EVENT_MISMATCH_N": 0,
-        "OFFICIAL_EVENT_PARITY_STATUS": "PASS"
+        "OFFICIAL_EVENT_MISMATCH_N": 0
+      },
+      "frozen_ipo_evidence": {
+        "IPO_OFFICIAL_N": 3,
+        "IPO_EXACT_N": 3,
+        "rows": [
+          {"symbol": "603007.SH", "listing_date": "2016-08-26", "official_issue_price": 11.66, "preclose": 11.66, "exact": true},
+          {"symbol": "688486.SH", "listing_date": "2023-02-21", "official_issue_price": 64.76, "preclose": 64.76, "exact": true},
+          {"symbol": "688489.SH", "listing_date": "2022-12-02", "official_issue_price": 78.89, "preclose": 78.89, "exact": true}
+        ]
+      },
+      "frozen_special_case": {
+        "symbol": "000564.SZ",
+        "trade_date": "2018-07-20",
+        "classification": "RESUMPTION_CANDIDATE/SPECIAL (suspension-resume)",
+        "previous_effective_close": 4.78,
+        "suspended_period_ex_date": "2018-07-13",
+        "official_ex_price": 4.77,
+        "baostock_resume_preclose": 4.77,
+        "rule": "never re-classified as NORMAL parity mismatch"
       }
-    },
-    "frozen_special_case": {
-      "symbol": "000564.SZ",
-      "trade_date": "2018-07-20",
-      "classification": "RESUMPTION_CANDIDATE/SPECIAL",
-      "previous_effective_close": 4.78,
-      "suspended_period_ex_date": "2018-07-13",
-      "official_ex_price": 4.77,
-      "baostock_resume_preclose": 4.77,
-      "rule": "must be excluded from CLEAN_NORMAL; must not be re-classified as NORMAL mismatch"
     }
   },
   "SCHEMA": {
     "dataset": "preclose_facts",
+    "formal_rows_only": "COVERED",
     "fields": [
       {"name": "symbol", "type": "string", "description": "canonical symbol e.g. 000001.SZ"},
       {"name": "trade_date", "type": "date", "description": "R3 required actual-traded session date"},
       {"name": "preclose", "type": "decimal", "description": "finite positive exchange-display preclose"},
       {"name": "source", "type": "string", "description": "BAOSTOCK_HISTORY_K_PRECLOSE"},
-      {"name": "source_version", "type": "string", "description": "provider query contract version (frequency=d, adjustflag=3)"},
-      {"name": "fetched_at", "type": "datetime", "description": "provenance collection timestamp"},
-      {"name": "provider_tradestatus", "type": "int", "description": "0|1 exact provider enum"},
-      {"name": "coverage_status", "type": "string", "description": "COVERED|PROVIDER_SUSPENDED_SUPERSET|MISSING|UNEXPECTED_TRADED|TRADESTATUS_UNKNOWN|SPECIAL_UNKNOWN"},
-      {"name": "reason", "type": "string", "description": "nullable; required for any non-COVERED status"}
+      {"name": "source_version", "type": "string", "description": "baostock-0.9.3"},
+      {"name": "adapter_version", "type": "string", "description": "exact implementation commit (runtime receipt)"},
+      {"name": "query_contract_version", "type": "string", "description": "R4A_PRECLOSE_V01"},
+      {"name": "fetched_at", "type": "datetime", "description": "actual fetch time"},
+      {"name": "provider_tradestatus", "type": "int", "description": "1 (formal rows only)"},
+      {"name": "coverage_status", "type": "string", "description": "COVERED (formal rows only)"}
     ],
-    "recommended_provenance_fields": [
+    "coverage_status_formal_restricted_to": ["COVERED"],
+    "audit_artifact_provenance_fields": [
       "provider_code",
       "provider_query_window_start",
       "provider_query_window_end",
@@ -139,16 +185,16 @@
     "forbidden": ["T0/B1/B2", "strategy scores", "TradePlan", "forward/backtest semantics"]
   },
   "PROVENANCE": {
-    "market_fact_output": "single preclose fact for all cases; source-specific explanation only in provenance/validation",
-    "corporate_actions": "validation/diagnostic authority, not sole reconstruction path",
+    "market_fact_output": "single preclose fact for all cases; source-specific explanation only in provenance/sentinel/validation",
+    "corporate_actions": "validation/sentinel/diagnostic authority only",
     "secondary_authority_sources_n": 0
   },
   "IMPLEMENTATION_STAGES": [
-    "BOUNDED_ADAPTER: reuse existing BaoStock session/query capability; query date,code,preclose,tradestatus; frequency=d adjustflag=3; no new downloader, no direct TDX/EastMoney, no pinned CNEquity mutation",
-    "SMALL_REAL_PILOT: deterministic bounded pilot (PILOT_SYMBOL_N=24) with identity gate, coverage accounting, parity gates",
+    "BOUNDED_ADAPTER: reuse existing BaoStock session/query capability (runtime 0.9.3); query date,code,preclose,tradestatus; frequency=d adjustflag=3; no new downloader, no direct TDX/EastMoney, no pinned CNEquity mutation",
+    "SMALL_REAL_PILOT: deterministic bounded pilot (PILOT_SYMBOL_N=24) with identity gate, coverage accounting, sentinel checks",
     "INDEPENDENT_AUDIT: Sol independent audit of the exact pushed commit; no execution beyond this stage until audit",
-    "RESUMABLE_FULL_EXTRACTION: manifest/receipt authority, deterministic sorted chunk plan, skip completed symbols, no auto-retry, stop on any gate failure; only required keys become formal preclose rows",
-    "FINAL_GATE: section 11 gate; PRECLOSE_COMPLETE only when all conditions hold"
+    "RESUMABLE_FULL_EXTRACTION: manifest/receipt authority, deterministic sorted chunk plan, skip completed symbols, no auto-retry, stop on any gate failure; only required keys with tradestatus=1 become formal preclose rows",
+    "FINAL_GATE: section 12 gate; PRECLOSE_COMPLETE only when all conditions hold"
   ],
   "SHARED_RAW_PROVIDER_EXTRACTION": {
     "status": "DESIGN_OPTION",
@@ -165,22 +211,23 @@
       "duplicate=0",
       "identity_failure=0",
       "post_asof=0",
-      "preclose finite/valid on every formal row",
-      "bounded parity gates PASS",
+      "all formal rows: provider_tradestatus=1 AND preclose finite positive",
+      "NORMAL_FULL_PARITY_PASS=true",
+      "FROZEN_OFFICIAL_SENTINEL_PASS=true",
       "protected R3 boundary unchanged"
     ],
     "else": "PRECLOSE_COMPLETE=false (FAIL CLOSED)",
     "note": "UNKNOWN != PASS; final gate is the only authority for PRECLOSE_COMPLETE"
   },
   "R4A_IMPLEMENTATION_READY_FOR_CODE": true,
-  "R4A_IMPLEMENTATION_READY_FOR_CODE_NOTE": "means only bounded implementation code may be written; is not PRECLOSE_COMPLETE, is not an authoritative audit, does not authorize R4A full-market execution",
+  "R4A_IMPLEMENTATION_READY_FOR_CODE_NOTE": "AUTHOR_ONLY; means bounded implementation code may be written; is not PRECLOSE_COMPLETE, is not an authoritative audit, does not authorize R4A full-market execution",
   "PRECLOSE_COMPLETE": false,
-  "R4A_PRECLOSE_EXECUTION": "FORBIDDEN_PENDING_SOL_AUDIT",
   "FULL_MARKET_AUTHORIZED": false,
   "SAFETY": {
     "MARKET_DATA_WRITE": "NO",
     "PROVIDER_FETCH": "NO",
     "R4A_FULL_EXECUTION": "NO",
+    "CODE_CHANGE": "NO",
     "STRATEGY_FORWARD_TRADEPLAN": "FORBIDDEN"
   }
 }
