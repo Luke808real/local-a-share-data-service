@@ -68,9 +68,24 @@ CLOSURE_RECEIPT_REL = Path(
     "reports/research/R4A3_1_BAOSTOCK_PRECLOSE_SOURCE_CLOSURE_RECEIPT.json"
 )
 
-# Expected implementation HEAD the real execution may use as code authority.
-# Offline fixtures may inject "TEST"; real pilot must match an explicit SHA.
-EXPECTED_ADAPTER_SHA = "710a7c80cb434955c38475f3bdd4a1403d5c6a41"
+PROVIDER_FIELDS_EXPECTED = ["date", "code", "preclose", "tradestatus"]
+
+
+def verify_provider_field_identity(fields: Any) -> None:
+    """Fail closed if provider result.fields is not exactly the expected list.
+
+    Checks exact list and order: ["date","code","preclose","tradestatus"].
+    missing / extra / reordered / renamed fields all raise
+    PROVIDER_FIELD_IDENTITY_FAILURE. Row-length checks never replace this.
+    """
+    if not isinstance(fields, (list, tuple)):
+        raise RuntimeError("PROVIDER_FIELD_IDENTITY_FAILURE: fields is not a list")
+    actual = [str(f) for f in fields]
+    if actual != PROVIDER_FIELDS_EXPECTED:
+        raise RuntimeError(
+            "PROVIDER_FIELD_IDENTITY_FAILURE: expected "
+            f"{PROVIDER_FIELDS_EXPECTED!r}, got {actual!r}"
+        )
 
 
 def bs_code(symbol: str) -> str:
@@ -180,6 +195,8 @@ class BaostockSessionProvider:
             raise RuntimeError(
                 f"baostock query failed for {code}: {getattr(result, 'error_msg', '')}"
             )
+        provider_fields = getattr(result, "fields", None)
+        verify_provider_field_identity(provider_fields)
         rows: list[list[str]] = []
         while result.next():
             row = list(result.get_row_data())
@@ -275,6 +292,22 @@ def load_required_keys(
         "post_asof_n": post_asof_n,
         "symbols": symbol_list,
     }
+
+
+def load_instrument_list_dates(root: Path) -> dict[str, date]:
+    """Read-only load of authoritative instrument list_date by symbol."""
+    instruments_path = root / "curated" / "instruments"
+    instruments_path = instruments_path / "part-merged.parquet"
+    if not instruments_path.exists():
+        return {}
+    frame = pl.read_parquet(instruments_path).select(["symbol", "list_date"])
+    out: dict[str, date] = {}
+    for row in frame.iter_rows(named=True):
+        listed = row.get("list_date")
+        parsed = parse_date(listed)
+        if parsed is not None:
+            out[str(row["symbol"])] = parsed
+    return out
 
 
 def _identity_and_window_failure(
@@ -443,20 +476,32 @@ def adapter_authority_status(
     *,
     expected_sha: str | None,
     runtime_sha: str | None,
+    execution_mode: str = "REAL",
 ) -> dict[str, Any]:
-    """Provenance gate: real execution requires expected+runtime SHA match.
+    """Provenance gate: no bypass for real execution.
 
-    Offline fixtures may inject "TEST" (fixture_ok=True path). Real pilot must
-    supply an expected SHA and a runtime SHA that both equal adapter_version.
+    Real execution (execution_mode="REAL", the default) requires:
+      expected_adapter_sha != None
+      runtime_adapter_sha != None
+      adapter_version == expected_sha == runtime_sha
+    -> ADAPTER_AUTHORITY_PASS=true, MODE=EXACT_SHA.
+
+    "TEST" adapter_version is accepted ONLY under an explicit
+    execution_mode="OFFLINE_TEST". run_bounded_adapter(dry_run=false) must
+    never pass OFFLINE_TEST.
     """
-    fixture_ok = adapter_version == "TEST"
-    expected_ok = (adapter_version == expected_sha) if expected_sha else (not fixture_ok)
-    runtime_ok = (adapter_version == runtime_sha) if runtime_sha else (not fixture_ok)
-    if fixture_ok:
+    if execution_mode == "OFFLINE_TEST" and adapter_version == "TEST":
         return {
             "ADAPTER_AUTHORITY_PASS": True,
             "ADAPTER_AUTHORITY_MODE": "OFFLINE_FIXTURE",
         }
+    if expected_sha is None or runtime_sha is None:
+        return {
+            "ADAPTER_AUTHORITY_PASS": False,
+            "ADAPTER_AUTHORITY_MODE": "MISSING_SHA",
+        }
+    expected_ok = adapter_version == expected_sha
+    runtime_ok = adapter_version == runtime_sha
     if expected_ok and runtime_ok:
         return {
             "ADAPTER_AUTHORITY_PASS": True,
@@ -464,7 +509,9 @@ def adapter_authority_status(
         }
     return {
         "ADAPTER_AUTHORITY_PASS": False,
-        "ADAPTER_AUTHORITY_MODE": "UNVALIDATED" if not expected_ok and not runtime_ok else "SHA_MISMATCH",
+        "ADAPTER_AUTHORITY_MODE": (
+            "UNVALIDATED" if not expected_ok and not runtime_ok else "SHA_MISMATCH"
+        ),
     }
 
 
@@ -723,8 +770,9 @@ def run_bounded_adapter(
         }
     authority = adapter_authority_status(
         adapter_version,
-        expected_sha=expected_adapter_sha or EXPECTED_ADAPTER_SHA,
+        expected_sha=expected_adapter_sha,
         runtime_sha=runtime_adapter_sha,
+        execution_mode="REAL",
     )
     if not authority["ADAPTER_AUTHORITY_PASS"]:
         return {
@@ -892,6 +940,90 @@ def _normalize_key(row: dict[str, Any]) -> tuple[str, date]:
     return (str(row["symbol"]), parsed)
 
 
+def compute_window_boundary_edges(
+    *,
+    required_keys: set[tuple[str, date]],
+    instrument_list_dates: dict[str, date],
+    window_start: date = WINDOW_START,
+) -> dict[str, Any]:
+    """Compute the frozen WINDOW_BOUNDARY_EDGE key set (V01.2 contract).
+
+    A key is a window-boundary edge exactly when:
+      - it is the symbol's FIRST required actual-traded row inside
+        WINDOW_START..AS_OF, AND
+      - instrument.list_date < WINDOW_START, AND
+      - authoritative local R3 daily_bars has no predecessor before
+        WINDOW_START (i.e. no pre-window required bar for that symbol).
+
+    "prev is None => edge" alone is NOT sufficient: IPO rows inside the window
+    (list_date >= WINDOW_START) stay IPO and are never window-boundary edges.
+    """
+    first_in_window: dict[str, date] = {}
+    for symbol, trade_date in required_keys:
+        existing = first_in_window.get(symbol)
+        if existing is None or trade_date < existing:
+            first_in_window[symbol] = trade_date
+    edges: set[tuple[str, date]] = set()
+    for symbol, first_date in first_in_window.items():
+        list_date = instrument_list_dates.get(symbol)
+        if list_date is None or list_date >= window_start:
+            continue  # unknown lifetime or in-window listing stays IPO
+        has_predecessor = any(
+            s == symbol and d < window_start for s, d in required_keys
+        )
+        if has_predecessor:
+            continue
+        edges.add((symbol, first_date))
+    return {
+        "window_boundary_keys": edges,
+        "WINDOW_BOUNDARY_REQUIRED_N": len(edges),
+    }
+
+
+def verify_window_boundary_rows(
+    window_boundary_keys: set[tuple[str, date]],
+    current_formal_rows: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Window-boundary gate: formal rows must cover every edge row exactly.
+
+    PASS only if PRESENT == REQUIRED AND VALID == REQUIRED. A formal row is
+    valid when provider_tradestatus == 1, preclose finite positive, and
+    coverage_status == COVERED.
+    """
+    required_n = len(window_boundary_keys)
+    present_n = 0
+    valid_n = 0
+    seen: set[tuple[str, date]] = set()
+    for row in current_formal_rows:
+        key = _normalize_key(row)
+        if key not in window_boundary_keys:
+            continue
+        present_n += 1
+        seen.add(key)
+        preclose = row.get("preclose")
+        valid = bool(
+            row.get("provider_tradestatus") == 1
+            and row.get("coverage_status") == "COVERED"
+            and isinstance(preclose, (int, float))
+            and math.isfinite(float(preclose))
+            and float(preclose) > 0
+        )
+        if valid:
+            valid_n += 1
+    missing_n = required_n - len(seen)
+    invalid_n = present_n - valid_n
+    return {
+        "WINDOW_BOUNDARY_REQUIRED_N": required_n,
+        "WINDOW_BOUNDARY_PRESENT_N": present_n,
+        "WINDOW_BOUNDARY_VALID_N": valid_n,
+        "WINDOW_BOUNDARY_MISSING_N": missing_n,
+        "WINDOW_BOUNDARY_INVALID_N": invalid_n,
+        "WINDOW_BOUNDARY_PASS": bool(
+            required_n > 0 and present_n == required_n and valid_n == required_n
+        ),
+    }
+
+
 def verify_clean_normal_parity(
     *,
     formal_rows: list[dict[str, Any]],
@@ -900,6 +1032,7 @@ def verify_clean_normal_parity(
     first_listing_dates: set[tuple[str, date]],
     resumption_keys: set[tuple[str, date]],
     known_special_keys: set[tuple[str, date]],
+    window_boundary_keys: set[tuple[str, date]] | None = None,
 ) -> dict[str, Any]:
     """Production clean-NORMAL full-parity verifier (fail-closed).
 
@@ -920,6 +1053,8 @@ def verify_clean_normal_parity(
     excluded.update(first_listing_dates)
     excluded.update(resumption_keys)
     excluded.update(known_special_keys)
+    if window_boundary_keys:
+        excluded.update(window_boundary_keys)
     required_n = 0
     comparable_n = 0
     uncompared_n = 0

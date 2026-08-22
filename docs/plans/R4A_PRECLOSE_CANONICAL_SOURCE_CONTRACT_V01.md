@@ -1,4 +1,4 @@
-# R4A4 PRECLOSE CANONICAL SOURCE CONTRACT — V01.1
+# R4A4 PRECLOSE CANONICAL SOURCE CONTRACT — V01.2
 
 DATE: 2026-08-21
 BRANCH: codex/r4a4-preclose-source-contract-v01
@@ -6,18 +6,19 @@ BASE_HEAD: 1ee343ce9791ba8d1c128c93bf343022ad6e11b7
 AS_OF: 2026-08-17
 PINNED_CNEquity: a18ee0484dfb0801650175471724def3228b8a17
 
-Task: `R4A4_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01_1`
-Mode: `docs-only contract correction` — **docs only**.
+Task: `R4A4_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01_2`
+Mode: `docs-only contract clarification` — **docs only**.
 No code change, no provider fetch, no market-data write, no R4A execution.
-Supersedes: V01 (commit 1ee343ce). V01.1 corrects the formal dataset /
-SPECIAL / provenance / final parity gate ambiguity found by Sol audit.
+Supersedes: V01.1 (commit e0b6c932). V01.2 adds the formal
+`WINDOW_BOUNDARY_EDGE` classification and its explicit exclusion from
+CLEAN_NORMAL parity scope, plus the window-boundary gate.
 
 ---
 
 ## 0. Status
 
 ```text
-SOURCE_CONTRACT_STATUS=FROZEN_V01_1_PENDING_SOL_AUDIT
+SOURCE_CONTRACT_STATUS=FROZEN_V01_2_PENDING_SOL_AUDIT
 AUTHOR_STATUS=PASS_PENDING_SOL_AUDIT
 PRECLOSE_SEMANTIC=EXCHANGE_DISPLAY_PRECLOSE
 PRIMARY_CANONICAL_SOURCE=BAOSTOCK_HISTORY_K_PRECLOSE
@@ -249,7 +250,43 @@ first listing day
 corporate-action ex-date
 resumption candidate
 known special
+window boundary edge
 ```
+
+`WINDOW_BOUNDARY_EDGE` (frozen V01.2 classification):
+
+```text
+(symbol, trade_date) is the symbol's FIRST required actual-traded row inside
+  R4 WINDOW_START..AS_OF
+AND instrument.list_date < WINDOW_START
+AND authoritative local R3 daily_bars has no predecessor before WINDOW_START
+```
+
+```text
+WINDOW_BOUNDARY_EDGE is NOT part of CLEAN_NORMAL parity scope.
+It remains a formal required preclose row:
+  BaoStock tradestatus=1 + finite positive preclose + identity/ASOF pass
+  -> canonical preclose
+```
+
+Window-boundary gate:
+
+```text
+WINDOW_BOUNDARY_REQUIRED_N
+WINDOW_BOUNDARY_PRESENT_N
+WINDOW_BOUNDARY_VALID_N
+WINDOW_BOUNDARY_MISSING_N
+WINDOW_BOUNDARY_INVALID_N
+
+WINDOW_BOUNDARY_PASS=true only if
+  PRESENT_N == REQUIRED_N
+  AND VALID_N == REQUIRED_N
+  AND MISSING_N == 0
+  AND INVALID_N == 0
+```
+
+Previous-close parity for window-boundary rows is never proven from BaoStock
+itself.
 
 ```text
 any CLEAN_NORMAL mismatch -> PRECLOSE_COMPLETE=false

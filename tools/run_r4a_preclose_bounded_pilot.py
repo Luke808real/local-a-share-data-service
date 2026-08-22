@@ -24,24 +24,26 @@ from ashare_data.r4a_preclose_bounded_adapter import (  # noqa: E402
     AS_OF,
     CNEQUITY_PIN,
     DATA_ROOT_DEFAULT,
-    EXPECTED_ADAPTER_SHA,
     WINDOW_START,
     build_query_plan,
+    compute_window_boundary_edges,
     load_frozen_sentinel_evidence,
+    load_instrument_list_dates,
     load_pilot_symbols,
+    load_required_keys,
     r4a0_prerequisite,
 )
 
 OUTPUT_DIR = REPO_ROOT / "reports" / "implementation"
-REPORT_PATH = OUTPUT_DIR / "R4A5_PRECLOSE_BOUNDED_ADAPTER_V01_1.md"
+REPORT_PATH = OUTPUT_DIR / "R4A5_PRECLOSE_BOUNDED_ADAPTER_V01_2.md"
 
 
 def _render_report(result: dict[str, Any]) -> str:
     lines = [
-        "# R4A5.1 PRECLOSE BOUNDED ADAPTER HARDENING — V01_1 (author report)",
+        "# R4A5.2 PRECLOSE BOUNDED ADAPTER FINAL CLOSURE — V01_2 (author report)",
         "",
-        "DATE: 2026-08-21",
-        "BRANCH: codex/r4a5-1-preclose-adapter-hardening-v01",
+        "DATE: 2026-08-22",
+        "BRANCH: codex/r4a5-2-preclose-adapter-final-closure-v01",
         f"CONTRACT_HEAD: {result['CONTRACT_HEAD']}",
         f"AS_OF: {AS_OF.isoformat()}",
         f"PINNED_CNEquity: {CNEQUITY_PIN}",
@@ -69,6 +71,11 @@ def _render_report(result: dict[str, Any]) -> str:
         "",
         f"FROZEN_SENTINEL_EXPECTED_N={result.get('FROZEN_SENTINEL_EXPECTED_N')}",
         f"FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS={result.get('FROZEN_OFFICIAL_SENTINEL_RUNTIME_STATUS')}",
+        "",
+        "## WINDOW BOUNDARY (V01.2 contract; runtime NOT_RUN in dry-run)",
+        "",
+        f"WINDOW_BOUNDARY_REQUIRED_N={result.get('WINDOW_BOUNDARY_REQUIRED_N')}",
+        f"WINDOW_BOUNDARY_PASS_DRY_RUN_STATUS={result.get('WINDOW_BOUNDARY_PASS_DRY_RUN_STATUS')}",
         "",
         "## QUERY PLAN HASH CONTRACT",
         "",
@@ -152,13 +159,22 @@ def main() -> int:
         plan = build_query_plan(pilot["pilot_symbols"], window_start=WINDOW_START, as_of=AS_OF)
         sentinels = load_frozen_sentinel_evidence(REPO_ROOT)
         sentinel_expected = len(sentinels)
+        required = load_required_keys(
+            args.data_root, pilot["pilot_symbols"], as_of=AS_OF, window_start=WINDOW_START
+        )
+        list_dates = load_instrument_list_dates(args.data_root)
+        boundary = compute_window_boundary_edges(
+            required_keys=required["required_keys"],
+            instrument_list_dates=list_dates,
+            window_start=WINDOW_START,
+        )
     except Exception as exc:  # noqa: BLE001 - CLI surface
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
     result: dict[str, Any] = {
-        "CONTRACT_HEAD": "e0b6c9325c2a2951c4c51dff4c2ee2332115d48c",
-        "BRANCH": "codex/r4a5-1-preclose-adapter-hardening-v01",
+        "CONTRACT_HEAD": "f957ceae731e7e77915747e6e74eb86a3b349c46",
+        "BRANCH": "codex/r4a5-2-preclose-adapter-final-closure-v01",
         "ADAPTER_STATUS": "IMPLEMENTED_DRY_RUN_ONLY",
         "R4A0_READY": prereq["R4A0_READY"],
         "R3_IDENTITY_MATCH": prereq["R3_IDENTITY_MATCH"],
@@ -168,9 +184,10 @@ def main() -> int:
         "PILOT_SYMBOL_HASH": pilot["pilot_symbol_hash"],
         "QUERY_WINDOW_N": plan["QUERY_WINDOW_N"],
         "QUERY_PLAN_HASH": plan["QUERY_PLAN_HASH"],
-        "EXPECTED_ADAPTER_SHA": EXPECTED_ADAPTER_SHA,
         "RUNTIME_HEAD": _git_head(),
         "FROZEN_SENTINEL_EXPECTED_N": sentinel_expected,
+        "WINDOW_BOUNDARY_REQUIRED_N": boundary["WINDOW_BOUNDARY_REQUIRED_N"],
+        "WINDOW_BOUNDARY_PASS_DRY_RUN_STATUS": "NOT_RUN_DRY_RUN",
     }
     if not prereq["R4A0_READY"]:
         result["DRY_RUN_STATUS"] = "BLOCKED"

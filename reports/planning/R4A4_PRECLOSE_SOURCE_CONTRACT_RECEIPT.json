@@ -1,15 +1,15 @@
 {
   "task": {
-    "id": "R4A4_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01_1",
-    "version": "V01.1",
-    "supersedes": "V01 (commit 1ee343ce)",
+    "id": "R4A4_PRECLOSE_CANONICAL_SOURCE_CONTRACT_V01_2",
+    "version": "V01.2",
+    "supersedes": "V01.1 (commit e0b6c9325c2a2951c4c51dff4c2ee2332115d48c)",
     "base_head": "1ee343ce9791ba8d1c128c93bf343022ad6e11b7",
     "branch": "codex/r4a4-preclose-source-contract-v01",
     "mode": "docs_only_contract_correction",
     "as_of": "2026-08-17",
     "pinned_cnequity": "a18ee0484dfb0801650175471724def3228b8a17"
   },
-  "SOURCE_CONTRACT_STATUS": "FROZEN_V01_1_PENDING_SOL_AUDIT",
+  "SOURCE_CONTRACT_STATUS": "FROZEN_V01_2_PENDING_SOL_AUDIT",
   "AUTHOR_STATUS": "PASS_PENDING_SOL_AUDIT",
   "SOURCE_DECISION_PRESERVED": {
     "PRECLOSE_SEMANTIC": "EXCHANGE_DISPLAY_PRECLOSE",
@@ -112,8 +112,23 @@
         "first listing day",
         "corporate-action ex-date",
         "resumption candidate",
-        "known special"
+        "known special",
+        "window boundary edge"
       ],
+      "window_boundary_edge": {
+        "definition": "(symbol, trade_date) is the symbol's FIRST required actual-traded row inside R4 WINDOW_START..AS_OF AND instrument.list_date < WINDOW_START AND authoritative local R3 daily_bars has no predecessor before WINDOW_START",
+        "parity_scope": "NOT part of CLEAN_NORMAL parity scope",
+        "formal_row": "still formal required preclose row: BaoStock tradestatus=1 + finite positive preclose + identity/ASOF pass -> canonical preclose",
+        "previous_close_not_proven_from_baostock": true
+      },
+      "window_boundary_gate": {
+        "WINDOW_BOUNDARY_REQUIRED_N": "number of window-boundary-edge keys",
+        "WINDOW_BOUNDARY_PRESENT_N": "window-boundary keys present in current formal rows",
+        "WINDOW_BOUNDARY_VALID_N": "present window-boundary keys with tradestatus=1, finite positive preclose, coverage=COVERED",
+        "WINDOW_BOUNDARY_MISSING_N": "required minus present",
+        "WINDOW_BOUNDARY_INVALID_N": "present minus valid",
+        "WINDOW_BOUNDARY_PASS": "true only if PRESENT==REQUIRED AND VALID==REQUIRED"
+      },
       "any_mismatch_means": "PRECLOSE_COMPLETE=false",
       "bounded_evidence": {
         "CLEAN_NORMAL_N": 54756,

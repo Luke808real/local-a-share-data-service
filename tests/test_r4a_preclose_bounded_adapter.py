@@ -28,8 +28,10 @@ from ashare_data.r4a_preclose_bounded_adapter import (
     adapter_authority_status,
     build_formal_facts,
     build_query_plan,
+    compute_window_boundary_edges,
     compute_resumption_candidates,
     display_equal,
+    load_instrument_list_dates,
     load_frozen_sentinel_evidence,
     load_pilot_symbols,
     load_required_keys,
@@ -40,6 +42,8 @@ from ashare_data.r4a_preclose_bounded_adapter import (
     run_bounded_adapter,
     verify_clean_normal_parity,
     verify_frozen_sentinels,
+    verify_window_boundary_rows,
+    verify_provider_field_identity,
     parse_date,
 )
 
@@ -745,6 +749,7 @@ def test_N_real_wrapper_fake_module_login_query_logout():
     class FakeResult:
         def __init__(self, rows):
             self.error_code = "0"
+            self.fields = ["date", "code", "preclose", "tradestatus"]
             self.rows = rows
             self._i = 0
 
@@ -819,6 +824,236 @@ def test_real_wrapper_error_code_nonzero_fails():
         sys.modules.pop("baostock", None)
 
 
+# ---------------------------------------------------------------------------
+# R4A5.2 final-closure regressions (A-M)
+# ---------------------------------------------------------------------------
+
+
+def _adapter_root(tmp_path: Path) -> Path:
+    (tmp_path / "curated" / "daily_bars" / "symbol=000001.SZ").mkdir(parents=True)
+    (tmp_path / "curated" / "corporate_actions" / "symbol=000001.SZ").mkdir(parents=True)
+    (tmp_path / "meta" / "asl" / "r3").mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"] * 2,
+            "trade_date": [date(2016, 1, 4), date(2016, 1, 5)],
+        }
+    ).write_parquet(tmp_path / "curated" / "daily_bars" / "symbol=000001.SZ" / "part.parquet")
+    return tmp_path
+
+
+def test_A_real_mode_adapter_version_test_fails():
+    authority = adapter_authority_status(
+        "TEST",
+        expected_sha="a" * 40,
+        runtime_sha="a" * 40,
+        execution_mode="REAL",
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is False
+    assert authority["ADAPTER_AUTHORITY_MODE"] in ("SHA_MISMATCH", "UNVALIDATED", "MISSING_SHA")
+
+
+def test_B_real_mode_runtime_sha_missing_fails():
+    authority = adapter_authority_status(
+        "a" * 40,
+        expected_sha="a" * 40,
+        runtime_sha=None,
+        execution_mode="REAL",
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is False
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "MISSING_SHA"
+
+
+def test_C_real_mode_expected_sha_missing_fails():
+    authority = adapter_authority_status(
+        "a" * 40,
+        expected_sha=None,
+        runtime_sha="a" * 40,
+        execution_mode="REAL",
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is False
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "MISSING_SHA"
+
+
+def test_D_expected_runtime_adapter_exact_passes():
+    sha = "ab" * 20
+    authority = adapter_authority_status(
+        sha, expected_sha=sha, runtime_sha=sha, execution_mode="REAL"
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is True
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "EXACT_SHA"
+
+
+def test_E_old_710a_sha_on_new_runtime_fails():
+    old_sha = "710a7c80cb434955c38475f3bdd4a1403d5c6a41"
+    new_runtime = "ab" * 20
+    authority = adapter_authority_status(
+        old_sha,
+        expected_sha=old_sha,
+        runtime_sha=new_runtime,
+        execution_mode="REAL",
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is False
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "SHA_MISMATCH"
+
+
+def test_F_listed_before_window_first_in_window_row_is_boundary_edge():
+    required = {
+        ("000564.SZ", date(2016, 1, 4)),
+        ("000564.SZ", date(2016, 1, 5)),
+    }
+    list_dates = {"000564.SZ": date(1996, 3, 1)}
+    edges = compute_window_boundary_edges(
+        required_keys=required,
+        instrument_list_dates=list_dates,
+        window_start=WINDOW_START,
+    )
+    assert ("000564.SZ", date(2016, 1, 4)) in edges["window_boundary_keys"]
+    assert ("000564.SZ", date(2016, 1, 5)) not in edges["window_boundary_keys"]
+    assert edges["WINDOW_BOUNDARY_REQUIRED_N"] == 1
+
+
+def test_G_ipo_first_row_inside_window_not_boundary_edge():
+    required = {
+        ("603007.SH", date(2016, 8, 26)),
+        ("603007.SH", date(2016, 8, 29)),
+    }
+    list_dates = {"603007.SH": date(2016, 8, 26)}
+    edges = compute_window_boundary_edges(
+        required_keys=required,
+        instrument_list_dates=list_dates,
+        window_start=WINDOW_START,
+    )
+    assert ("603007.SH", date(2016, 8, 26)) not in edges["window_boundary_keys"]
+    assert edges["WINDOW_BOUNDARY_REQUIRED_N"] == 0
+
+
+def test_H_window_edge_excluded_from_clean_normal():
+    edge_keys = {("000001.SZ", date(2016, 1, 6))}
+    result = verify_clean_normal_parity(
+        formal_rows=_formal_rows(),
+        bars=_bars(),
+        event_dates=set(),
+        first_listing_dates=set(),
+        resumption_keys=set(),
+        known_special_keys=set(),
+        window_boundary_keys=edge_keys,
+    )
+    assert result["CLEAN_NORMAL_REQUIRED_N"] == 1
+    assert result["NORMAL_FULL_PARITY_PASS"] is True
+
+
+def test_I_missing_window_edge_formal_row_fails():
+    edge_keys = {("000001.SZ", date(2016, 1, 6))}
+    current = [
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 7), "preclose": 10.25,
+         "provider_tradestatus": 1, "coverage_status": "COVERED"},
+    ]
+    gate = verify_window_boundary_rows(edge_keys, current)
+    assert gate["WINDOW_BOUNDARY_MISSING_N"] == 1
+    assert gate["WINDOW_BOUNDARY_PASS"] is False
+
+
+def test_J_valid_window_edge_formal_row_passes():
+    edge_keys = {("000001.SZ", date(2016, 1, 6))}
+    current = [
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 6), "preclose": 10.0,
+         "provider_tradestatus": 1, "coverage_status": "COVERED"},
+    ]
+    gate = verify_window_boundary_rows(edge_keys, current)
+    assert gate["WINDOW_BOUNDARY_PRESENT_N"] == 1
+    assert gate["WINDOW_BOUNDARY_VALID_N"] == 1
+    assert gate["WINDOW_BOUNDARY_PASS"] is True
+
+
+def _query_result_with_fields(fields, rows):
+    return types.SimpleNamespace(error_code="0", fields=fields, next=lambda: False,
+                                 rows=rows)
+
+
+def test_K_provider_field_order_mismatch_fails():
+    from ashare_data.r4a_preclose_bounded_adapter import verify_provider_field_identity
+
+    bad = ["code", "date", "preclose", "tradestatus"]
+    try:
+        verify_provider_field_identity(bad)
+        raised = False
+    except RuntimeError as exc:
+        raised = True
+        assert "PROVIDER_FIELD_IDENTITY_FAILURE" in str(exc)
+    assert raised
+
+
+def test_L_provider_field_name_mismatch_fails():
+    from ashare_data.r4a_preclose_bounded_adapter import verify_provider_field_identity
+
+    renamed = ["date", "code", "prc", "tradestatus"]
+    try:
+        verify_provider_field_identity(renamed)
+        raised = False
+    except RuntimeError as exc:
+        raised = True
+        assert "PROVIDER_FIELD_IDENTITY_FAILURE" in str(exc)
+    assert raised
+
+
+def test_M_provider_field_missing_or_extra_fails():
+    from ashare_data.r4a_preclose_bounded_adapter import verify_provider_field_identity
+
+    for bad_fields in (
+        ["date", "code", "preclose"],  # missing tradestatus
+        ["date", "code", "preclose", "tradestatus", "extra"],  # extra field
+        ["symbol", "date", "code", "preclose", "tradestatus"],  # extra at head
+    ):
+        try:
+            verify_provider_field_identity(bad_fields)
+            raised = False
+        except RuntimeError as exc:
+            raised = True
+            assert "PROVIDER_FIELD_IDENTITY_FAILURE" in str(exc)
+        assert raised
+
+
+def test_M_provider_exact_fields_passes():
+    from ashare_data.r4a_preclose_bounded_adapter import verify_provider_field_identity
+
+    exact = ["date", "code", "preclose", "tradestatus"]
+    verify_provider_field_identity(exact)
+    # no exception -> pass
+    assert True
+
+
+def test_P_window_boundary_predecessor_absent_not_uncompared():
+    # The window-boundary edge row has NO local predecessor before the
+    # window, but it is excluded from CLEAN_NORMAL scope, so it must NOT
+    # increase CLEAN_NORMAL_UNCOMPARED_N.
+    bars = pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"] * 2,
+            "trade_date": [date(2016, 1, 5), date(2016, 1, 6)],
+            "close": [10.0, 10.25],
+        }
+    )
+    formal_rows = [
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 5), "preclose": 10.0},
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 6), "preclose": 10.0},
+    ]
+    edge_keys = {("000001.SZ", date(2016, 1, 5))}
+    result = verify_clean_normal_parity(
+        formal_rows=formal_rows,
+        bars=bars,
+        event_dates=set(),
+        first_listing_dates=set(),
+        resumption_keys=set(),
+        known_special_keys=set(),
+        window_boundary_keys=edge_keys,
+    )
+    assert result["CLEAN_NORMAL_REQUIRED_N"] == 1
+    assert result["CLEAN_NORMAL_COMPARABLE_N"] == 1
+    assert result["CLEAN_NORMAL_UNCOMPARED_N"] == 0
+    assert result["NORMAL_FULL_PARITY_PASS"] is True
+
+
 def test_adapter_authority_requires_exact_sha():
     ok = adapter_authority_status(
         "a" * 40,
@@ -833,6 +1068,12 @@ def test_adapter_authority_requires_exact_sha():
         runtime_sha="a" * 40,
     )
     assert mismatch["ADAPTER_AUTHORITY_PASS"] is False
-    fixture = adapter_authority_status("TEST", expected_sha=None, runtime_sha=None)
+    fixture = adapter_authority_status(
+        "TEST", expected_sha=None, runtime_sha=None, execution_mode="OFFLINE_TEST"
+    )
     assert fixture["ADAPTER_AUTHORITY_PASS"] is True
     assert fixture["ADAPTER_AUTHORITY_MODE"] == "OFFLINE_FIXTURE"
+    # TEST is NOT auto-passed in real mode without OFFLINE_TEST.
+    real_test = adapter_authority_status("TEST", expected_sha=None, runtime_sha=None)
+    assert real_test["ADAPTER_AUTHORITY_PASS"] is False
+    assert real_test["ADAPTER_AUTHORITY_MODE"] == "MISSING_SHA"
