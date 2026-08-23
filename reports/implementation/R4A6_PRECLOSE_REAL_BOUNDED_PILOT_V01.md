@@ -12,6 +12,30 @@ DATA_ROOT: /Users/luke808/AI/local-a-share-data-service-data
 ADAPTER_AUTHORITY_MODE=EXACT_SHA
 adapter_version == expected_adapter_sha == runtime_adapter_sha == 413f9bf6efdc36b0a1649c56e12f5825b86279ce
 
+## PREFETCH EVIDENCE (R4A6.1 receipt closure)
+
+EVIDENCE_SOURCE=ORIGINAL_EXECUTION_LOG
+EVIDENCE_NOTE=recovered from the R4A6 execution session stdout captured
+before the 264 network queries (Input-gate print, targeted-test run, and
+baostock login/logout prints).
+
+R4A0_READY=true
+R3_IDENTITY_MATCH=true
+FORMAL_IDENTITY_N=5456
+FORMAL_IDENTITY_HASH=2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f
+TARGETED_TESTS_N=64
+TARGETED_TESTS_PASS=64
+PREFETCH_GATE_STATUS=PASS
+PROVIDER_LOGIN_STATUS=SUCCESS
+PROVIDER_LOGOUT_STATUS=SUCCESS
+
+POST_HOC_PREFLIGHT_REVALIDATION=true
+POST_HOC_PREFLIGHT_REVALIDATION_NOTE=R4A6.1 closure task re-ran the
+targeted offline tests and the read-only r4a0_prerequisite against the same
+data root and the exact audited adapter code; no BaoStock call. All values
+matched the original pre-fetch evidence exactly. This is a no-network
+read-only cross-check, not a substitute for the original observation.
+
 ## PILOT SCOPE (frozen manifest)
 
 PILOT_SYMBOL_N=24
