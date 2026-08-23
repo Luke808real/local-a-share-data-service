@@ -137,6 +137,7 @@ def test_B_resume_skips_complete_reruns_incomplete(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(symbols),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert first["STATUS"] == "COMPLETE_ALL_UNITS"
     assert first["COMPLETE_N"] == 1
@@ -159,6 +160,7 @@ def test_B_resume_skips_complete_reruns_incomplete(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(symbols),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert second["SKIPPED_N"] == 1
     assert second["EXECUTED_N"] == 0
@@ -180,6 +182,7 @@ def test_B_resume_skips_complete_reruns_incomplete(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(symbols),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert third["EXECUTED_N"] == 1
     assert calls == ["000001.SZ"]
@@ -201,6 +204,7 @@ def test_B2_corrupted_receipt_fails_closed(tmp_path, ready_prereq):
             staging_root=staging,
             dry_run=True,
             identity=_identity(["000001.SZ"]),
+            execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
         )
 
 
@@ -219,6 +223,7 @@ def test_B3_hash_mismatch_fails_validation(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     formal_path = staging / "units" / "000001.SZ.parquet"
     # Tamper the staged output: content hash must no longer match receipt.
@@ -260,6 +265,7 @@ def test_C_interrupted_write_no_false_complete(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ", "000002.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert result["STATUS"] == "STOPPED_UNIT_FAILED"
     assert result["units"]["000001.SZ"]["STATE"] == "COMPLETE"
@@ -297,6 +303,7 @@ def test_D_provider_error_no_silent_retry(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert result["STATUS"] == "STOPPED_UNIT_FAILED"
     assert attempts["n"] == 1  # no silent retry
@@ -321,6 +328,7 @@ def test_E_contract_drift_blocks_reuse(tmp_path, ready_prereq):
         as_of=as_of_a,
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert result["STATUS"] == "COMPLETE_ALL_UNITS"
     # Contract drift: different AS_OF changes the executable contract.
@@ -335,6 +343,7 @@ def test_E_contract_drift_blocks_reuse(tmp_path, ready_prereq):
         as_of=date(2017, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert drifted["STATUS"] == "CHECKPOINT_CONTRACT_DRIFT"
     # Adapter authority drift also blocks reuse.
@@ -349,6 +358,7 @@ def test_E_contract_drift_blocks_reuse(tmp_path, ready_prereq):
         as_of=as_of_a,
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     assert drifted2["STATUS"] == "CHECKPOINT_CONTRACT_DRIFT"
 
@@ -403,6 +413,7 @@ def test_aggregate_full_run_counts_and_candidate(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
         identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
     )
     agg = aggregate_full_run(
         staging_root=staging,
@@ -865,3 +876,237 @@ def test_I2_positive_candidate_all_gates_genuinely_pass(tmp_path, ready_prereq, 
     assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is True
     assert agg["PRECLOSE_COMPLETE"] is False
     assert agg["FULL_MARKET_AUTHORIZED"] is False
+
+
+# ---------------------------------------------------------------------------
+# R4A7.2 execution-completeness regressions (A-J)
+# ---------------------------------------------------------------------------
+
+
+def test_A_unknown_execution_context_fails_closed(tmp_path, ready_prereq):
+    root = _make_root(tmp_path, ["000001.SZ"])
+    sha = _sha40()
+    calls: list[str] = []
+
+    def fetch(window):
+        calls.append(window["symbol"])
+        return _good_fetch(window["symbol"])
+
+    for bad_context in (None, "MYSTERY", "real", ""):
+        result = run_full_extraction(
+            root,
+            provider_fetch=fetch,
+            adapter_version=sha,
+            expected_adapter_sha=sha,
+            runtime_adapter_sha=sha,
+            staging_root=tmp_path / "staging",
+            dry_run=False,
+            as_of=date(2016, 1, 6),
+            window_start=date(2016, 1, 1),
+            identity=_identity(["000001.SZ"]),
+            execution_context=bad_context,
+        )
+        assert result["STATUS"] == "UNKNOWN_EXECUTION_CONTEXT", bad_context
+        assert result["NETWORK_PROVIDER_DATA_FETCH"] == "NO"
+    assert calls == []
+
+
+def test_B_no_silent_offline_default(tmp_path, ready_prereq):
+    # dry_run=false with omitted execution_context must NOT silently use
+    # OFFLINE_TEST.
+    root = _make_root(tmp_path, ["000001.SZ"])
+    sha = _sha40()
+    calls: list[str] = []
+
+    def fetch(window):
+        calls.append(window["symbol"])
+        return _good_fetch(window["symbol"])
+
+    result = run_full_extraction(
+        root,
+        provider_fetch=fetch,
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=tmp_path / "staging",
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ"]),
+        # execution_context intentionally omitted
+    )
+    assert result["STATUS"] == "UNKNOWN_EXECUTION_CONTEXT"
+    assert calls == []
+
+
+def test_C_limit_partial_not_complete(tmp_path, ready_prereq):
+    root = _make_root(tmp_path, ["000001.SZ", "000002.SZ"])
+    staging = tmp_path / "staging"
+    sha = _sha40()
+    result = run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        limit=1,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ", "000002.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert result["COMPLETE_N"] == 1
+    assert result["COMPLETE_N"] < result["FULL_SYMBOL_N"]
+    assert result["PENDING_N"] >= 1
+    assert result["STATUS"] == "PARTIAL_LIMIT_REACHED"
+    assert result["STATUS"] != "COMPLETE_ALL_UNITS"
+
+
+def test_D_resume_completes_remaining(tmp_path, ready_prereq):
+    root = _make_root(tmp_path, ["000001.SZ", "000002.SZ"])
+    staging = tmp_path / "staging"
+    sha = _sha40()
+    first = run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        limit=1,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ", "000002.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert first["STATUS"] == "PARTIAL_LIMIT_REACHED"
+    second = run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ", "000002.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert second["STATUS"] == "COMPLETE_ALL_UNITS"
+    assert second["COMPLETE_N"] == 2
+    assert second["EXECUTED_N"] == 1  # first unit skipped as valid COMPLETE
+
+
+def _tamper_staged(root: Path, staging: Path, sha: str, column: str, value) -> Path:
+    formal_path = staging / "units" / "000001.SZ.parquet"
+    frame = pl.read_parquet(formal_path).with_columns(pl.lit(value).alias(column))
+    frame.write_parquet(formal_path)
+    return formal_path
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("provider_tradestatus", 0),
+        ("coverage_status", "PARTIAL"),
+        ("source", "OTHER_PROVIDER"),
+        ("source_version", "0.0.1"),
+        ("adapter_version", "cd" * 20),
+    ],
+)
+def test_E_to_I_field_tampers_invalidate_unit(
+    tmp_path, ready_prereq, column, value
+):
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    formal_path = _tamper_staged(root, staging, sha, column, value)
+    manifest_path = staging / "manifest.json"
+    manifest = load_manifest(manifest_path)
+    receipt = manifest["units"]["000001.SZ"]
+    assert unit_complete_and_valid(
+        receipt,
+        contract=receipt["contract"],
+        formal_path=formal_path,
+        expected_symbol="000001.SZ",
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+    ) is False
+
+
+def test_E2_tamper_tradestatus_aggregate_candidate_false(tmp_path, ready_prereq):
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    _tamper_staged(root, staging, sha, "provider_tradestatus", 0)
+    agg = aggregate_full_run(
+        staging_root=staging,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_F2_tamper_coverage_aggregate_candidate_false(tmp_path, ready_prereq):
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    _tamper_staged(root, staging, sha, "coverage_status", "PARTIAL")
+    agg = aggregate_full_run(
+        staging_root=staging,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_G2_tamper_source_aggregate_candidate_false(tmp_path, ready_prereq):
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    _tamper_staged(root, staging, sha, "source", "OTHER_PROVIDER")
+    agg = aggregate_full_run(
+        staging_root=staging,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_I2_corrupt_unit_query_plan_hash_invalidates(tmp_path, ready_prereq):
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    manifest_path = staging / "manifest.json"
+    manifest = load_manifest(manifest_path)
+    receipt = manifest["units"]["000001.SZ"]
+    receipt["unit_query_plan_hash"] = "0" * 64
+    write_atomic(manifest_path, json.dumps(manifest))
+    formal_path = staging / "units" / "000001.SZ.parquet"
+    assert unit_complete_and_valid(
+        receipt,
+        contract=receipt["contract"],
+        formal_path=formal_path,
+        expected_symbol="000001.SZ",
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+    ) is False
+
+
+def test_J_clean_complete_staged_unit_reusable(tmp_path, ready_prereq):
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    manifest_path = staging / "manifest.json"
+    manifest = load_manifest(manifest_path)
+    receipt = manifest["units"]["000001.SZ"]
+    formal_path = staging / "units" / "000001.SZ.parquet"
+    assert unit_complete_and_valid(
+        receipt,
+        contract=receipt["contract"],
+        formal_path=formal_path,
+        expected_symbol="000001.SZ",
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+    ) is True

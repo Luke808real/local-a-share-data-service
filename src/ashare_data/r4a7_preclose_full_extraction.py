@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from datetime import date
 from datetime import datetime
@@ -102,6 +103,83 @@ def formal_fact_hash(rows: Iterable[dict[str, Any]]) -> str:
         for r in rows
     )
     return _sha_256(json.dumps(tuples, separators=(",", ":")))
+
+
+def staged_formal_content_hash(rows: Iterable[dict[str, Any]]) -> str:
+    """Deterministic hash over ALL canonical formal columns (per row).
+
+    Separate from the frozen R4A6-compatible FORMAL_FACT_HASH (which stays
+    keyed on (symbol, trade_date, display preclose)). This hash covers the
+    full staged row so that any per-field tamper invalidates the unit.
+    """
+
+    def _fmt(value: Any) -> Any:
+        if isinstance(value, date):
+            return value.isoformat()
+        return value
+
+    payload = [[_fmt(row.get(c)) for c in FORMAL_COLUMNS] for row in rows]
+    return _sha_256(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def verify_staged_formal_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    expected_symbol: str,
+    contract: dict[str, Any],
+    as_of: date,
+) -> tuple[bool, list[str]]:
+    """Explicit staged-formal row verifier (R4A7.2 audit fix).
+
+    Every formal row must satisfy the full frozen contract identity:
+      symbol == expected symbol
+      trade_date <= AS_OF
+      preclose finite positive
+      provider_tradestatus == 1
+      coverage_status == "COVERED"
+      source == BAOSTOCK_HISTORY_K_PRECLOSE
+      source_version == baostock-0.9.3
+      query_contract_version == frozen contract
+      adapter_version == current exact adapter authority SHA
+
+    Used in BOTH unit_complete_and_valid() and aggregate_full_run(); the
+    (symbol, trade_date, preclose) hash alone is never sufficient.
+    """
+    issues: list[str] = []
+    expected_adapter = contract.get("ADAPTER_AUTHORITY_SHA")
+    for index, row in enumerate(rows):
+        prefix = f"row{index}"
+        if str(row.get("symbol")) != expected_symbol:
+            issues.append(f"{prefix}:symbol={row.get('symbol')!r}")
+        trade_date = row.get("trade_date")
+        if trade_date is None or trade_date > as_of:
+            issues.append(f"{prefix}:trade_date={trade_date!r}")
+        preclose = row.get("preclose")
+        try:
+            finite_positive = bool(
+                preclose is not None
+                and math.isfinite(float(preclose))
+                and float(preclose) > 0
+            )
+        except (TypeError, ValueError):
+            finite_positive = False
+        if not finite_positive:
+            issues.append(f"{prefix}:preclose={preclose!r}")
+        if row.get("provider_tradestatus") != 1:
+            issues.append(f"{prefix}:provider_tradestatus={row.get('provider_tradestatus')!r}")
+        if row.get("coverage_status") != "COVERED":
+            issues.append(f"{prefix}:coverage_status={row.get('coverage_status')!r}")
+        if row.get("source") != SOURCE:
+            issues.append(f"{prefix}:source={row.get('source')!r}")
+        if row.get("source_version") != SOURCE_VERSION:
+            issues.append(f"{prefix}:source_version={row.get('source_version')!r}")
+        if row.get("query_contract_version") != contract.get("QUERY_CONTRACT_VERSION"):
+            issues.append(
+                f"{prefix}:query_contract_version={row.get('query_contract_version')!r}"
+            )
+        if row.get("adapter_version") != expected_adapter:
+            issues.append(f"{prefix}:adapter_version={row.get('adapter_version')!r}")
+    return (len(issues) == 0, issues)
 
 
 def formal_frame(rows: Iterable[dict[str, Any]]) -> pl.DataFrame:
@@ -235,6 +313,7 @@ def build_unit_receipt(
     post_asof_n: int,
     invalid_preclose_n: int,
     formal_hash: str,
+    staged_formal_hash: str,
     formal_path: str,
     contract: dict[str, Any],
 ) -> dict[str, Any]:
@@ -257,6 +336,7 @@ def build_unit_receipt(
         "POST_ASOF_N": post_asof_n,
         "INVALID_PRECLOSE_N": invalid_preclose_n,
         "FORMAL_FACT_HASH": formal_hash,
+        "STAGED_FORMAL_CONTENT_HASH": staged_formal_hash,
         "formal_path": formal_path,
         "contract": contract,
         "completion_utc": _now_utc(),
@@ -273,6 +353,8 @@ def unit_complete_and_valid(
     contract: dict[str, Any],
     formal_path: Path,
     expected_symbol: str,
+    as_of: date = AS_OF,
+    window_start: date = WINDOW_START,
 ) -> bool:
     """Resume skip rule: skip ONLY when the receipt survives exact checks.
 
@@ -289,6 +371,16 @@ def unit_complete_and_valid(
         return False
     if receipt.get("contract") != contract:
         return False
+    if receipt.get("adapter_version") != contract.get("ADAPTER_AUTHORITY_SHA"):
+        return False
+    # Unit executable identity: rederive and verify the unit query plan.
+    unit_plan = build_query_plan(
+        [expected_symbol], window_start=window_start, as_of=as_of
+    )
+    if int(receipt.get("unit_query_window_n", -1)) != unit_plan["QUERY_WINDOW_N"]:
+        return False
+    if receipt.get("unit_query_plan_hash") != unit_plan["QUERY_PLAN_HASH"]:
+        return False
     if not formal_path.is_file():
         return False
     try:
@@ -298,6 +390,17 @@ def unit_complete_and_valid(
         return False
     actual = formal_fact_hash(rows)
     if actual != receipt.get("FORMAL_FACT_HASH"):
+        return False
+    staged_ok, _ = verify_staged_formal_rows(
+        rows,
+        expected_symbol=expected_symbol,
+        contract=contract,
+        as_of=as_of,
+    )
+    if not staged_ok:
+        return False
+    staged_actual = staged_formal_content_hash(rows)
+    if staged_actual != receipt.get("STAGED_FORMAL_CONTENT_HASH"):
         return False
     if len(rows) != int(receipt.get("FORMAL_FACT_ROW_N", -1)):
         return False
@@ -350,7 +453,7 @@ def run_full_extraction(
     as_of: date = AS_OF,
     window_start: date = WINDOW_START,
     identity: dict[str, Any] | None = None,
-    execution_context: str = EXECUTION_CONTEXT_OFFLINE_TEST,
+    execution_context: str | None = None,
 ) -> dict[str, Any]:
     """Resumable full-universe extraction; production default is dry-run.
 
@@ -364,8 +467,30 @@ def run_full_extraction(
         is loaded via load_expected_identity (5456 / frozen hash) and any
         drift fails closed. A 1-symbol REAL run therefore cannot produce
         COMPLETE_ALL_UNITS;
-      - OFFLINE_TEST keeps the injectable small-identity path for tests.
+      - OFFLINE_TEST keeps the injectable small-identity path for tests and
+        must be EXPLICIT: execution_context has no implicit default, so a
+        real/non-dry-run call cannot silently degrade into OFFLINE_TEST.
+
+    R4A7.2 hardening:
+      - execution_context must be exactly "REAL" or "OFFLINE_TEST". None,
+        unknown, or arbitrary values -> UNKNOWN_EXECUTION_CONTEXT with no
+        checkpoint trust and no provider fetch.
+      - COMPLETE_ALL_UNITS is returned only when COMPLETE_N ==
+        FULL_SYMBOL_N and FAILED_N == 0 and PENDING_N == 0. When a limit
+        stops execution while units remain the status is
+        PARTIAL_LIMIT_REACHED (partial != complete); a later resume may
+        continue normally.
     """
+    if execution_context not in (EXECUTION_CONTEXT_REAL, EXECUTION_CONTEXT_OFFLINE_TEST):
+        return {
+            "STATUS": "UNKNOWN_EXECUTION_CONTEXT",
+            "execution_context": execution_context,
+            "reason": "execution_context must be explicitly REAL or "
+            "OFFLINE_TEST; no implicit default, no checkpoint trust, "
+            "no provider fetch",
+            "NETWORK_PROVIDER_DATA_FETCH": "NO",
+            "MARKET_DATA_WRITE": "NO",
+        }
     if execution_context == EXECUTION_CONTEXT_REAL:
         authority = adapter_authority_status(
             adapter_version,
@@ -448,7 +573,14 @@ def run_full_extraction(
         entry = manifest["units"].get(symbol)
         receipt = entry if isinstance(entry, dict) else None
         formal_path = units_dir / f"{symbol}.parquet"
-        if unit_complete_and_valid(receipt, contract=contract, formal_path=formal_path, expected_symbol=symbol):
+        if unit_complete_and_valid(
+            receipt,
+            contract=contract,
+            formal_path=formal_path,
+            expected_symbol=symbol,
+            as_of=as_of,
+            window_start=window_start,
+        ):
             summary["COMPLETE_N"] += 1
             summary["SKIPPED_N"] += 1
             summary["units"][symbol] = {"STATE": "COMPLETE", "skipped": True}
@@ -466,6 +598,7 @@ def run_full_extraction(
         if limit is not None and summary["EXECUTED_N"] >= limit:
             summary["units"][symbol] = {"STATE": "PENDING", "note": "limit reached"}
             summary["PENDING_N"] += 1
+            summary["LIMIT_REACHED"] = True
             continue
         fetched_at = _now_utc()
         try:
@@ -489,10 +622,22 @@ def run_full_extraction(
             readback = pl.read_parquet(tmp)
             readback_rows = readback.to_dicts()
             formal_hash = formal_fact_hash(readback_rows)
+            staged_formal_hash = staged_formal_content_hash(readback_rows)
             if len(readback_rows) != len(formal_rows):
                 raise RuntimeError(f"read-back row count mismatch for {symbol}")
             if formal_hash != formal_fact_hash(formal_rows):
                 raise RuntimeError(f"read-back content hash mismatch for {symbol}")
+            ok, staged_issues = verify_staged_formal_rows(
+                readback_rows,
+                expected_symbol=symbol,
+                contract=contract,
+                as_of=as_of,
+            )
+            if not ok:
+                raise RuntimeError(
+                    f"staged formal row integrity failed for {symbol}: "
+                    f"{staged_issues[:5]}"
+                )
             os.replace(tmp, formal_path)
             unit_window_hash = build_query_plan(
                 [symbol], window_start=window_start, as_of=as_of
@@ -515,6 +660,7 @@ def run_full_extraction(
                 post_asof_n=int(counts["POST_ASOF_N"]),
                 invalid_preclose_n=int(counts["INVALID_PRECLOSE_N"]),
                 formal_hash=formal_hash,
+                staged_formal_hash=staged_formal_hash,
                 formal_path=str(formal_path),
                 contract=contract,
             )
@@ -536,8 +682,18 @@ def run_full_extraction(
             # No silent retry: stop on first failed unit.
             summary["STATUS"] = "STOPPED_UNIT_FAILED"
             return summary
-    if not dry_run and summary["FAILED_N"] == 0:
-        summary["STATUS"] = "COMPLETE_ALL_UNITS"
+    if not dry_run:
+        all_complete = bool(
+            summary["COMPLETE_N"] == summary["FULL_SYMBOL_N"]
+            and summary["FAILED_N"] == 0
+            and summary["PENDING_N"] == 0
+        )
+        if all_complete:
+            summary["STATUS"] = "COMPLETE_ALL_UNITS"
+        elif summary.get("LIMIT_REACHED"):
+            summary["STATUS"] = "PARTIAL_LIMIT_REACHED"
+        else:
+            summary["STATUS"] = "PARTIAL_INCOMPLETE"
     return summary
 
 
@@ -697,6 +853,8 @@ def aggregate_full_run(
             contract=contract,
             formal_path=formal_path,
             expected_symbol=expected_symbol,
+            as_of=as_of,
+            window_start=window_start,
         ):
             invalid_missing.append(expected_symbol)
             continue
