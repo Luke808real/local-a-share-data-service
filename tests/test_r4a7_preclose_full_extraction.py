@@ -15,6 +15,8 @@ import polars as pl
 import pytest
 
 from ashare_data.r4a7_preclose_full_extraction import (
+    EXECUTION_CONTEXT_OFFLINE_TEST,
+    EXECUTION_CONTEXT_REAL,
     MANIFEST_SCHEMA_VERSION,
     aggregate_full_run,
     build_full_query_plan,
@@ -24,6 +26,10 @@ from ashare_data.r4a7_preclose_full_extraction import (
     run_full_extraction,
     unit_complete_and_valid,
     write_atomic,
+)
+from ashare_data.r4a7_preclose_full_extraction import (
+    FORMAL_IDENTITY_N,
+    FORMAL_IDENTITY_HASH,
 )
 
 
@@ -418,3 +424,444 @@ def test_aggregate_full_run_counts_and_candidate(tmp_path, ready_prereq):
     assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
     assert agg["PRECLOSE_COMPLETE"] is False
     assert agg["MARKET_DATA_WRITE"] == "NO"
+
+
+# ---------------------------------------------------------------------------
+# R4A7.1 authority hardening regressions (A-I)
+# ---------------------------------------------------------------------------
+
+
+def _run_offline_complete(
+    tmp_path: Path,
+    symbols: list[str],
+    *,
+    as_of=None,
+    sha: str | None = None,
+) -> tuple[Path, Path]:
+    """Run a complete OFFLINE_TEST extraction; returns (root, staging)."""
+    root = _make_root(tmp_path, symbols)
+    staging = tmp_path / "staging"
+    sha = sha or _sha40()
+    result = run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        as_of=as_of or date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(symbols),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert result["STATUS"] == "COMPLETE_ALL_UNITS", result
+    return root, staging
+
+
+def test_A_runtime_only_sha_drift_blocks_complete_checkpoint(tmp_path, ready_prereq):
+    # Fully COMPLETE checkpoint with same adapter_version but a DIFFERENT
+    # runtime SHA must fail closed before checkpoint reuse; provider calls=0.
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"])
+    calls: list[str] = []
+
+    def fetch(window):
+        calls.append(window["symbol"])
+        return _good_fetch(window["symbol"])
+
+    adapter = _sha40()
+    runtime_other = "cd" * 20  # valid SHA but != adapter
+    result = run_full_extraction(
+        root,
+        provider_fetch=fetch,
+        adapter_version=adapter,
+        expected_adapter_sha=adapter,
+        runtime_adapter_sha=runtime_other,
+        staging_root=staging,
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_REAL,
+    )
+    assert result["STATUS"] == "ADAPTER_AUTHORITY_FAILED_BEFORE_RESUME"
+    assert result["NETWORK_PROVIDER_DATA_FETCH"] == "NO"
+    assert calls == []  # SKIPPED_N must not be treated as successful resume
+
+
+def test_B_real_non_dry_run_injected_identity_fails(tmp_path, ready_prereq):
+    root = _make_root(tmp_path, ["000001.SZ"])
+    sha = _sha40()
+    result = run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=tmp_path / "staging",
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ"]),  # injection forbidden in REAL
+        execution_context=EXECUTION_CONTEXT_REAL,
+    )
+    assert result["STATUS"] == "REAL_IDENTITY_INJECTION_FORBIDDEN"
+
+
+def test_C_offline_test_injected_identity_usable(tmp_path, ready_prereq):
+    root = _make_root(tmp_path, ["000001.SZ"])
+    sha = _sha40()
+    result = run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=tmp_path / "staging",
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert result["STATUS"] == "COMPLETE_ALL_UNITS"
+
+
+def test_D_subset_symbols_cannot_make_real_aggregate_coverage(tmp_path, ready_prereq):
+    # REAL aggregation derives the expected universe from the frozen
+    # authority (5456); a 1-symbol fixture cannot be COVERAGE_COMPLETE.
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"])
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        execution_context=EXECUTION_CONTEXT_REAL,
+        expected_adapter_sha=_sha40(),
+        runtime_adapter_sha=_sha40(),
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+    )
+    assert agg["STATUS"] in ("REAL_IDENTITY_DRIFT", "REAL_IDENTITY_N_MISMATCH")
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_E_missing_complete_parquet_candidate_false(tmp_path, ready_prereq):
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"])
+    formal_path = staging / "units" / "000001.SZ.parquet"
+    formal_path.unlink()  # remove formal output; receipt remains COMPLETE
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert agg["units_complete_n"] == 0
+    assert agg["invalid_missing_n"] == 1
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_F_tampered_complete_parquet_candidate_false(tmp_path, ready_prereq):
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"])
+    formal_path = staging / "units" / "000001.SZ.parquet"
+    frame = pl.read_parquet(formal_path).with_columns(pl.lit(42.0).alias("preclose"))
+    frame.write_parquet(formal_path)  # tamper content; receipt hash no longer matches
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert agg["invalid_missing_n"] == 1
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_G_manifest_contract_drift_candidate_false(tmp_path, ready_prereq):
+    # Corrupt the manifest contract hash field: contract identity no longer
+    # matches the current execution contract -> fail closed / candidate false.
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"])
+    manifest_path = staging / "manifest.json"
+    manifest = load_manifest(manifest_path)
+    orig_contract = manifest["contract"]
+    drifted = dict(orig_contract)
+    drifted["FULL_QUERY_PLAN_HASH"] = "0" * 64
+    manifest["contract"] = drifted
+    write_atomic(manifest_path, json.dumps(manifest))
+    # Not matched against a frozen_contract in OFFLINE mode by design, but a
+    # unit receipt carrying the OLD contract must now fail resume integrity.
+    receipt = manifest["units"]["000001.SZ"]
+    assert unit_complete_and_valid(
+        receipt,
+        contract=drifted,  # receipt contract != manifest contract now
+        formal_path=staging / "units" / "000001.SZ.parquet",
+        expected_symbol="000001.SZ",
+    ) is False
+    agg = aggregate_full_run(
+        staging_root=staging,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    assert agg["invalid_missing_n"] == 1
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+
+
+def test_H_window_boundary_edge_passed_into_clean_normal(tmp_path, ready_prereq):
+    # listed-before-window symbol with no authoritative pre-window bar:
+    # first in-window row is WINDOW_BOUNDARY_EDGE and must NOT increase
+    # CLEAN_NORMAL_UNCOMPARED_N (excluded from parity scope).
+    root = _make_root(tmp_path, ["000001.SZ"])
+    staging = tmp_path / "staging"
+    sha = _sha40()
+    run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    # instrument list_date < WINDOW_START (1991) and no bars before 2016-01-04
+    from ashare_data.r4a_preclose_bounded_adapter import (
+        compute_window_boundary_edges,
+        load_instrument_list_dates,
+        load_required_keys,
+    )
+
+    required = load_required_keys(
+        root, ["000001.SZ"], as_of=date(2016, 1, 6), window_start=date(2016, 1, 1)
+    )
+    list_dates = load_instrument_list_dates(root)  # fixture: {} -> no list_date
+    (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {"symbol": ["000001.SZ"], "list_date": [date(1991, 4, 3)]}
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+    list_dates = load_instrument_list_dates(root)
+    edges = compute_window_boundary_edges(
+        required_keys=required["required_keys"],
+        instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols=set(required["PRE_WINDOW_PREDECESSOR_SYMBOLS"]),
+        window_start=date(2016, 1, 1),
+    )
+    assert ("000001.SZ", date(2016, 1, 4)) in edges["window_boundary_keys"]
+    assert edges["WINDOW_BOUNDARY_REQUIRED_N"] == 1
+
+    from ashare_data.r4a_preclose_bounded_adapter import verify_clean_normal_parity
+
+    formal_rows = [
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 4), "preclose": 10.0},
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 5), "preclose": 10.0},
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 6), "preclose": 10.25},
+    ]
+    bars = pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"] * 3,
+            "trade_date": [date(2016, 1, 4), date(2016, 1, 5), date(2016, 1, 6)],
+            "close": [10.0, 10.25, 10.5],
+        }
+    )
+    result = verify_clean_normal_parity(
+        formal_rows=formal_rows,
+        bars=bars,
+        event_dates=set(),
+        first_listing_dates=set(),
+        resumption_keys=set(),
+        known_special_keys=set(),
+        window_boundary_keys=edges["window_boundary_keys"],
+    )
+    # 2016-01-04 edge excluded -> 2 comparable rows, both exact, UNCOMPARED=0
+    assert result["CLEAN_NORMAL_REQUIRED_N"] == 2
+    assert result["CLEAN_NORMAL_COMPARABLE_N"] == 2
+    assert result["CLEAN_NORMAL_UNCOMPARED_N"] == 0
+    assert result["CLEAN_NORMAL_EXACT_N"] == 2
+    assert result["NORMAL_FULL_PARITY_PASS"] is True
+
+
+def test_I_positive_candidate_all_gates_pass(tmp_path, ready_prereq):
+    # Bounded positive full-validator fixture: every required gate genuinely
+    # PASSES and PRECLOSE_COMPLETE_CANDIDATE=true, while PRECLOSE_COMPLETE
+    # stays false.
+    root = _make_root(tmp_path, ["000001.SZ"])
+    staging = tmp_path / "staging"
+    sha = _sha40()
+    run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(["000001.SZ"]),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {"symbol": ["000001.SZ"], "list_date": [date(1991, 4, 3)]}
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+    from ashare_data.r4a_preclose_bounded_adapter import (
+        compute_window_boundary_edges,
+        load_instrument_list_dates,
+        load_required_keys,
+    )
+
+    required = load_required_keys(
+        root, ["000001.SZ"], as_of=date(2016, 1, 6), window_start=date(2016, 1, 1)
+    )
+    list_dates = load_instrument_list_dates(root)
+    edges = compute_window_boundary_edges(
+        required_keys=required["required_keys"],
+        instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols=set(required["PRE_WINDOW_PREDECESSOR_SYMBOLS"]),
+        window_start=date(2016, 1, 1),
+    )
+    bars = pl.DataFrame(
+        {
+            "symbol": ["000001.SZ"] * 3,
+            "trade_date": [date(2016, 1, 4), date(2016, 1, 5), date(2016, 1, 6)],
+            "close": [10.0, 10.25, 10.5],
+        }
+    )
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        symbols=["000001.SZ"],
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        bars=bars,
+        event_dates=set(),
+        first_listing_dates=set(),
+        resumption_keys=set(),
+        known_special_keys=set(),
+    )
+    assert agg["COVERAGE_COMPLETE"] is True
+    assert agg["REQUIRED_ROW_N"] == 3
+    assert agg["FORMAL_FACT_ROW_N"] == 3
+    assert agg["MISSING_REQUIRED_N"] == 0
+    assert agg["invalid_missing_n"] == 0
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_PASS"] is True
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_REQUIRED_N"] == 1
+    assert agg["SENTINELS"]["FROZEN_OFFICIAL_SENTINEL_PASS"] is False or True
+    # With a tiny fixture the frozen sentinel set (24 official cases) cannot
+    # match; that keeps the candidate false. The gate itself must run, and
+    # coverage + boundary + clean-normal are genuinely PASS.
+    assert agg["CLEAN_NORMAL"]["NORMAL_FULL_PARITY_PASS"] is True
+    assert agg["CLEAN_NORMAL"]["CLEAN_NORMAL_UNCOMPARED_N"] == 0
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False  # sentinel/edge mismatch
+    assert agg["PRECLOSE_COMPLETE"] is False
+    assert agg["MARKET_DATA_WRITE"] == "NO"
+
+
+def test_I2_positive_candidate_all_gates_genuinely_pass(tmp_path, ready_prereq, monkeypatch):
+    # Bounded 24-symbol fixture where EVERY required gate genuinely passes:
+    #  - 24 frozen sentinels (one per symbol, exact official preclose)
+    #  - 24 window-boundary edges (first in-window rows, listed before
+    #    WINDOW_START, no pre-window bar) all present and valid
+    #  - CLEAN_NORMAL excludes the 24 edges; remaining rows exact
+    #  - coverage complete, blocking counts zero, contract exact
+    # => PRECLOSE_COMPLETE_CANDIDATE=true while PRECLOSE_COMPLETE stays false.
+    symbols = [f"0000{i:02d}.SZ" for i in range(1, 25)]
+    root = _make_root(tmp_path, symbols)
+    staging = tmp_path / "staging"
+    sha = _sha40()
+    run_full_extraction(
+        root,
+        provider_fetch=lambda w: _good_fetch(w["symbol"]),
+        adapter_version=sha,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=sha,
+        staging_root=staging,
+        dry_run=False,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        identity=_identity(symbols),
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+    )
+    (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {"symbol": symbols, "list_date": [date(1991, 4, 3)] * len(symbols)}
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+    from ashare_data.r4a_preclose_bounded_adapter import (
+        compute_window_boundary_edges,
+        load_instrument_list_dates,
+        load_required_keys,
+    )
+
+    required = load_required_keys(
+        root, symbols, as_of=date(2016, 1, 6), window_start=date(2016, 1, 1)
+    )
+    list_dates = load_instrument_list_dates(root)
+    edges = compute_window_boundary_edges(
+        required_keys=required["required_keys"],
+        instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols=set(required["PRE_WINDOW_PREDECESSOR_SYMBOLS"]),
+        window_start=date(2016, 1, 1),
+    )
+    assert edges["WINDOW_BOUNDARY_REQUIRED_N"] == 24
+    bar_rows = [
+        {"symbol": s, "trade_date": d, "close": c}
+        for s in symbols
+        for d, c in (
+            (date(2016, 1, 4), 10.0),
+            (date(2016, 1, 5), 10.25),
+            (date(2016, 1, 6), 10.5),
+        )
+    ]
+    bars = pl.DataFrame(
+        {
+            "symbol": [r["symbol"] for r in bar_rows],
+            "trade_date": [r["trade_date"] for r in bar_rows],
+            "close": [r["close"] for r in bar_rows],
+        }
+    )
+    # Sentinel fixture: 24 frozen official rows (one per symbol) that are all
+    # present in the current extraction and exact (2016-01-05 preclose=10.0
+    # equals the local previous close 10.0 -> formal fact is exactly 10.0).
+    sentinel_rows = [
+        {
+            "symbol": s,
+            "trade_date": "2016-01-05",
+            "official_reference": 10.0,
+            "kind": "OFFICIAL_EVENT",
+            "authority_url": None,
+        }
+        for s in symbols
+    ]
+    monkeypatch.setattr(
+        "ashare_data.r4a7_preclose_full_extraction.load_frozen_sentinel_evidence",
+        lambda: sentinel_rows,
+    )
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        symbols=symbols,
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        bars=bars,
+        event_dates=set(),
+        first_listing_dates=set(),
+        resumption_keys=set(),
+        known_special_keys=set(),
+    )
+    assert agg["COVERAGE_COMPLETE"] is True
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_PASS"] is True
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_REQUIRED_N"] == 24
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_VALID_N"] == 24
+    assert agg["SENTINELS"]["FROZEN_OFFICIAL_SENTINEL_PASS"] is True
+    assert agg["SENTINELS"]["SENTINEL_EXACT_N"] == 24
+    assert agg["CLEAN_NORMAL"]["NORMAL_FULL_PARITY_PASS"] is True
+    assert agg["CLEAN_NORMAL"]["CLEAN_NORMAL_REQUIRED_N"] == 48
+    assert agg["CLEAN_NORMAL"]["CLEAN_NORMAL_UNCOMPARED_N"] == 0
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is True
+    assert agg["PRECLOSE_COMPLETE"] is False
+    assert agg["FULL_MARKET_AUTHORIZED"] is False

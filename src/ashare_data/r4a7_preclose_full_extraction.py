@@ -43,6 +43,7 @@ from ashare_data.r4a_preclose_bounded_adapter import (
     QUERY_FREQUENCY,
     SOURCE,
     SOURCE_VERSION,
+    adapter_authority_status,
     build_query_plan,
     compute_window_boundary_edges,
     load_frozen_sentinel_evidence,
@@ -59,6 +60,8 @@ from ashare_data.r4a_preclose_bounded_adapter import (
 MANIFEST_SCHEMA_VERSION = "R4A7_PRECLOSE_V01"
 MANIFEST_FILENAME = "manifest.json"
 UNITS_DIRNAME = "units"
+EXECUTION_CONTEXT_REAL = "REAL"
+EXECUTION_CONTEXT_OFFLINE_TEST = "OFFLINE_TEST"
 FORMAL_COLUMNS = [
     "symbol",
     "trade_date",
@@ -347,8 +350,62 @@ def run_full_extraction(
     as_of: date = AS_OF,
     window_start: date = WINDOW_START,
     identity: dict[str, Any] | None = None,
+    execution_context: str = EXECUTION_CONTEXT_OFFLINE_TEST,
 ) -> dict[str, Any]:
-    """Resumable full-universe extraction; production default is dry-run."""
+    """Resumable full-universe extraction; production default is dry-run.
+
+    REAL (non-dry-run) execution is hardened (R4A7.1 audit fixes):
+      - the frozen adapter authority gate runs BEFORE any checkpoint read,
+        checkpoint reuse, or provider fetch; adapter_version ==
+        expected_adapter_sha == runtime_adapter_sha as canonical 40-char
+        lowercase hex SHA is required. Runtime-only drift fails closed even
+        against a fully COMPLETE checkpoint;
+      - identity injection is FORBIDDEN; the authoritative frozen identity
+        is loaded via load_expected_identity (5456 / frozen hash) and any
+        drift fails closed. A 1-symbol REAL run therefore cannot produce
+        COMPLETE_ALL_UNITS;
+      - OFFLINE_TEST keeps the injectable small-identity path for tests.
+    """
+    if execution_context == EXECUTION_CONTEXT_REAL:
+        authority = adapter_authority_status(
+            adapter_version,
+            expected_sha=expected_adapter_sha,
+            runtime_sha=runtime_adapter_sha,
+            execution_mode="REAL",
+        )
+        if not authority["ADAPTER_AUTHORITY_PASS"]:
+            return {
+                "STATUS": "ADAPTER_AUTHORITY_FAILED_BEFORE_RESUME",
+                "ADAPTER_AUTHORITY_MODE": authority["ADAPTER_AUTHORITY_MODE"],
+                "reason": "real execution requires adapter_version == "
+                "expected_adapter_sha == runtime_adapter_sha (canonical "
+                "40-char lowercase hex); checkpoint is NOT trusted",
+                "NETWORK_PROVIDER_DATA_FETCH": "NO",
+                "MARKET_DATA_WRITE": "NO",
+            }
+        if identity is not None:
+            return {
+                "STATUS": "REAL_IDENTITY_INJECTION_FORBIDDEN",
+                "reason": "real execution must load the frozen authoritative "
+                "identity; injected identity is test-only",
+                "NETWORK_PROVIDER_DATA_FETCH": "NO",
+                "MARKET_DATA_WRITE": "NO",
+            }
+        identity = load_expected_identity(
+            root,
+            expected_hash=FORMAL_IDENTITY_HASH,
+            expected_n=FORMAL_IDENTITY_N,
+        )
+        if not identity.get("identity_ok"):
+            return {
+                "STATUS": "REAL_IDENTITY_DRIFT",
+                "reason": "authoritative frozen identity not reproducible "
+                "(5456 / frozen hash)",
+                "EXPECTED_SYMBOL_N": identity.get("EXPECTED_SYMBOL_N"),
+                "EXPECTED_SYMBOL_HASH": identity.get("EXPECTED_SYMBOL_HASH"),
+                "NETWORK_PROVIDER_DATA_FETCH": "NO",
+                "MARKET_DATA_WRITE": "NO",
+            }
     full = build_full_query_plan(root, as_of=as_of, window_start=window_start, identity=identity)
     contract = contract_identity(
         as_of=as_of,
@@ -490,6 +547,9 @@ def aggregate_full_run(
     manifest_path: Path | None = None,
     root: Path | None = None,
     symbols: list[str] | None = None,
+    execution_context: str = EXECUTION_CONTEXT_OFFLINE_TEST,
+    expected_adapter_sha: str | None = None,
+    runtime_adapter_sha: str | None = None,
     as_of: date = AS_OF,
     window_start: date = WINDOW_START,
     event_dates: set[tuple[str, date]] | None = None,
@@ -500,67 +560,182 @@ def aggregate_full_run(
 ) -> dict[str, Any]:
     """Final full-run validator: aggregates, NEVER promotes.
 
+    R4A7.1 hardening:
+      - REAL execution derives the expected universe from the frozen
+        authority (load_expected_identity 5456 / frozen hash via the exact
+        frozen contract), never from an arbitrary caller subset. Identity
+        injection is test-only (OFFLINE_TEST).
+      - authority gate (adapter==expected==runtime, canonical 40-char hex)
+        must pass BEFORE any aggregation trust.
+      - every expected symbol must have exactly one COMPLETE receipt that
+        passes the same resume integrity check (state, symbol, contract,
+        parquet exists/readable, row count, content hash).
+      - FAILED_N=0 and PENDING_N=0 required; any invalid/missing unit ->
+        COVERAGE_COMPLETE=false and PRECLOSE_COMPLETE_CANDIDATE=false;
+        missing formal files are never ignored.
+      - the frozen WINDOW_BOUNDARY_EDGE key set is computed once from
+        authoritative R3 data and passed to BOTH
+        verify_window_boundary_rows(...) and verify_clean_normal_parity(...);
+        CLEAN_NORMAL excludes WINDOW_BOUNDARY_EDGE.
+
     Calculates PRECLOSE_COMPLETE_CANDIDATE only; PRECLOSE_COMPLETE stays
-    false. Full parity/sentinel/boundary gates are computed only when the
-    calling context supplies the frozen classification context (production
-    full-run context builder is a future audited stage); otherwise those
-    gates report NOT_RUN and the candidate stays false (UNKNOWN != PASS).
+    false. Gates that need context the caller did not supply report NOT_RUN
+    and the candidate stays false (UNKNOWN != PASS).
     """
     manifest_path = manifest_path or (staging_root / MANIFEST_FILENAME)
     manifest = load_manifest(manifest_path)
     units = manifest["units"]
     receipts = [u for u in units.values() if isinstance(u, dict)]
-    complete = [u for u in receipts if u.get("STATE") == "COMPLETE"]
-    failed = [u for u in receipts if u.get("STATE") == "FAILED"]
+
+    if execution_context == EXECUTION_CONTEXT_REAL:
+        if root is None:
+            raise RuntimeError("REAL aggregation requires the authoritative root")
+        if expected_adapter_sha is None or runtime_adapter_sha is None:
+            raise RuntimeError(
+                "REAL aggregation requires expected_adapter_sha and "
+                "runtime_adapter_sha for the authority gate"
+            )
+        authority = adapter_authority_status(
+            manifest["contract"].get("ADAPTER_AUTHORITY_SHA"),
+            expected_sha=expected_adapter_sha,
+            runtime_sha=runtime_adapter_sha,
+            execution_mode="REAL",
+        )
+        if not authority["ADAPTER_AUTHORITY_PASS"]:
+            return {
+                "STATUS": "ADAPTER_AUTHORITY_FAILED_BEFORE_AGGREGATION",
+                "COVERAGE_COMPLETE": False,
+                "PRECLOSE_COMPLETE_CANDIDATE": False,
+                "PRECLOSE_COMPLETE": False,
+                "MARKET_DATA_WRITE": "NO",
+            }
+        identity = load_expected_identity(
+            root,
+            expected_hash=FORMAL_IDENTITY_HASH,
+            expected_n=FORMAL_IDENTITY_N,
+        )
+        if not identity.get("identity_ok"):
+            return {
+                "STATUS": "REAL_IDENTITY_DRIFT",
+                "COVERAGE_COMPLETE": False,
+                "PRECLOSE_COMPLETE_CANDIDATE": False,
+                "PRECLOSE_COMPLETE": False,
+                "MARKET_DATA_WRITE": "NO",
+            }
+        expected_set = set(identity["symbols"])
+        if len(expected_set) != FORMAL_IDENTITY_N:
+            return {
+                "STATUS": "REAL_IDENTITY_N_MISMATCH",
+                "expected_n": len(expected_set),
+                "COVERAGE_COMPLETE": False,
+                "PRECLOSE_COMPLETE_CANDIDATE": False,
+                "PRECLOSE_COMPLETE": False,
+                "MARKET_DATA_WRITE": "NO",
+            }
+        full = build_full_query_plan(root, as_of=as_of, window_start=window_start)
+        frozen_contract = contract_identity(
+            as_of=as_of,
+            window_start=window_start,
+            adapter_authority_sha=expected_adapter_sha,
+            full_query_plan_hash=full["FULL_QUERY_PLAN_HASH"],
+        )
+    else:
+        expected_set = set(symbols) if symbols is not None else set()
+        frozen_contract = None
+
+    contract = manifest["contract"]
+    contract_exact = bool(
+        frozen_contract is None or manifest.get("contract") == frozen_contract
+    )
+
     required_n = 0
     formal_n = 0
     missing_n = 0
     suspended_n = 0
-    unexpected_traded_n = sum(int(u.get("UNEXPECTED_TRADED_N", 0)) for u in complete)
-    tradestatus_unknown_n = sum(int(u.get("TRADESTATUS_UNKNOWN_N", 0)) for u in complete)
-    identity_failure_n = sum(int(u.get("IDENTITY_FAILURE_N", 0)) for u in complete)
-    window_scope_failure_n = sum(int(u.get("WINDOW_SCOPE_FAILURE_N", 0)) for u in complete)
-    duplicate_n = sum(int(u.get("DUPLICATE_N", 0)) for u in complete)
-    post_asof_n = sum(int(u.get("POST_ASOF_N", 0)) for u in complete)
-    invalid_preclose_n = sum(int(u.get("INVALID_PRECLOSE_N", 0)) for u in complete)
+    unexpected_traded_n = 0
+    tradestatus_unknown_n = 0
+    identity_failure_n = 0
+    window_scope_failure_n = 0
+    duplicate_n = 0
+    post_asof_n = 0
+    invalid_preclose_n = 0
     all_formal_rows: list[dict[str, Any]] = []
     units_dir = staging_root / UNITS_DIRNAME
-    for u in complete:
-        required_n += int(u.get("REQUIRED_ROW_N", 0))
-        formal_n += int(u.get("FORMAL_FACT_ROW_N", 0))
-        missing_n += int(u.get("MISSING_REQUIRED_N", 0))
-        suspended_n += int(u.get("PROVIDER_SUSPENDED_SUPERSET_N", 0))
-        path = Path(str(u.get("formal_path", "")))
-        if not path.is_absolute():
-            path = units_dir / path.name
-        if path.is_file():
-            all_formal_rows.extend(pl.read_parquet(path).to_dicts())
+
+    invalid_missing: list[str] = []
+    complete_symbols: set[str] = set()
+    failed_symbols: set[str] = set()
+    pending_symbols: set[str] = set()
+    failed_n = 0
+    pending_n = 0
+    for expected_symbol in sorted(expected_set):
+        candidate_receipts = [
+            u
+            for u in units.values()
+            if isinstance(u, dict) and u.get("symbol") == expected_symbol
+        ]
+        if len(candidate_receipts) == 0:
+            invalid_missing.append(expected_symbol)
+            continue
+        if len(candidate_receipts) > 1:
+            invalid_missing.append(expected_symbol)  # duplicate receipt
+            continue
+        receipt = candidate_receipts[0]
+        if receipt.get("STATE") == "FAILED":
+            failed_symbols.add(expected_symbol)
+            failed_n += 1
+            continue
+        if receipt.get("STATE") != "COMPLETE":
+            pending_symbols.add(expected_symbol)
+            pending_n += 1
+            continue
+        formal_path = Path(str(receipt.get("formal_path", "")))
+        if not formal_path.is_absolute():
+            formal_path = units_dir / formal_path.name
+        if not unit_complete_and_valid(
+            receipt,
+            contract=contract,
+            formal_path=formal_path,
+            expected_symbol=expected_symbol,
+        ):
+            invalid_missing.append(expected_symbol)
+            continue
+        complete_symbols.add(expected_symbol)
+        required_n += int(receipt.get("REQUIRED_ROW_N", 0))
+        formal_n += int(receipt.get("FORMAL_FACT_ROW_N", 0))
+        missing_n += int(receipt.get("MISSING_REQUIRED_N", 0))
+        suspended_n += int(receipt.get("PROVIDER_SUSPENDED_SUPERSET_N", 0))
+        unexpected_traded_n += int(receipt.get("UNEXPECTED_TRADED_N", 0))
+        tradestatus_unknown_n += int(receipt.get("TRADESTATUS_UNKNOWN_N", 0))
+        identity_failure_n += int(receipt.get("IDENTITY_FAILURE_N", 0))
+        window_scope_failure_n += int(receipt.get("WINDOW_SCOPE_FAILURE_N", 0))
+        duplicate_n += int(receipt.get("DUPLICATE_N", 0))
+        post_asof_n += int(receipt.get("POST_ASOF_N", 0))
+        invalid_preclose_n += int(receipt.get("INVALID_PRECLOSE_N", 0))
+        all_formal_rows.extend(pl.read_parquet(formal_path).to_dicts())
     full_formal_hash = formal_fact_hash(all_formal_rows)
 
-    # The expected symbol universe is not stored inside the manifest (the
-    # orchestrator keeps identity external); the validator caller must
-    # supply it. Without it, coverage can never be proven COMPLETE, so the
-    # candidate stays false (UNKNOWN != PASS).
-    expected_symbols = set(symbols) if symbols is not None else set()
-    complete_symbols = {u.get("symbol") for u in complete}
+    failed_n = max(failed_n, len(failed_symbols))
+    pending_n = max(pending_n, len(pending_symbols))
     coverage_complete = bool(
-        expected_symbols
-        and complete_symbols == expected_symbols
-        and not failed
+        expected_set
+        and len(complete_symbols) == len(expected_set)
+        and not invalid_missing
+        and not failed_symbols
+        and not pending_symbols
         and missing_n == 0
+        and contract_exact
+        and formal_n == required_n
     )
 
     boundary: dict[str, Any] = {"WINDOW_BOUNDARY_PASS": False, "status": "NOT_RUN"}
     sentinel: dict[str, Any] = {"FROZEN_OFFICIAL_SENTINEL_PASS": False, "status": "NOT_RUN"}
     clean_normal: dict[str, Any] = {"NORMAL_FULL_PARITY_PASS": False, "status": "NOT_RUN"}
 
-    def run_boundary() -> dict[str, Any]:
-        if root is None:
-            return {**boundary, "status": "NOT_RUN_NO_ROOT"}
-        if not coverage_complete or not all_formal_rows:
-            return {**boundary, "status": "SKIPPED_INCOMPLETE"}
+    window_boundary_keys: set[tuple[str, date]] = set()
+    if root is not None and coverage_complete and all_formal_rows:
         required = load_required_keys(
-            root, expected_symbols, as_of=as_of, window_start=window_start
+            root, sorted(expected_set), as_of=as_of, window_start=window_start
         )
         list_dates = load_instrument_list_dates(root)
         edges = compute_window_boundary_edges(
@@ -569,8 +744,9 @@ def aggregate_full_run(
             pre_window_predecessor_symbols=set(required["PRE_WINDOW_PREDECESSOR_SYMBOLS"]),
             window_start=window_start,
         )
-        gate = verify_window_boundary_rows(edges["window_boundary_keys"], all_formal_rows)
-        return {
+        window_boundary_keys = edges["window_boundary_keys"]
+        gate = verify_window_boundary_rows(window_boundary_keys, all_formal_rows)
+        boundary = {
             k: gate[k]
             for k in (
                 "WINDOW_BOUNDARY_REQUIRED_N",
@@ -581,14 +757,10 @@ def aggregate_full_run(
                 "WINDOW_BOUNDARY_PASS",
             )
         }
-
-    def run_sentinel() -> dict[str, Any]:
-        if not coverage_complete or not all_formal_rows:
-            return {**sentinel, "status": "SKIPPED_INCOMPLETE"}
         expected = load_frozen_sentinel_evidence()
-        gate = verify_frozen_sentinels(expected, all_formal_rows)
-        return {
-            k: gate[k]
+        sgate = verify_frozen_sentinels(expected, all_formal_rows)
+        sentinel = {
+            k: sgate[k]
             for k in (
                 "SENTINEL_REQUIRED_N",
                 "SENTINEL_PRESENT_N",
@@ -598,47 +770,51 @@ def aggregate_full_run(
                 "FROZEN_OFFICIAL_SENTINEL_PASS",
             )
         }
-
-    def run_clean_normal() -> dict[str, Any]:
-        if not coverage_complete or not all_formal_rows or bars is None:
-            return {**clean_normal, "status": "SKIPPED_INCOMPLETE"}
         if (
-            event_dates is None
-            or first_listing_dates is None
-            or resumption_keys is None
-            or known_special_keys is None
+            bars is not None
+            and event_dates is not None
+            and first_listing_dates is not None
+            and resumption_keys is not None
+            and known_special_keys is not None
         ):
-            return {**clean_normal, "status": "SKIPPED_CONTEXT_UNAVAILABLE"}
-        gate = verify_clean_normal_parity(
-            formal_rows=all_formal_rows,
-            bars=bars,
-            event_dates=event_dates,
-            first_listing_dates=first_listing_dates,
-            resumption_keys=resumption_keys,
-            known_special_keys=known_special_keys,
-            window_boundary_keys=set(),
-        )
-        return {
-            k: gate[k]
-            for k in (
-                "CLEAN_NORMAL_REQUIRED_N",
-                "CLEAN_NORMAL_COMPARABLE_N",
-                "CLEAN_NORMAL_UNCOMPARED_N",
-                "CLEAN_NORMAL_EXACT_N",
-                "CLEAN_NORMAL_MISMATCH_N",
-                "CLEAN_NORMAL_MAX_DIFF",
-                "NORMAL_FULL_PARITY_PASS",
+            cgate = verify_clean_normal_parity(
+                formal_rows=all_formal_rows,
+                bars=bars,
+                event_dates=event_dates,
+                first_listing_dates=first_listing_dates,
+                resumption_keys=resumption_keys,
+                known_special_keys=known_special_keys,
+                window_boundary_keys=window_boundary_keys,
             )
-        }
+            clean_normal = {
+                k: cgate[k]
+                for k in (
+                    "CLEAN_NORMAL_REQUIRED_N",
+                    "CLEAN_NORMAL_COMPARABLE_N",
+                    "CLEAN_NORMAL_UNCOMPARED_N",
+                    "CLEAN_NORMAL_EXACT_N",
+                    "CLEAN_NORMAL_MISMATCH_N",
+                    "CLEAN_NORMAL_MAX_DIFF",
+                    "NORMAL_FULL_PARITY_PASS",
+                )
+            }
+        elif root is None:
+            clean_normal = {**clean_normal, "status": "NOT_RUN_NO_ROOT"}
+        else:
+            clean_normal = {**clean_normal, "status": "SKIPPED_CONTEXT_UNAVAILABLE"}
+    elif root is None:
+        boundary = {**boundary, "status": "NOT_RUN_NO_ROOT"}
+        sentinel = {**sentinel, "status": "NOT_RUN_NO_ROOT"}
+        clean_normal = {**clean_normal, "status": "NOT_RUN_NO_ROOT"}
+    else:
+        boundary = {**boundary, "status": "SKIPPED_INCOMPLETE"}
+        sentinel = {**sentinel, "status": "SKIPPED_INCOMPLETE"}
+        clean_normal = {**clean_normal, "status": "SKIPPED_INCOMPLETE"}
 
-    boundary = run_boundary()
-    sentinel = run_sentinel()
-    clean_normal = run_clean_normal()
     candidate = bool(
         coverage_complete
-        and boundary.get("WINDOW_BOUNDARY_PASS") is True
-        and sentinel.get("FROZEN_OFFICIAL_SENTINEL_PASS") is True
-        and clean_normal.get("NORMAL_FULL_PARITY_PASS") is True
+        and formal_n == required_n
+        and missing_n == 0
         and unexpected_traded_n == 0
         and tradestatus_unknown_n == 0
         and identity_failure_n == 0
@@ -646,12 +822,20 @@ def aggregate_full_run(
         and duplicate_n == 0
         and post_asof_n == 0
         and invalid_preclose_n == 0
+        and boundary.get("WINDOW_BOUNDARY_PASS") is True
+        and sentinel.get("FROZEN_OFFICIAL_SENTINEL_PASS") is True
+        and clean_normal.get("NORMAL_FULL_PARITY_PASS") is True
+        and not invalid_missing
+        and failed_n == 0
+        and pending_n == 0
+        and contract_exact
     )
     return {
-        "STATUS": "VALIDATOR_RUN" if manifest else "MANIFEST_MISSING",
-        "units_complete_n": len(complete),
-        "units_failed_n": len(failed),
-        "units_pending_n": len(receipts) - len(complete) - len(failed),
+        "STATUS": "VALIDATOR_RUN",
+        "units_complete_n": len(complete_symbols),
+        "units_failed_n": failed_n,
+        "units_pending_n": pending_n,
+        "invalid_missing_n": len(invalid_missing),
         "REQUIRED_ROW_N": required_n,
         "FORMAL_FACT_ROW_N": formal_n,
         "MISSING_REQUIRED_N": missing_n,
@@ -668,6 +852,7 @@ def aggregate_full_run(
         "SENTINELS": sentinel,
         "CLEAN_NORMAL": clean_normal,
         "COVERAGE_COMPLETE": coverage_complete,
+        "CONTRACT_EXACT": contract_exact,
         "PRECLOSE_COMPLETE_CANDIDATE": candidate,
         "PRECLOSE_COMPLETE": False,
         "FULL_MARKET_AUTHORIZED": False,
