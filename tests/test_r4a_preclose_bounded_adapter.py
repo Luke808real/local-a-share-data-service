@@ -845,12 +845,47 @@ def _adapter_root(tmp_path: Path) -> Path:
 def test_A_real_mode_adapter_version_test_fails():
     authority = adapter_authority_status(
         "TEST",
-        expected_sha="a" * 40,
-        runtime_sha="a" * 40,
+        expected_sha="TEST",
+        runtime_sha="TEST",
         execution_mode="REAL",
     )
     assert authority["ADAPTER_AUTHORITY_PASS"] is False
-    assert authority["ADAPTER_AUTHORITY_MODE"] in ("SHA_MISMATCH", "UNVALIDATED", "MISSING_SHA")
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "INVALID_SHA"
+
+
+def test_A2_real_arbitrary_equal_strings_fail():
+    authority = adapter_authority_status(
+        "abc",
+        expected_sha="abc",
+        runtime_sha="abc",
+        execution_mode="REAL",
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is False
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "INVALID_SHA"
+
+
+def test_A3_real_39_and_41_char_and_nonhex_fail():
+    for bad in ("a" * 39, "a" * 41, "g" * 40, "A" * 40, "z0" * 20):
+        authority = adapter_authority_status(
+            bad,
+            expected_sha=bad,
+            runtime_sha=bad,
+            execution_mode="REAL",
+        )
+        assert authority["ADAPTER_AUTHORITY_PASS"] is False
+        assert authority["ADAPTER_AUTHORITY_MODE"] == "INVALID_SHA"
+
+
+def test_A4_unknown_execution_mode_fails():
+    sha = "ab" * 20
+    authority = adapter_authority_status(
+        sha,
+        expected_sha=sha,
+        runtime_sha=sha,
+        execution_mode="MYSTERY",
+    )
+    assert authority["ADAPTER_AUTHORITY_PASS"] is False
+    assert authority["ADAPTER_AUTHORITY_MODE"] == "UNKNOWN_MODE"
 
 
 def test_B_real_mode_runtime_sha_missing_fails():
@@ -884,6 +919,44 @@ def test_D_expected_runtime_adapter_exact_passes():
     assert authority["ADAPTER_AUTHORITY_MODE"] == "EXACT_SHA"
 
 
+def test_D2_real_test_test_test_bounded_adapter_zero_provider(tmp_path, monkeypatch):
+    # A real (dry_run=false) run with TEST/TEST/TEST must fail the SHA
+    # authority gate BEFORE any provider call is made. R4A0 prerequisite is
+    # satisfied via monkeypatch so the authority gate is what blocks.
+    root = _make_root(tmp_path)
+    calls: list[str] = []
+
+    def fake_fetch(_window: dict[str, object]) -> list[dict[str, object]]:
+        calls.append("fetch")
+        return []
+
+    monkeypatch.setattr(
+        "ashare_data.r4a_preclose_bounded_adapter.r4a0_prerequisite",
+        lambda _root: {
+            "R4A0_READY": True,
+            "R4A0_GATE_STATUS": "PASS",
+            "R4A0_BLOCKER": "",
+            "R3_IDENTITY_MATCH": True,
+            "FORMAL_IDENTITY_N": 5456,
+            "FORMAL_IDENTITY_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+        },
+    )
+    result = run_bounded_adapter(
+        root=root,
+        symbols=["000001.SZ"],
+        provider_fetch=fake_fetch,
+        dry_run=False,
+        adapter_version="TEST",
+        expected_adapter_sha="TEST",
+        runtime_adapter_sha="TEST",
+        fetched_at="t",
+    )
+    assert result["STATUS"] == "ADAPTER_AUTHORITY_FAILED"
+    assert result["ADAPTER_AUTHORITY_MODE"] == "INVALID_SHA"
+    assert result["FORMAL_FACT_ROW_N"] == 0
+    assert calls == []
+
+
 def test_E_old_710a_sha_on_new_runtime_fails():
     old_sha = "710a7c80cb434955c38475f3bdd4a1403d5c6a41"
     new_runtime = "ab" * 20
@@ -906,11 +979,53 @@ def test_F_listed_before_window_first_in_window_row_is_boundary_edge():
     edges = compute_window_boundary_edges(
         required_keys=required,
         instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols=set(),
         window_start=WINDOW_START,
     )
     assert ("000564.SZ", date(2016, 1, 4)) in edges["window_boundary_keys"]
     assert ("000564.SZ", date(2016, 1, 5)) not in edges["window_boundary_keys"]
     assert edges["WINDOW_BOUNDARY_REQUIRED_N"] == 1
+
+
+def test_F2_pre_window_bar_2015_prevents_edge():
+    # Authoritative local R3 bars exist BEFORE WINDOW_START for the symbol
+    # (e.g. 2015-12-31), so the first in-window row must NOT be an edge,
+    # even though the in-window required_keys alone contains no pre-window
+    # key. This is the audit-fix regression: predecessor existence must come
+    # from authoritative local bars, never from window-filtered keys.
+    required = {
+        ("000564.SZ", date(2016, 1, 4)),
+        ("000564.SZ", date(2016, 1, 5)),
+    }
+    list_dates = {"000564.SZ": date(1996, 3, 1)}
+    edges = compute_window_boundary_edges(
+        required_keys=required,
+        instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols={"000564.SZ"},
+        window_start=WINDOW_START,
+    )
+    assert edges["window_boundary_keys"] == set()
+    assert edges["WINDOW_BOUNDARY_REQUIRED_N"] == 0
+    assert edges["PRE_WINDOW_PREDECESSOR_SYMBOL_N"] == 1
+
+
+def test_F3_required_keys_alone_must_not_infer_predecessor():
+    # Even if required contained a 2015 key (impossible after window
+    # filtering), compute_window_boundary_edges ignores required_keys for
+    # predecessor decisions: only the authoritative signal matters. A symbol
+    # absent from pre_window_predecessor_symbols stays an edge candidate.
+    required = {
+        ("000564.SZ", date(2015, 12, 30)),
+        ("000564.SZ", date(2016, 1, 4)),
+    }
+    list_dates = {"000564.SZ": date(1996, 3, 1)}
+    edges = compute_window_boundary_edges(
+        required_keys=required,
+        instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols=set(),
+        window_start=WINDOW_START,
+    )
+    assert ("000564.SZ", date(2016, 1, 4)) in edges["window_boundary_keys"]
 
 
 def test_G_ipo_first_row_inside_window_not_boundary_edge():
@@ -922,6 +1037,7 @@ def test_G_ipo_first_row_inside_window_not_boundary_edge():
     edges = compute_window_boundary_edges(
         required_keys=required,
         instrument_list_dates=list_dates,
+        pre_window_predecessor_symbols=set(),
         window_start=WINDOW_START,
     )
     assert ("603007.SH", date(2016, 8, 26)) not in edges["window_boundary_keys"]
@@ -964,6 +1080,43 @@ def test_J_valid_window_edge_formal_row_passes():
     assert gate["WINDOW_BOUNDARY_PRESENT_N"] == 1
     assert gate["WINDOW_BOUNDARY_VALID_N"] == 1
     assert gate["WINDOW_BOUNDARY_PASS"] is True
+
+
+def test_J2_zero_required_zero_present_passes():
+    # Contract exact gate: PRESENT==REQUIRED AND VALID==REQUIRED AND
+    # MISSING==0 AND INVALID==0. An empty boundary set with no rows is a
+    # trivial PASS; there is no undocumented REQUIRED_N > 0 condition.
+    gate = verify_window_boundary_rows(set(), [])
+    assert gate["WINDOW_BOUNDARY_REQUIRED_N"] == 0
+    assert gate["WINDOW_BOUNDARY_PRESENT_N"] == 0
+    assert gate["WINDOW_BOUNDARY_VALID_N"] == 0
+    assert gate["WINDOW_BOUNDARY_MISSING_N"] == 0
+    assert gate["WINDOW_BOUNDARY_INVALID_N"] == 0
+    assert gate["WINDOW_BOUNDARY_PASS"] is True
+
+
+def test_J3_invalid_boundary_formal_row_fails():
+    edge_keys = {("000001.SZ", date(2016, 1, 6))}
+    current = [
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 6), "preclose": 10.0,
+         "provider_tradestatus": 0, "coverage_status": "COVERED"},
+    ]
+    gate = verify_window_boundary_rows(edge_keys, current)
+    assert gate["WINDOW_BOUNDARY_INVALID_N"] == 1
+    assert gate["WINDOW_BOUNDARY_PASS"] is False
+
+
+def test_J4_duplicate_boundary_formal_row_fails():
+    edge_keys = {("000001.SZ", date(2016, 1, 6))}
+    current = [
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 6), "preclose": 10.0,
+         "provider_tradestatus": 1, "coverage_status": "COVERED"},
+        {"symbol": "000001.SZ", "trade_date": date(2016, 1, 6), "preclose": 10.0,
+         "provider_tradestatus": 1, "coverage_status": "COVERED"},
+    ]
+    gate = verify_window_boundary_rows(edge_keys, current)
+    assert gate["WINDOW_BOUNDARY_PRESENT_N"] == 2
+    assert gate["WINDOW_BOUNDARY_PASS"] is False
 
 
 def _query_result_with_fields(fields, rows):

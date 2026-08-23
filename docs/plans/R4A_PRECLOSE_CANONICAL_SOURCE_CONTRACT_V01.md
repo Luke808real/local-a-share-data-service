@@ -443,6 +443,7 @@ PRECLOSE_COMPLETE=true   only if:
   AND identity_failure=0
   AND post_asof=0
   AND all formal rows: provider_tradestatus=1 AND preclose finite positive
+  AND WINDOW_BOUNDARY_PASS=true
   AND NORMAL_FULL_PARITY_PASS=true
   AND FROZEN_OFFICIAL_SENTINEL_PASS=true
   AND protected R3 boundary unchanged

@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from datetime import date
 from decimal import ROUND_HALF_UP
 from decimal import Decimal
@@ -262,10 +263,21 @@ def load_required_keys(
     identity scope mismatch (symbol outside the bounded set), and post-ASOF
     rows, all of which fail closed. The provider never defines the required
     universe.
+
+    Also derives PRE_WINDOW_PREDECESSOR_SYMBOLS from the same authoritative
+    local R3 daily_bars: every symbol that has at least one bar strictly
+    BEFORE WINDOW_START. This is the audit-fix authority for window-boundary
+    classification; it must never be inferred from the already
+    window-filtered required_keys.
     """
     symbol_list = sorted(set(symbols))
     all_bars = _scan_daily_bars(root, symbol_list)
     post_asof_n = int(all_bars.filter(pl.col("trade_date") > as_of).height)
+    pre_window = all_bars.filter(pl.col("trade_date") < window_start)
+    pre_window_predecessor_symbols = sorted(
+        set(str(s) for s in pre_window.get_column("symbol").to_list())
+    )
+    pre_window_bar_key_n = int(pre_window.height)
     bars = all_bars.filter(
         (pl.col("trade_date") >= window_start) & (pl.col("trade_date") <= as_of)
     )
@@ -290,6 +302,9 @@ def load_required_keys(
         "identity_scope_mismatch": scope_mismatch,
         "identity_scope_mismatch_n": len(scope_mismatch),
         "post_asof_n": post_asof_n,
+        "PRE_WINDOW_PREDECESSOR_SYMBOLS": pre_window_predecessor_symbols,
+        "PRE_WINDOW_PREDECESSOR_SYMBOL_N": len(pre_window_predecessor_symbols),
+        "PRE_WINDOW_BAR_KEY_N": pre_window_bar_key_n,
         "symbols": symbol_list,
     }
 
@@ -478,18 +493,24 @@ def adapter_authority_status(
     runtime_sha: str | None,
     execution_mode: str = "REAL",
 ) -> dict[str, Any]:
-    """Provenance gate: no bypass for real execution.
+    """Provenance gate: canonical 40-char lowercase hex SHA only (audit fix).
 
-    Real execution (execution_mode="REAL", the default) requires:
-      expected_adapter_sha != None
-      runtime_adapter_sha != None
-      adapter_version == expected_sha == runtime_sha
-    -> ADAPTER_AUTHORITY_PASS=true, MODE=EXACT_SHA.
+    REAL mode (the default) requires adapter_version == expected_sha ==
+    runtime_sha AND every value to be an exact canonical 40-character
+    lowercase hex Git SHA (^[0-9a-f]{40}$). Explicitly fails:
+    TEST/TEST/TEST, arbitrary equal strings, 39/41-char SHA, 40-char
+    non-hex, None, any mismatch, and unknown execution_mode.
 
-    "TEST" adapter_version is accepted ONLY under an explicit
-    execution_mode="OFFLINE_TEST". run_bounded_adapter(dry_run=false) must
-    never pass OFFLINE_TEST.
+    OFFLINE_TEST allows adapter_version="TEST" only under the explicit
+    fixture path. run_bounded_adapter(dry_run=false) continues to hard-force
+    execution_mode="REAL"; the caller cannot choose OFFLINE_TEST there.
     """
+    canonical_sha = re.compile(r"^[0-9a-f]{40}$")
+    if execution_mode not in ("REAL", "OFFLINE_TEST"):
+        return {
+            "ADAPTER_AUTHORITY_PASS": False,
+            "ADAPTER_AUTHORITY_MODE": "UNKNOWN_MODE",
+        }
     if execution_mode == "OFFLINE_TEST" and adapter_version == "TEST":
         return {
             "ADAPTER_AUTHORITY_PASS": True,
@@ -500,18 +521,20 @@ def adapter_authority_status(
             "ADAPTER_AUTHORITY_PASS": False,
             "ADAPTER_AUTHORITY_MODE": "MISSING_SHA",
         }
-    expected_ok = adapter_version == expected_sha
-    runtime_ok = adapter_version == runtime_sha
-    if expected_ok and runtime_ok:
+    values = (adapter_version, expected_sha, runtime_sha)
+    if not all(isinstance(v, str) and canonical_sha.fullmatch(v) for v in values):
+        return {
+            "ADAPTER_AUTHORITY_PASS": False,
+            "ADAPTER_AUTHORITY_MODE": "INVALID_SHA",
+        }
+    if adapter_version == expected_sha and adapter_version == runtime_sha:
         return {
             "ADAPTER_AUTHORITY_PASS": True,
             "ADAPTER_AUTHORITY_MODE": "EXACT_SHA",
         }
     return {
         "ADAPTER_AUTHORITY_PASS": False,
-        "ADAPTER_AUTHORITY_MODE": (
-            "UNVALIDATED" if not expected_ok and not runtime_ok else "SHA_MISMATCH"
-        ),
+        "ADAPTER_AUTHORITY_MODE": "SHA_MISMATCH",
     }
 
 
@@ -944,6 +967,7 @@ def compute_window_boundary_edges(
     *,
     required_keys: set[tuple[str, date]],
     instrument_list_dates: dict[str, date],
+    pre_window_predecessor_symbols: set[str] | None = None,
     window_start: date = WINDOW_START,
 ) -> dict[str, Any]:
     """Compute the frozen WINDOW_BOUNDARY_EDGE key set (V01.2 contract).
@@ -952,14 +976,24 @@ def compute_window_boundary_edges(
       - it is the symbol's FIRST required actual-traded row inside
         WINDOW_START..AS_OF, AND
       - instrument.list_date < WINDOW_START, AND
-      - authoritative local R3 daily_bars has no predecessor before
-        WINDOW_START (i.e. no pre-window required bar for that symbol).
+      - the symbol is NOT in pre_window_predecessor_symbols (i.e. the
+        authoritative local R3 daily_bars has no bar before WINDOW_START).
+
+    The predecessor signal MUST come from load_required_keys'
+    PRE_WINDOW_PREDECESSOR_SYMBOLS (authoritative local R3 bars before
+    WINDOW_START). It must never be inferred from the already
+    window-filtered required_keys: a key set filtered to
+    [WINDOW_START..AS_OF] can never contain a pre-window row, so using it
+    would silently classify every listed-before-window first row as an edge.
 
     "prev is None => edge" alone is NOT sufficient: IPO rows inside the window
     (list_date >= WINDOW_START) stay IPO and are never window-boundary edges.
     """
+    predecessor_symbols = pre_window_predecessor_symbols or set()
     first_in_window: dict[str, date] = {}
     for symbol, trade_date in required_keys:
+        if trade_date < window_start:
+            continue  # only the first required row INSIDE the window counts
         existing = first_in_window.get(symbol)
         if existing is None or trade_date < existing:
             first_in_window[symbol] = trade_date
@@ -968,15 +1002,13 @@ def compute_window_boundary_edges(
         list_date = instrument_list_dates.get(symbol)
         if list_date is None or list_date >= window_start:
             continue  # unknown lifetime or in-window listing stays IPO
-        has_predecessor = any(
-            s == symbol and d < window_start for s, d in required_keys
-        )
-        if has_predecessor:
+        if symbol in predecessor_symbols:
             continue
         edges.add((symbol, first_date))
     return {
         "window_boundary_keys": edges,
         "WINDOW_BOUNDARY_REQUIRED_N": len(edges),
+        "PRE_WINDOW_PREDECESSOR_SYMBOL_N": len(predecessor_symbols),
     }
 
 
@@ -986,9 +1018,12 @@ def verify_window_boundary_rows(
 ) -> dict[str, Any]:
     """Window-boundary gate: formal rows must cover every edge row exactly.
 
-    PASS only if PRESENT == REQUIRED AND VALID == REQUIRED. A formal row is
-    valid when provider_tradestatus == 1, preclose finite positive, and
-    coverage_status == COVERED.
+    PASS exactly when PRESENT == REQUIRED AND VALID == REQUIRED AND
+    MISSING == 0 AND INVALID == 0 (V01.2 contract; audit fix removes the
+    undocumented REQUIRED_N > 0 condition). A formal row is valid when
+    provider_tradestatus == 1, preclose finite positive, and
+    coverage_status == COVERED. Duplicate formal rows for the same boundary
+    key make PRESENT > REQUIRED -> FAIL.
     """
     required_n = len(window_boundary_keys)
     present_n = 0
@@ -1019,7 +1054,10 @@ def verify_window_boundary_rows(
         "WINDOW_BOUNDARY_MISSING_N": missing_n,
         "WINDOW_BOUNDARY_INVALID_N": invalid_n,
         "WINDOW_BOUNDARY_PASS": bool(
-            required_n > 0 and present_n == required_n and valid_n == required_n
+            present_n == required_n
+            and valid_n == required_n
+            and missing_n == 0
+            and invalid_n == 0
         ),
     }
 

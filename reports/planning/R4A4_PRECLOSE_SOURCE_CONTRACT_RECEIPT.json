@@ -127,7 +127,7 @@
         "WINDOW_BOUNDARY_VALID_N": "present window-boundary keys with tradestatus=1, finite positive preclose, coverage=COVERED",
         "WINDOW_BOUNDARY_MISSING_N": "required minus present",
         "WINDOW_BOUNDARY_INVALID_N": "present minus valid",
-        "WINDOW_BOUNDARY_PASS": "true only if PRESENT==REQUIRED AND VALID==REQUIRED"
+        "WINDOW_BOUNDARY_PASS": "true only if PRESENT==REQUIRED AND VALID==REQUIRED AND MISSING==0 AND INVALID==0"
       },
       "any_mismatch_means": "PRECLOSE_COMPLETE=false",
       "bounded_evidence": {
@@ -227,6 +227,7 @@
       "identity_failure=0",
       "post_asof=0",
       "all formal rows: provider_tradestatus=1 AND preclose finite positive",
+      "WINDOW_BOUNDARY_PASS=true",
       "NORMAL_FULL_PARITY_PASS=true",
       "FROZEN_OFFICIAL_SENTINEL_PASS=true",
       "protected R3 boundary unchanged"

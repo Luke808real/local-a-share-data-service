@@ -35,20 +35,28 @@ from ashare_data.r4a_preclose_bounded_adapter import (  # noqa: E402
 )
 
 OUTPUT_DIR = REPO_ROOT / "reports" / "implementation"
-REPORT_PATH = OUTPUT_DIR / "R4A5_PRECLOSE_BOUNDED_ADAPTER_V01_2.md"
+REPORT_PATH = OUTPUT_DIR / "R4A5_2_1_PRECLOSE_ADAPTER_AUDIT_FIX_V01.md"
 
 
 def _render_report(result: dict[str, Any]) -> str:
     lines = [
-        "# R4A5.2 PRECLOSE BOUNDED ADAPTER FINAL CLOSURE — V01_2 (author report)",
+        "# R4A5.2.1 PRECLOSE ADAPTER AUDIT FIX — V01 (author report)",
         "",
-        "DATE: 2026-08-22",
-        "BRANCH: codex/r4a5-2-preclose-adapter-final-closure-v01",
+        "DATE: 2026-08-23",
+        "BRANCH: codex/r4a5-2-1-preclose-adapter-audit-fix-v01",
         f"CONTRACT_HEAD: {result['CONTRACT_HEAD']}",
         f"AS_OF: {AS_OF.isoformat()}",
         f"PINNED_CNEquity: {CNEQUITY_PIN}",
         "",
         f"## ADAPTER_STATUS={result.get('ADAPTER_STATUS')}",
+        "",
+        "## PRE-WINDOW PREDECESSOR AUTHORITY (V01.2.1 audit fix)",
+        "",
+        "PRE_WINDOW_PREDECESSOR_AUTHORITY_SOURCE=load_required_keys derives",
+        "PRE_WINDOW_PREDECESSOR_SYMBOLS from authoritative local R3 daily_bars",
+        "bars strictly before WINDOW_START; never from window-filtered keys.",
+        f"PRE_WINDOW_PREDECESSOR_SYMBOL_N={result.get('PRE_WINDOW_PREDECESSOR_SYMBOL_N')}",
+        f"PRE_WINDOW_BAR_KEY_N={result.get('PRE_WINDOW_BAR_KEY_N')}",
         "",
         "## R4A0 PREREQUISITE (independent fields)",
         "",
@@ -166,6 +174,9 @@ def main() -> int:
         boundary = compute_window_boundary_edges(
             required_keys=required["required_keys"],
             instrument_list_dates=list_dates,
+            pre_window_predecessor_symbols=set(
+                required["PRE_WINDOW_PREDECESSOR_SYMBOLS"]
+            ),
             window_start=WINDOW_START,
         )
     except Exception as exc:  # noqa: BLE001 - CLI surface
@@ -173,8 +184,8 @@ def main() -> int:
         return 2
 
     result: dict[str, Any] = {
-        "CONTRACT_HEAD": "f957ceae731e7e77915747e6e74eb86a3b349c46",
-        "BRANCH": "codex/r4a5-2-preclose-adapter-final-closure-v01",
+        "CONTRACT_HEAD": "503aa350b88ced5266bcb923c85f0cf1c4fa1fe1",
+        "BRANCH": "codex/r4a5-2-1-preclose-adapter-audit-fix-v01",
         "ADAPTER_STATUS": "IMPLEMENTED_DRY_RUN_ONLY",
         "R4A0_READY": prereq["R4A0_READY"],
         "R3_IDENTITY_MATCH": prereq["R3_IDENTITY_MATCH"],
@@ -188,6 +199,9 @@ def main() -> int:
         "FROZEN_SENTINEL_EXPECTED_N": sentinel_expected,
         "WINDOW_BOUNDARY_REQUIRED_N": boundary["WINDOW_BOUNDARY_REQUIRED_N"],
         "WINDOW_BOUNDARY_PASS_DRY_RUN_STATUS": "NOT_RUN_DRY_RUN",
+        "PRE_WINDOW_PREDECESSOR_AUTHORITY_SOURCE": "load_required_keys PRE_WINDOW_PREDECESSOR_SYMBOLS (authoritative local R3 daily_bars < WINDOW_START)",
+        "PRE_WINDOW_PREDECESSOR_SYMBOL_N": boundary["PRE_WINDOW_PREDECESSOR_SYMBOL_N"],
+        "PRE_WINDOW_BAR_KEY_N": required["PRE_WINDOW_BAR_KEY_N"],
     }
     if not prereq["R4A0_READY"]:
         result["DRY_RUN_STATUS"] = "BLOCKED"
