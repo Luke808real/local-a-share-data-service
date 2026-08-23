@@ -417,6 +417,7 @@ def test_aggregate_full_run_counts_and_candidate(tmp_path, ready_prereq):
     )
     agg = aggregate_full_run(
         staging_root=staging,
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
         symbols=["000001.SZ"],
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
@@ -1110,3 +1111,141 @@ def test_J_clean_complete_staged_unit_reusable(tmp_path, ready_prereq):
         as_of=date(2016, 1, 6),
         window_start=date(2016, 1, 1),
     ) is True
+
+
+# ---------------------------------------------------------------------------
+# R4A7.2.1 aggregator context closure regressions (A-E)
+# ---------------------------------------------------------------------------
+
+
+def test_A_aggregator_context_omitted_fails_closed(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir(exist_ok=True)
+    write_atomic(staging / "manifest.json", json.dumps({"bogus": True}))
+    # execution_context intentionally omitted (default is None now)
+    agg = aggregate_full_run(staging_root=staging)
+    assert agg["STATUS"] == "UNKNOWN_EXECUTION_CONTEXT"
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+    assert agg["PRECLOSE_COMPLETE"] is False
+    assert agg["MARKET_DATA_WRITE"] == "NO"
+
+
+def test_B_aggregator_unknown_context_fails_closed(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir(exist_ok=True)
+    write_atomic(staging / "manifest.json", json.dumps({"bogus": True}))
+    for bad in ("MYSTERY", "", "real"):
+        agg = aggregate_full_run(
+            staging_root=staging,
+            execution_context=bad,
+        )
+        assert agg["STATUS"] == "UNKNOWN_EXECUTION_CONTEXT", bad
+        assert agg["COVERAGE_COMPLETE"] is False
+        assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False
+        assert agg["PRECLOSE_COMPLETE"] is False
+        assert agg["MARKET_DATA_WRITE"] == "NO"
+
+
+def test_C_unknown_context_before_checkpoint_trust(tmp_path):
+    # The context gate must run BEFORE load_manifest: a corrupt manifest with
+    # an unknown context must return UNKNOWN_EXECUTION_CONTEXT, NOT
+    # CHECKPOINT_CORRUPT.
+    staging = tmp_path / "staging"
+    staging.mkdir(exist_ok=True)
+    write_atomic(staging / "manifest.json", "{not valid json")
+    agg = aggregate_full_run(
+        staging_root=staging,
+        execution_context="MYSTERY",
+    )
+    assert agg["STATUS"] == "UNKNOWN_EXECUTION_CONTEXT"
+    assert agg["STATUS"] != "CHECKPOINT_CORRUPT"
+
+
+def test_D_offline_explicit_positive_fixture_works(tmp_path, ready_prereq, monkeypatch):
+    # The positive OFFLINE_TEST candidate fixture still works when
+    # OFFLINE_TEST is explicitly supplied (regression I2 preserved):
+    # 24-symbol fixture with 24 exact sentinels -> all gates genuinely pass.
+    sha = _sha40()
+    symbols = [f"0000{i:02d}.SZ" for i in range(1, 25)]
+    root, staging = _run_offline_complete(tmp_path, symbols, sha=sha)
+    (root / "curated" / "instruments").mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {"symbol": symbols, "list_date": [date(1991, 4, 3)] * len(symbols)}
+    ).write_parquet(root / "curated" / "instruments" / "part-merged.parquet")
+    bar_rows = [
+        {"symbol": s, "trade_date": d, "close": c}
+        for s in symbols
+        for d, c in (
+            (date(2016, 1, 4), 10.0),
+            (date(2016, 1, 5), 10.25),
+            (date(2016, 1, 6), 10.5),
+        )
+    ]
+    bars = pl.DataFrame(
+        {
+            "symbol": [r["symbol"] for r in bar_rows],
+            "trade_date": [r["trade_date"] for r in bar_rows],
+            "close": [r["close"] for r in bar_rows],
+        }
+    )
+    sentinel_rows = [
+        {
+            "symbol": s,
+            "trade_date": "2016-01-05",
+            "official_reference": 10.0,
+            "kind": "OFFICIAL_EVENT",
+            "authority_url": None,
+        }
+        for s in symbols
+    ]
+    monkeypatch.setattr(
+        "ashare_data.r4a7_preclose_full_extraction.load_frozen_sentinel_evidence",
+        lambda: sentinel_rows,
+    )
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        symbols=symbols,
+        execution_context=EXECUTION_CONTEXT_OFFLINE_TEST,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+        bars=bars,
+        event_dates=set(),
+        first_listing_dates=set(),
+        resumption_keys=set(),
+        known_special_keys=set(),
+    )
+    assert agg["COVERAGE_COMPLETE"] is True
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_PASS"] is True
+    assert agg["WINDOW_BOUNDARY"]["WINDOW_BOUNDARY_REQUIRED_N"] == 24
+    assert agg["SENTINELS"]["FROZEN_OFFICIAL_SENTINEL_PASS"] is True
+    assert agg["SENTINELS"]["SENTINEL_EXACT_N"] == 24
+    assert agg["CLEAN_NORMAL"]["NORMAL_FULL_PARITY_PASS"] is True
+    assert agg["CLEAN_NORMAL"]["CLEAN_NORMAL_REQUIRED_N"] == 48
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is True
+    assert agg["PRECLOSE_COMPLETE"] is False
+
+
+def test_E_real_aggregator_authority_unchanged(tmp_path, ready_prereq, monkeypatch):
+    # REAL aggregator authority behavior is unchanged: manifest contract
+    # adapter SHA != expected/runtime -> fail closed before aggregation trust.
+    sha = _sha40()
+    root, staging = _run_offline_complete(tmp_path, ["000001.SZ"], sha=sha)
+    manifest_path = staging / "manifest.json"
+    manifest = load_manifest(manifest_path)
+    other_sha = "cd" * 20
+    manifest["contract"]["ADAPTER_AUTHORITY_SHA"] = other_sha
+    write_atomic(manifest_path, json.dumps(manifest))
+    agg = aggregate_full_run(
+        staging_root=staging,
+        root=root,
+        execution_context=EXECUTION_CONTEXT_REAL,
+        expected_adapter_sha=sha,
+        runtime_adapter_sha=other_sha,
+        as_of=date(2016, 1, 6),
+        window_start=date(2016, 1, 1),
+    )
+    assert agg["STATUS"] == "ADAPTER_AUTHORITY_FAILED_BEFORE_AGGREGATION"
+    assert agg["COVERAGE_COMPLETE"] is False
+    assert agg["PRECLOSE_COMPLETE_CANDIDATE"] is False

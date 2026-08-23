@@ -703,7 +703,7 @@ def aggregate_full_run(
     manifest_path: Path | None = None,
     root: Path | None = None,
     symbols: list[str] | None = None,
-    execution_context: str = EXECUTION_CONTEXT_OFFLINE_TEST,
+    execution_context: str | None = None,
     expected_adapter_sha: str | None = None,
     runtime_adapter_sha: str | None = None,
     as_of: date = AS_OF,
@@ -737,7 +737,27 @@ def aggregate_full_run(
     Calculates PRECLOSE_COMPLETE_CANDIDATE only; PRECLOSE_COMPLETE stays
     false. Gates that need context the caller did not supply report NOT_RUN
     and the candidate stays false (UNKNOWN != PASS).
+
+    R4A7.2.1 closure:
+      - execution_context has NO implicit default (OFFLINE_TEST must be
+        explicit). None / omitted / unknown / arbitrary string ->
+        UNKNOWN_EXECUTION_CONTEXT with COVERAGE_COMPLETE=false,
+        PRECLOSE_COMPLETE_CANDIDATE=false, PRECLOSE_COMPLETE=false and
+        MARKET_DATA_WRITE=NO.
+      - the context is validated BEFORE load_manifest() and before any unit
+        receipt or staged parquet is read, so a corrupt or missing manifest
+        is never read/trusted for an unknown context.
     """
+    if execution_context not in (EXECUTION_CONTEXT_REAL, EXECUTION_CONTEXT_OFFLINE_TEST):
+        return {
+            "STATUS": "UNKNOWN_EXECUTION_CONTEXT",
+            "execution_context": execution_context,
+            "COVERAGE_COMPLETE": False,
+            "PRECLOSE_COMPLETE_CANDIDATE": False,
+            "PRECLOSE_COMPLETE": False,
+            "FULL_MARKET_AUTHORIZED": False,
+            "MARKET_DATA_WRITE": "NO",
+        }
     manifest_path = manifest_path or (staging_root / MANIFEST_FILENAME)
     manifest = load_manifest(manifest_path)
     units = manifest["units"]
