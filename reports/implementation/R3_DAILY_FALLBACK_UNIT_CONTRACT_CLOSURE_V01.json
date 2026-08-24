@@ -1,0 +1,190 @@
+{
+  "BASE_HEAD": "40bd2411d5dbebcc8a8e551c4a6edea655100b89",
+  "TARGET": "300546.SZ",
+  "DATES": [
+    "2016-09-28",
+    "2016-09-29",
+    "2016-09-30",
+    "2016-10-10",
+    "2016-10-11"
+  ],
+  "BAOSTOCK_NORMALIZATION_INSPECTED": {
+    "pinned_cnequity": "a18ee0484dfb0801650175471724def3228b8a17",
+    "module": "cnequity.adapters.baostock.delisted_bars",
+    "BAOSTOCK_RAW_VOLUME_UNIT": "baostock documented shares; pinned adapter passes volume through as finite_int64 (no multiplier)",
+    "BAOSTOCK_CANONICAL_VOLUME_UNIT": "daily_bars data_version=v2 (volume in shares) per data_version_for('daily_bars')",
+    "BAOSTOCK_VOLUME_TRANSFORM": "NONE in pinned adapter (finite_int64 guard only)"
+  },
+  "TDX_TO_R3_TRACE": {
+    "TDX adapter raw": {
+      "2016-09-28": {
+        "open": 24.52,
+        "high": 29.42,
+        "low": 24.52,
+        "close": 29.42,
+        "volume": 11200,
+        "amount": 105179.0
+      },
+      "2016-09-30": {
+        "open": 35.6,
+        "high": 35.6,
+        "low": 35.6,
+        "close": 35.6,
+        "volume": 205600,
+        "amount": 56960.0
+      },
+      "2016-10-11": {
+        "open": 43.08,
+        "high": 43.08,
+        "low": 43.08,
+        "close": 43.08,
+        "volume": 22400,
+        "amount": 189552.0
+      }
+    },
+    "R3_STAGING_CURATED_IDENTICAL": true,
+    "R3_CURATED": {
+      "2016-09-28": {
+        "open": 24.52,
+        "high": 29.42,
+        "low": 24.52,
+        "close": 29.42,
+        "volume": 11200,
+        "amount": 105179.0,
+        "source": "tdx_protocol",
+        "data_version": "v2"
+      },
+      "2016-09-30": {
+        "open": 35.6,
+        "high": 35.6,
+        "low": 35.6,
+        "close": 35.6,
+        "volume": 205600,
+        "amount": 56960.0,
+        "source": "tdx_protocol",
+        "data_version": "v2"
+      },
+      "2016-10-11": {
+        "open": 43.08,
+        "high": 43.08,
+        "low": 43.08,
+        "close": 43.08,
+        "volume": 22400,
+        "amount": 189552.0,
+        "source": "tdx_protocol",
+        "data_version": "v2"
+      }
+    },
+    "conclusion": "TDX adapter raw == staging == curated for all three overlap dates; reported TDX volumes (11200/205600/22400) are the raw adapter values and the canonical R3 values (no transform)."
+  },
+  "FULL_OHLC_PARITY": {
+    "2016-09-28": {
+      "open": 0.0,
+      "high": 0.0,
+      "low": 0.0,
+      "close": 0.0,
+      "OHLC_EXACT": true
+    },
+    "2016-09-30": {
+      "open": 0.0,
+      "high": 0.0,
+      "low": 0.0,
+      "close": 0.0,
+      "OHLC_EXACT": true
+    },
+    "2016-10-11": {
+      "open": 0.0,
+      "high": 0.0,
+      "low": 0.0,
+      "close": 0.0,
+      "OHLC_EXACT": true
+    }
+  },
+  "AMOUNT_PARITY": {
+    "2016-09-28": {
+      "tdx_amount": 105179.0,
+      "baostock_amount": 105179.0,
+      "equal": true
+    },
+    "2016-09-30": {
+      "tdx_amount": 56960.0,
+      "baostock_amount": 56960.0,
+      "equal": true
+    },
+    "2016-10-11": {
+      "tdx_amount": 189552.0,
+      "baostock_amount": 189552.0,
+      "equal": true
+    }
+  },
+  "VOLUME_OBSERVATION": {
+    "tdx_v_baostock_pairs": {
+      "2016-09-28": [
+        11200,
+        3700.0
+      ],
+      "2016-09-30": [
+        205600,
+        1600.0
+      ],
+      "2016-10-11": [
+        22400,
+        4400.0
+      ]
+    },
+    "ratios": {
+      "2016-09-28": "11200/3700=3.027",
+      "2016-09-30": "205600/1600=128.5",
+      "2016-10-11": "22400/4400=5.091"
+    },
+    "not_constant_multiplier": true
+  },
+  "OBSERVABILITY_CLASSIFICATION": "TDX_FIELD_SEMANTIC_DIFFERENCE",
+  "OBSERVABILITY_NOTE": "OHLC and amount match exactly on all three overlap dates, but TDX volume vs BaoStock volume ratios are 3.03/128.5/5.09 - non-proportional. This is not a unit conversion constant; TDX volume field semantics differ from BaoStock volume semantics (e.g. lot/session accounting). Amount parity is proven; volume parity is NOT.",
+  "VOLUME_CONTRACT": {
+    "R3_CANONICAL_VOLUME_UNIT": "v2 shares",
+    "BAOSTOCK_RAW_VOLUME_UNIT": "baostock shares (per pinned adapter pass-through)",
+    "EXACT_VOLUME_NORMALIZATION_RULE": "UNKNOWN (no constant rule fits observed data)",
+    "VOLUME_CONTRACT_PASS": false
+  },
+  "AMOUNT_CONTRACT": {
+    "R3_CANONICAL_AMOUNT_UNIT": "yuan",
+    "BAOSTOCK_RAW_AMOUNT_UNIT": "yuan",
+    "AMOUNT_CONTRACT_PASS": true,
+    "evidence": "amount equal on all overlap dates"
+  },
+  "FALLBACK_SIMULATED_ROWS_QA": {
+    "2016-09-29": {
+      "all_finite": true,
+      "volume_nonneg": true,
+      "ohlc_consistency": true,
+      "close_positive": true
+    },
+    "2016-10-10": {
+      "all_finite": true,
+      "volume_nonneg": true,
+      "ohlc_consistency": true,
+      "close_positive": true
+    },
+    "note": "in-memory rows constructed with pinned normalizer semantics (volume int, amount float); row QA passes; NO file written"
+  },
+  "NO_CONFLICT_GATE": {
+    "TDX_canonical_bar_absent_2016_09_29": true,
+    "BaoStock_bar_present_2016_09_29": true,
+    "expected_key_says_traded_2016_09_29": true,
+    "TDX_canonical_bar_absent_2016_10_10": true,
+    "BaoStock_bar_present_2016_10_10": true,
+    "expected_key_says_traded_2016_10_10": true,
+    "FALLBACK_ELIGIBILITY_2016_09_29": "KEY_OK_VOLUME_UNRESOLVED",
+    "FALLBACK_ELIGIBILITY_2016_10_10": "KEY_OK_VOLUME_UNRESOLVED"
+  },
+  "FALLBACK_UNIT_CONTRACT_DECISION": "FALLBACK_UNIT_CONTRACT_FIX_REQUIRED",
+  "REPAIR_AUTHORITY_DECISION": "NO_REPAIR_YET",
+  "REPAIR_NOTE": "OHLC/amount compatibility and no-conflict eligibility are proven, but the volume semantics are UNRESOLVED (raw/canonical unit and exact rule unknown; observed ratios are not a constant). Repair cannot proceed until the volume contract is resolved.",
+  "SAFETY": {
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
