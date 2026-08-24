@@ -1,0 +1,400 @@
+{
+  "BASE_HEAD": "9850f719aa89a3deeba9eff815730d963d637200",
+  "RUNTIME_HEAD": "9850f719aa89a3deeba9eff815730d963d637200",
+  "AS_OF": "2026-08-17",
+  "data_root": "/Users/luke808/AI/local-a-share-data-service-data",
+  "staging_root": "/Users/luke808/AI/local-a-share-data-service-data/staging/r4a8-preclose-real-resumability-smoke-v01",
+  "provider": {
+    "runtime": "baostock-0.9.3",
+    "api": "query_history_k_data_plus"
+  },
+  "query_contract": {
+    "fields": "date,code,preclose,tradestatus",
+    "frequency": "d",
+    "adjustflag": "3"
+  },
+  "FORMAL_IDENTITY_N": 5456,
+  "FORMAL_IDENTITY_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+  "FULL_SYMBOL_N": 5456,
+  "FULL_SYMBOL_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+  "FULL_QUERY_WINDOW_N": 60016,
+  "FULL_QUERY_PLAN_HASH": "9773875fbae9494bc1d9477cd18633dbccb92112733d9a1077fc3a43bcc38a60",
+  "RUN1": {
+    "STATUS": "PARTIAL_LIMIT_REACHED",
+    "EXECUTED_N": 2,
+    "COMPLETE_N": 2,
+    "PENDING_N": 5454,
+    "FAILED_N": 0,
+    "SKIPPED_N": 0,
+    "fetched_symbols": [
+      "000001.SZ",
+      "000002.SZ"
+    ],
+    "provider_query_count": 22,
+    "queries": [
+      {
+        "symbol": "000001.SZ",
+        "year": 2016,
+        "start": "2016-01-01",
+        "end": "2016-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2017,
+        "start": "2017-01-01",
+        "end": "2017-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2018,
+        "start": "2018-01-01",
+        "end": "2018-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2019,
+        "start": "2019-01-01",
+        "end": "2019-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2020,
+        "start": "2020-01-01",
+        "end": "2020-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2021,
+        "start": "2021-01-01",
+        "end": "2021-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2022,
+        "start": "2022-01-01",
+        "end": "2022-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2023,
+        "start": "2023-01-01",
+        "end": "2023-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2024,
+        "start": "2024-01-01",
+        "end": "2024-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2025,
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000001.SZ",
+        "year": 2026,
+        "start": "2026-01-01",
+        "end": "2026-08-17",
+        "rows": 150
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2016,
+        "start": "2016-01-01",
+        "end": "2016-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2017,
+        "start": "2017-01-01",
+        "end": "2017-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2018,
+        "start": "2018-01-01",
+        "end": "2018-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2019,
+        "start": "2019-01-01",
+        "end": "2019-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2020,
+        "start": "2020-01-01",
+        "end": "2020-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2021,
+        "start": "2021-01-01",
+        "end": "2021-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2022,
+        "start": "2022-01-01",
+        "end": "2022-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2023,
+        "start": "2023-01-01",
+        "end": "2023-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2024,
+        "start": "2024-01-01",
+        "end": "2024-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2025,
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000002.SZ",
+        "year": 2026,
+        "start": "2026-01-01",
+        "end": "2026-08-17",
+        "rows": 150
+      }
+    ]
+  },
+  "RUN2": {
+    "STATUS": "PARTIAL_LIMIT_REACHED",
+    "EXECUTED_N": 1,
+    "COMPLETE_N": 3,
+    "PENDING_N": 5453,
+    "FAILED_N": 0,
+    "SKIPPED_N": 2,
+    "fetched_symbols": [
+      "000004.SZ"
+    ],
+    "provider_query_count": 11,
+    "refetched_run1_complete_symbols": [],
+    "queries": [
+      {
+        "symbol": "000004.SZ",
+        "year": 2016,
+        "start": "2016-01-01",
+        "end": "2016-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2017,
+        "start": "2017-01-01",
+        "end": "2017-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2018,
+        "start": "2018-01-01",
+        "end": "2018-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2019,
+        "start": "2019-01-01",
+        "end": "2019-12-31",
+        "rows": 244
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2020,
+        "start": "2020-01-01",
+        "end": "2020-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2021,
+        "start": "2021-01-01",
+        "end": "2021-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2022,
+        "start": "2022-01-01",
+        "end": "2022-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2023,
+        "start": "2023-01-01",
+        "end": "2023-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2024,
+        "start": "2024-01-01",
+        "end": "2024-12-31",
+        "rows": 242
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2025,
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "rows": 243
+      },
+      {
+        "symbol": "000004.SZ",
+        "year": 2026,
+        "start": "2026-01-01",
+        "end": "2026-08-17",
+        "rows": 125
+      }
+    ]
+  },
+  "checkpoint_integrity": {
+    "000001.SZ": {
+      "STATE": "COMPLETE",
+      "valid": true,
+      "FORMAL_FACT_HASH": "2dc404d7992c559eaee7faf6f5805eec57738eef5883db7616071f2cb164abed",
+      "STAGED_FORMAL_CONTENT_HASH": "2aa165a7d102b743fcbfdd36aced144df5b94cffa5c99f41c356e14742f3bef6",
+      "MISSING_REQUIRED_N": 0,
+      "UNEXPECTED_TRADED_N": 0,
+      "TRADESTATUS_UNKNOWN_N": 0,
+      "IDENTITY_FAILURE_N": 0,
+      "WINDOW_SCOPE_FAILURE_N": 0,
+      "DUPLICATE_N": 0,
+      "POST_ASOF_N": 0,
+      "INVALID_PRECLOSE_N": 0,
+      "REQUIRED_ROW_N": 2580,
+      "FORMAL_FACT_ROW_N": 2580
+    },
+    "000002.SZ": {
+      "STATE": "COMPLETE",
+      "valid": true,
+      "FORMAL_FACT_HASH": "830c429a5dd965f8e4317e41fe26e5abd1f531a49377d016e6c883053cfc9ab3",
+      "STAGED_FORMAL_CONTENT_HASH": "cb18664fe2d6024da3d14e67436449dcd43aab03aca23d20d896cc745ac799eb",
+      "MISSING_REQUIRED_N": 0,
+      "UNEXPECTED_TRADED_N": 0,
+      "TRADESTATUS_UNKNOWN_N": 0,
+      "IDENTITY_FAILURE_N": 0,
+      "WINDOW_SCOPE_FAILURE_N": 0,
+      "DUPLICATE_N": 0,
+      "POST_ASOF_N": 0,
+      "INVALID_PRECLOSE_N": 0,
+      "REQUIRED_ROW_N": 2454,
+      "FORMAL_FACT_ROW_N": 2454
+    }
+  },
+  "partial_aggregator": {
+    "STATUS": "VALIDATOR_RUN",
+    "COVERAGE_COMPLETE": false,
+    "PRECLOSE_COMPLETE_CANDIDATE": false,
+    "PRECLOSE_COMPLETE": false,
+    "FULL_MARKET_AUTHORIZED": false,
+    "MARKET_DATA_WRITE": "NO",
+    "units_complete_n": 3,
+    "REQUIRED_ROW_N": 7351,
+    "FORMAL_FACT_ROW_N": 7351,
+    "WINDOW_BOUNDARY": {
+      "WINDOW_BOUNDARY_PASS": false,
+      "status": "SKIPPED_INCOMPLETE"
+    },
+    "SENTINELS": {
+      "FROZEN_OFFICIAL_SENTINEL_PASS": false,
+      "status": "SKIPPED_INCOMPLETE"
+    },
+    "CLEAN_NORMAL": {
+      "NORMAL_FULL_PARITY_PASS": false,
+      "status": "SKIPPED_INCOMPLETE"
+    }
+  },
+  "executed_unit_quality": {
+    "000001.SZ": {
+      "REQUIRED_ROW_N": 2580,
+      "FORMAL_FACT_ROW_N": 2580,
+      "MISSING_REQUIRED_N": 0,
+      "PROVIDER_SUSPENDED_SUPERSET_N": 0,
+      "UNEXPECTED_TRADED_N": 0,
+      "TRADESTATUS_UNKNOWN_N": 0,
+      "IDENTITY_FAILURE_N": 0,
+      "WINDOW_SCOPE_FAILURE_N": 0,
+      "DUPLICATE_N": 0,
+      "POST_ASOF_N": 0,
+      "INVALID_PRECLOSE_N": 0,
+      "FORMAL_FACT_HASH": "2dc404d7992c559eaee7faf6f5805eec57738eef5883db7616071f2cb164abed",
+      "STAGED_FORMAL_CONTENT_HASH": "2aa165a7d102b743fcbfdd36aced144df5b94cffa5c99f41c356e14742f3bef6",
+      "unit_query_window_n": 11,
+      "unit_query_plan_hash": "80aa278388bb688a7180fcb00f29af9b73ad473895cbcd8b0565e16ebd07673e"
+    },
+    "000002.SZ": {
+      "REQUIRED_ROW_N": 2454,
+      "FORMAL_FACT_ROW_N": 2454,
+      "MISSING_REQUIRED_N": 0,
+      "PROVIDER_SUSPENDED_SUPERSET_N": 126,
+      "UNEXPECTED_TRADED_N": 0,
+      "TRADESTATUS_UNKNOWN_N": 0,
+      "IDENTITY_FAILURE_N": 0,
+      "WINDOW_SCOPE_FAILURE_N": 0,
+      "DUPLICATE_N": 0,
+      "POST_ASOF_N": 0,
+      "INVALID_PRECLOSE_N": 0,
+      "FORMAL_FACT_HASH": "830c429a5dd965f8e4317e41fe26e5abd1f531a49377d016e6c883053cfc9ab3",
+      "STAGED_FORMAL_CONTENT_HASH": "cb18664fe2d6024da3d14e67436449dcd43aab03aca23d20d896cc745ac799eb",
+      "unit_query_window_n": 11,
+      "unit_query_plan_hash": "83aeabcae12e26cf1e55338d138c2129ca24411e6231f4689101748d5aa4f4ab"
+    },
+    "000004.SZ": {
+      "REQUIRED_ROW_N": 2317,
+      "FORMAL_FACT_ROW_N": 2317,
+      "MISSING_REQUIRED_N": 0,
+      "PROVIDER_SUSPENDED_SUPERSET_N": 238,
+      "UNEXPECTED_TRADED_N": 0,
+      "TRADESTATUS_UNKNOWN_N": 0,
+      "IDENTITY_FAILURE_N": 0,
+      "WINDOW_SCOPE_FAILURE_N": 0,
+      "DUPLICATE_N": 0,
+      "POST_ASOF_N": 0,
+      "INVALID_PRECLOSE_N": 0,
+      "FORMAL_FACT_HASH": "d5d12e0a959959a5c1f9214df9affe63aa6bb4486585ada3cde351c014d2eee5",
+      "STAGED_FORMAL_CONTENT_HASH": "eaf7f7e714f6c9646fec51178d30e5bc78ee795efe8c8382fff8f162f9c29138",
+      "unit_query_window_n": 11,
+      "unit_query_plan_hash": "4d981eb5481943191af4030de80862e62670e60ea80c016d24357b2450baae19"
+    }
+  },
+  "NETWORK_PROVIDER_DATA_FETCH": "YES",
+  "CANONICAL_MARKET_DATA_WRITE": "NO",
+  "PRECLOSE_FACTS_WRITE": "NO",
+  "READINESS_MUTATION": "NO",
+  "R4A8_REAL_RESUMABILITY_SMOKE_PASS": true,
+  "PRECLOSE_COMPLETE": false,
+  "FULL_MARKET_AUTHORIZED": false
+}
