@@ -1,0 +1,165 @@
+{
+  "BASE_HEAD": "85036c0f8e1abfef178ee6488ff0254364d8c306",
+  "INPUT": {
+    "DAILY_ROW_N": 10709989,
+    "DAILY_SYMBOL_N": 5456,
+    "source_dist": {
+      "tdx_protocol": 10325794,
+      "baostock": 384195
+    },
+    "data_version_dist": {
+      "v2": 10709989
+    },
+    "AS_OF": "2026-08-17"
+  },
+  "PINNED_CONTRACT": {
+    "cnequity_pin": "a18ee0484dfb0801650175471724def3228b8a17",
+    "TDX_NATIVE_DAILY_VOLUME_UNIT": "hand (lots) per cnequity.domain.units; TDX daily K frequency=9 is lots, 1-minute is shares",
+    "TDX_ADAPTER_VOLUME_TRANSFORM": "lots_to_shares x100 in cnequity.adapters.tdx_protocol.bars._parse_bar_rows(volume_in_lots=True), invoked by fetch_bars_paginated(volume_in_lots=not is_index)",
+    "R3_CANONICAL_VOLUME_UNIT": "shares (v2) per cnequity.domain.schemas",
+    "DATA_VERSION_V2_VOLUME_SEMANTIC": "shares for every source",
+    "evident_files": [
+      "cnequity/adapters/tdx_protocol/bars.py (x100 transform)",
+      "cnequity/adapters/tdx_protocol/quotes.py (vol->volume alias, no transform)",
+      "cnequity/adapters/tdx_protocol/_wire/parser/std/get_security_bars.py (raw wire decode)",
+      "cnequity/domain/schemas.py (v2 shares)",
+      "cnequity/domain/units.py (tdx daily = lots)",
+      "cnequity.adapters.baostock.delisted_bars (volume pass-through, no transform)"
+    ]
+  },
+  "CANONICAL_VWAP_INVARIANT": {
+    "TDX_POSITIVE_ROW_N": 10325793,
+    "VWAP_IN_RANGE_N": 10306877,
+    "VWAP_BELOW_LOW_N": 1307,
+    "VWAP_ABOVE_HIGH_N": 17609,
+    "VWAP_INVALID_N": 0,
+    "VWAP_IN_RANGE_RATE": 0.998168
+  },
+  "UNIT_RATIO_DISTRIBUTION": {
+    "R_CLOSE_quantiles": {
+      "p01": 0.966,
+      "p05": 0.983,
+      "p25": 0.995,
+      "p50": 1.0001,
+      "p75": 1.006,
+      "p95": 1.019,
+      "p99": 1.036
+    },
+    "cluster_1_count": 10324680,
+    "cluster_100_count": 0,
+    "conclusion": "canonical TDX volume is share-scaled for the vast majority (median 1.0); x100 transform IS applied globally"
+  },
+  "STRATIFICATION": {
+    "R_CLOSE_median_SH": 1.0001,
+    "R_CLOSE_median_SZ": 1.0002,
+    "year_range": "2016-2026",
+    "extreme_rows_rc_below_0_5": 1113,
+    "extreme_by_year": {
+      "2016": 467,
+      "2017": 603,
+      "2018": 29,
+      "2019": 9,
+      "2020": 1,
+      "2023": 1,
+      "2024": 2,
+      "2025": 1
+    },
+    "top_vwap_failure_symbols": [
+      {
+        "symbol": "000908.SZ",
+        "n": 42
+      },
+      {
+        "symbol": "000609.SZ",
+        "n": 39
+      },
+      {
+        "symbol": "600289.SH",
+        "n": 39
+      },
+      {
+        "symbol": "600734.SH",
+        "n": 36
+      },
+      {
+        "symbol": "603843.SH",
+        "n": 36
+      },
+      {
+        "symbol": "603007.SH",
+        "n": 33
+      },
+      {
+        "symbol": "603389.SH",
+        "n": 32
+      },
+      {
+        "symbol": "603779.SH",
+        "n": 31
+      }
+    ]
+  },
+  "ONE_PRICE_STRONG_CHECK": {
+    "ONE_PRICE_ROW_N": 30909,
+    "ONE_PRICE_EXACT_N": 13693,
+    "ONE_PRICE_MISMATCH_N": 17216,
+    "mismatch_cluster_0_01": 181,
+    "mismatch_cluster_1": 16205,
+    "mismatch_cluster_100": 0
+  },
+  "CONFIRM_300546": {
+    "2016-09-28": {
+      "OHLCVA": "24.52/29.42/24.52/29.42 V11200 A105179",
+      "amount_div_volume": 9.391,
+      "invariant": "PASS"
+    },
+    "2016-09-30": {
+      "OHLCVA": "35.60/35.60/35.60/35.60 V205600 A56960",
+      "amount_div_volume": 0.277,
+      "invariant": "FAIL"
+    },
+    "2016-10-11": {
+      "OHLCVA": "43.08/43.08/43.08/43.08 V22400 A189552",
+      "amount_div_volume": 8.462,
+      "invariant": "FAIL"
+    },
+    "note": "300546 has consecutive FAIL days (09-30, 10-11, 10-13, 10-14, 10-17, 10-18); canonical volume ~100x too large while amount matches BaoStock"
+  },
+  "SOURCE_COMPARISON": {
+    "BAOSTOCK_POSITIVE_ROW_N": 384194,
+    "BAOSTOCK_VWAP_FAILURE_N": 110,
+    "BAOSTOCK_ONE_PRICE_MISMATCH_N": 21,
+    "BAOSTOCK_rc_quantiles": {
+      "p01": 0.963,
+      "p50": 1.0,
+      "p99": 1.038
+    },
+    "conclusion": "BaoStock rows near-perfect; anomaly is TDX-source-specific"
+  },
+  "ROOT_CAUSE_CLASSIFICATION": "MIXED_TDX_VOLUME_SEMANTICS",
+  "ROOT_CAUSE_NOTE": "Pinned adapter x100 is correct globally (median 1.0). A bounded minority (1113 rows, mostly 2016-2017 IPO consecutive-limit periods) fails VWAP by 1-3 orders of magnitude with amount matching BaoStock; not a missing global unit transform (would show median ~100). Mixed/session-specific TDX volume semantics for IPO serial-limit rows.",
+  "CORRECTNESS_DECISION": {
+    "R3_TDX_VOLUME_CORRECTNESS_PASS": false,
+    "R3_DAILY_FOUNDATION_CORRECTNESS_PASS": false,
+    "justification": "material unresolved canonical TDX volume defect (>=1113 rows violating amount/close/volume consistency, IPO-period concentration)"
+  },
+  "REPAIR_SCOPE_DECISION": "FURTHER_DIAGNOSIS_REQUIRED",
+  "REPAIR_SCOPE_NOTE": "bounded per-symbol wire-level TDX vs BaoStock OHLCV comparison for affected IPO rows required before choosing 300546-only patch / migration / adapter+rebuild; x100 toggle NOT implied by evidence (overlap ratios 3.03/128.5/5.09)",
+  "STRATEGY_IMPACT": {
+    "affected": [
+      "volume ratios",
+      "shrinkage",
+      "triple-volume",
+      "turnover inputs",
+      "B1/B2 volume features"
+    ],
+    "note": "IPO-period SH/SZ rows affected; research not rerun"
+  },
+  "SAFETY": {
+    "NETWORK_PROVIDER_DATA_FETCH": "NO",
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
