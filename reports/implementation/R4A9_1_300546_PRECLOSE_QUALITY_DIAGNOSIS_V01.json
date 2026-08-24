@@ -1,0 +1,135 @@
+{
+  "DIAGNOSTIC_EVIDENCE_SOURCE": "TARGETED_SINGLE_SYMBOL_REFETCH",
+  "SYMBOL": "300546.SZ",
+  "DIAGNOSTIC_RUNTIME_HEAD": "795b1b8f6b688ecc2e94f85c09d80c365e648920",
+  "windows": [
+    {
+      "year": 2016,
+      "start": "2016-01-01",
+      "end": "2016-12-31",
+      "rows": 63
+    },
+    {
+      "year": 2017,
+      "start": "2017-01-01",
+      "end": "2017-12-31",
+      "rows": 244
+    },
+    {
+      "year": 2018,
+      "start": "2018-01-01",
+      "end": "2018-12-31",
+      "rows": 243
+    },
+    {
+      "year": 2019,
+      "start": "2019-01-01",
+      "end": "2019-12-31",
+      "rows": 244
+    },
+    {
+      "year": 2020,
+      "start": "2020-01-01",
+      "end": "2020-12-31",
+      "rows": 243
+    },
+    {
+      "year": 2021,
+      "start": "2021-01-01",
+      "end": "2021-12-31",
+      "rows": 243
+    },
+    {
+      "year": 2022,
+      "start": "2022-01-01",
+      "end": "2022-12-31",
+      "rows": 242
+    },
+    {
+      "year": 2023,
+      "start": "2023-01-01",
+      "end": "2023-12-31",
+      "rows": 242
+    },
+    {
+      "year": 2024,
+      "start": "2024-01-01",
+      "end": "2024-12-31",
+      "rows": 242
+    },
+    {
+      "year": 2025,
+      "start": "2025-01-01",
+      "end": "2025-12-31",
+      "rows": 243
+    },
+    {
+      "year": 2026,
+      "start": "2026-01-01",
+      "end": "2026-08-17",
+      "rows": 150
+    }
+  ],
+  "window_n": 11,
+  "REQUIRED_ROW_N": 2397,
+  "PROVIDER_ROW_N": 2399,
+  "FORMAL_FACT_ROW_N": 2397,
+  "MISSING_REQUIRED_N": 0,
+  "PROVIDER_SUSPENDED_SUPERSET_N": 0,
+  "UNEXPECTED_TRADED_N": 2,
+  "TRADESTATUS_UNKNOWN_N": 0,
+  "IDENTITY_FAILURE_N": 0,
+  "WINDOW_SCOPE_FAILURE_N": 0,
+  "DUPLICATE_N": 0,
+  "POST_ASOF_N": 0,
+  "INVALID_PRECLOSE_N": 0,
+  "QUALITY_GATE_PASS": false,
+  "audit_rows": [
+    {
+      "symbol": "300546.SZ",
+      "date": "2016-09-29",
+      "issue": "UNEXPECTED_TRADED"
+    },
+    {
+      "symbol": "300546.SZ",
+      "date": "2016-10-10",
+      "issue": "UNEXPECTED_TRADED"
+    }
+  ],
+  "R3": {
+    "list_date": "2016-09-28",
+    "first_trade_date": "2016-09-28",
+    "last_trade_date": "2026-08-17",
+    "required_key_count": 2397
+  },
+  "R4A9_COMPLETE_N": 2140,
+  "R4A9_FAILED_N": 1,
+  "R4A9_UNVISITED_N": 3315,
+  "R4A9_CHECKPOINT_MUTATED": false,
+  "R4A9_RESUME_AUTHORIZED": false,
+  "REPORT_BASE_HEAD": "e8c097db5375fb2db1a422e298c67facc2dcf6b3",
+  "ROOT_CAUSE_CLASSIFICATION": "R3_REQUIRED_KEY_MISMATCH",
+  "ROOT_CAUSE_DETAIL": "BaoStock reports 300546.SZ tradestatus=1 on 2016-09-29 and 2016-10-10 (both real SH/SZ trading days), but the authoritative R3 daily_bars has no bar on those dates (294 missing bars: 2016-09-29 and 2016-10-10), so the frozen R3 required-key universe omits them. The provider rows therefore classify as UNEXPECTED_TRADED (blocker) and QUALITY_GATE_PASS=false. Cross-check: provider preclose 2016-09-29=29.42 equals R3 2016-09-28 close; provider preclose 2016-10-10=35.60 equals R3 2016-09-30 close -- provider data is self-consistent with the exchange calendar; the gap is in R3 bars.",
+  "NOT_CODE_DEFECT": true,
+  "NOT_PROVIDER_ANOMALY": true,
+  "PROVIDER_BLOCKER_DATES": [
+    {
+      "trade_date": "2016-09-29",
+      "provider_tradestatus": "1",
+      "provider_preclose": 29.42,
+      "R3_BAR_PRESENT": false,
+      "R3_REQUIRED_KEY_PRESENT": false,
+      "previous_R3_trade_date": "2016-09-28",
+      "next_R3_trade_date": "2016-09-30"
+    },
+    {
+      "trade_date": "2016-10-10",
+      "provider_tradestatus": "1",
+      "provider_preclose": 35.6,
+      "R3_BAR_PRESENT": false,
+      "R3_REQUIRED_KEY_PRESENT": false,
+      "previous_R3_trade_date": "2016-09-30",
+      "next_R3_trade_date": "2016-10-11"
+    }
+  ]
+}
