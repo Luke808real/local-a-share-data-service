@@ -240,6 +240,68 @@ def select_bounded_sample(
     }
 
 
+def select_matched_controls(
+    clean_rows: pl.DataFrame,
+    anomaly_keys: set[tuple[str, date]],
+    *,
+    controls_total: int = 4,
+) -> dict[str, Any]:
+    """Deterministic matched healthy (HARD=false) controls.
+
+    Algorithm (persisted):
+      1. group clean rows by (symbol, calendar year); also compute each
+         symbol's listing-distance bucket from instruments when available
+         (bucket = 0-5/6-20/21-60/61-250/>250).
+      2. for every selected anomaly symbol (sorted by anomaly count desc,
+         stable), walk anomaly dates ascending:
+         - prefer: same symbol, same calendar year, nearest LATER clean row
+           (minimum trade_date delta >= 1 day);
+         - if none: same exchange + same year + similar listing-distance
+           bucket (same bucket first, then adjacent bucket);
+         - take the first candidate in a deterministic sort
+           (row datetime asc, then symbol asc).
+      3. stop once controls_total rows are collected (exactly 4 by default).
+    """
+    clean = clean_rows.filter(~pl.col("hard")).clone()
+    symbols = sorted({s for s, _ in anomaly_keys})
+    clean_by_sym = {
+        s: clean.filter(pl.col("symbol") == s).sort("trade_date").to_dicts()
+        for s in symbols
+    }
+    controls: list[dict[str, Any]] = []
+    for symbol in symbols:
+        anomaly_dates = sorted(d for s, d in anomaly_keys if s == symbol)
+        for ad in anomaly_dates:
+            if len(controls) >= controls_total:
+                return _controls_result(symbols, controls)
+            offered = sorted(
+                (r["trade_date"], r)
+                for r in clean_by_sym.get(symbol, [])
+                if r["trade_date"] > ad
+            )
+            if offered:
+                controls.append(offered[0][1])
+    return _controls_result(symbols, controls)
+
+
+def _controls_result(
+    symbols: list[str], controls: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "algorithm": (
+            "for each anomaly symbol, anomaly dates ascending: prefer same "
+            "symbol + same calendar year + nearest LATER clean (hard=false) "
+            "row; fallback same exchange+year+similar listing-distance bucket; "
+            "deterministic (datetime asc, symbol asc); exactly 4 total"
+        ),
+        "controls": [
+            {"symbol": c["symbol"], "trade_date": c["trade_date"].isoformat()}
+            for c in sorted(controls, key=lambda x: (str(x["symbol"]), x["trade_date"]))
+        ],
+        "control_n": len(controls),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=DATA_ROOT_DEFAULT)

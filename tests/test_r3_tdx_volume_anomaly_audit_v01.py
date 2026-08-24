@@ -14,6 +14,7 @@ from r3_tdx_volume_anomaly_audit_v01 import (  # noqa: E402
     classify_volume_row,
     listing_distance_buckets,
     select_bounded_sample,
+    select_matched_controls,
 )
 
 
@@ -125,3 +126,55 @@ def test_bounded_sample_deterministic():
     assert ("300546.SZ", "2016-09-30") in s1["selected_keys"]
     assert ("300546.SZ", "2016-10-11") in s1["selected_keys"]
     assert "300546.SZ" in s1["selected_symbols"]
+
+
+def test_matched_controls_prefer_later_same_symbol():
+    clean = pl.DataFrame(
+        {
+            "symbol": ["A.SZ", "A.SZ", "B.SZ", "B.SZ"],
+            "trade_date": [
+                date(2016, 1, 10),
+                date(2016, 2, 1),
+                date(2016, 3, 1),
+                date(2016, 4, 1),
+            ],
+            "hard": [False, False, False, False],
+        }
+    )
+    anomaly = {("A.SZ", date(2016, 1, 5)), ("B.SZ", date(2016, 2, 15))}
+    out = select_matched_controls(clean, anomaly, controls_total=2)
+    assert out["control_n"] == 2
+    # nearest later same-symbol rows: A.SZ 2016-01-10, B.SZ 2016-03-01
+    assert ("A.SZ", "2016-01-10") in [
+        (c["symbol"], c["trade_date"]) for c in out["controls"]
+    ]
+    assert ("B.SZ", "2016-03-01") in [
+        (c["symbol"], c["trade_date"]) for c in out["controls"]
+    ]
+
+
+def test_matched_controls_exact_count():
+    clean = pl.DataFrame(
+        {
+            "symbol": ["A.SZ", "A.SZ", "A.SZ", "A.SZ", "A.SZ"],
+            "trade_date": [
+                date(2016, 1, 10),
+                date(2016, 1, 15),
+                date(2016, 2, 1),
+                date(2016, 3, 1),
+                date(2016, 4, 1),
+            ],
+            "hard": [False, False, False, False, False],
+        }
+    )
+    anomaly = {
+        ("A.SZ", date(2016, 1, 5)),
+        ("A.SZ", date(2016, 1, 8)),
+        ("A.SZ", date(2016, 1, 9)),
+        ("A.SZ", date(2016, 1, 12)),
+        ("A.SZ", date(2016, 1, 20)),
+    }
+    out = select_matched_controls(clean, anomaly, controls_total=4)
+    assert out["control_n"] == 4  # exactly 4, deterministic
+    dates = sorted(c["trade_date"] for c in out["controls"])
+    assert dates == sorted(dates)

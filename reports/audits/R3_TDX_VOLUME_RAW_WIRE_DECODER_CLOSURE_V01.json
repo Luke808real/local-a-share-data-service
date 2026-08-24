@@ -1,0 +1,66 @@
+{
+  "BASE_HEAD": "b30ff3ec438563472a9775f8f38cb7b84ad7284e",
+  "FROZEN_FINDINGS_PRESERVED": {
+    "TDX_HARD_ANOMALY_N": 1110,
+    "TDX_HARD_ANOMALY_SYMBOL_N": 466,
+    "IPO_20DAY_CONCENTRATION": "99.4%",
+    "ENDPOINT_INCONSISTENCY_REJECTED": true,
+    "R3_LOTS_TO_SHARES_TRANSFORM_DEFECT_REJECTED": true
+  },
+  "ENTERING_ROOT_CAUSE": "TDX_WIRE_OR_DECODER_HISTORICAL_VOLUME_ANOMALY_UNRESOLVED",
+  "TOOLS": {
+    "audit_tool": "tools/audits/r3_tdx_volume_anomaly_audit_v01.py (controls selector updated: same-symbol/same-year nearest-later clean row; deterministic; exactly 4)",
+    "wire_tool": "tools/audits/r3_tdx_raw_wire_decoder_v01.py (research-only raw-body capture; independent IEEE-754 decoder)",
+    "test_passes": 17
+  },
+  "SAMPLE_RECONCILIATION": {
+    "ANOMALY_SAMPLE_KEY_N": 16,
+    "CONTROL_SAMPLE_KEY_N": 4,
+    "NETWORK_UNIQUE_KEY_N": 20,
+    "note": "16 anomaly keys (top-8 symbols x up to 2 dates + 300546.SZ) plus 4 deterministically matched healthy controls; all 20 unique"
+  },
+  "RAW_WIRE_CAPTURE": {
+    "method": "research-only subclass of pinned GetSecurityBarsCmd capturing raw response body; manual byte-offset parse of 20-byte daily-K records (date2 time2 4 price diffs2 vol4 amount4)",
+    "endpoints": [
+      {"host": "120.76.1.198", "port": 7709},
+      {"host": "1.202.143.37", "port": 7709},
+      {"host": "111.203.134.118", "port": 7709}
+    ],
+    "RAW_BYTES_ENDPOINTS_EQUAL": true,
+    "DECODED_VALUES_ENDPOINTS_EQUAL": true
+  },
+  "ANOMALY_RAW_EVIDENCE_300546": [
+    {"date": "2016-09-28", "vol_raw": "0x42140000", "pinned_decoded": 112.0, "independent_ieee754": 37.0, "baostock_volume": 3700, "ieee_lots_to_shares": 3700, "match_baostock": true},
+    {"date": "2016-09-29", "vol_raw": "0x3f800000", "pinned_decoded": 32768.5, "independent_ieee754": 1.0, "baostock_volume": 100, "ieee_lots_to_shares": 100, "match_baostock": true},
+    {"date": "2016-09-30", "vol_raw": "0x41800000", "pinned_decoded": 2056.0, "independent_ieee754": 16.0, "baostock_volume": 1600, "ieee_lots_to_shares": 1600, "match_baostock": true},
+    {"date": "2016-10-10", "vol_raw": "0x3f800000", "pinned_decoded": 32768.5, "independent_ieee754": 1.0, "baostock_volume": 100, "ieee_lots_to_shares": 100, "match_baostock": true},
+    {"date": "2016-10-11", "vol_raw": "0x42300000", "pinned_decoded": 224.0, "independent_ieee754": 44.0, "baostock_volume": 4400, "ieee_lots_to_shares": 4400, "match_baostock": true}
+  ],
+  "INDEPENDENT_DECODER": {
+    "authority": "IEEE-754 float32 reinterpretation of raw 4 bytes (struct <f)",
+    "provenance": "raw body capture via research-only parser + float32 reinterp + BaoStock cross-check; not a copy of pinned code",
+    "DECODER_EQUAL_ON_ANOMALY": false,
+    "DECODER_EQUAL_ON_MODERN_HEALTHY": true,
+    "note": "independent IEEE-754 decode equals BaoStock shares/100 on every anomaly row; pinned packed decoder inflates exactly those rows (e.g. 2056 vs 16; 32768.5 vs 1.0; 224 vs 44)"
+  },
+  "ROOT_CAUSE_CLASSIFICATION": "TDX_PACKED_VOLUME_DECODER_DEFECT",
+  "ROOT_CAUSE_DETAIL": "Raw wire volume field is IEEE-754 float32; pinned get_volume packed-decoder yields inflated values on exponent/high-byte rows, exactly the canonical anomaly rows (205600 instead of 1600 etc). BaoStock confirms. Decoder defect, not vendor payload anomaly.",
+  "PRIOR_RECEIPT_CLOSURE": {
+    "PRIOR_AUTHOR_ROOT_CAUSE": "TDX_VENDOR_HISTORICAL_VOLUME_ANOMALY",
+    "SOL_AUDIT_OVERRIDE": "TDX_WIRE_OR_DECODER_HISTORICAL_VOLUME_ANOMALY_UNRESOLVED",
+    "PRIOR_SAMPLE_COUNTS_CLAIMED": {"ANOMALY_SAMPLE_KEY_N": "16 (prior tool)", "CONTROL_SAMPLE_KEY_N": "8 (prior tool)", "NETWORK_UNIQUE_KEY_N": "24 (prior tool)"},
+    "CORRECTED_SAMPLE_COUNTS": {"ANOMALY_SAMPLE_KEY_N": 16, "CONTROL_SAMPLE_KEY_N": 4, "NETWORK_UNIQUE_KEY_N": 20},
+    "note": "prior claim recorded; corrected to deterministic 16+4=20 unique keys; history not silently rewritten"
+  },
+  "R3_TDX_VOLUME_CORRECTNESS_PASS": false,
+  "R3_DAILY_FOUNDATION_CORRECTNESS_PASS": false,
+  "REPAIR_SCOPE_DECISION": "TDX_DECODER_FIX_AND_DATA_REBUILD_REQUIRED",
+  "REPAIR_SCOPE_NOTE": "pinned decoder fix (float32) plus canonical daily_bars volume rebuild for TDX rows; bounded secondary repair alone insufficient because decoder is the root cause",
+  "SAFETY": {
+    "NETWORK_PROVIDER_DATA_FETCH": "YES_BOUNDED_SAMPLE_ONLY",
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
