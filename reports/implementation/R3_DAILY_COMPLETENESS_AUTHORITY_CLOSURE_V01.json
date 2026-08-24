@@ -1,0 +1,90 @@
+{
+  "BASE_HEAD": "3455cacfdbf38ca4dc88bdd018886810c9613b2a",
+  "TARGET": "300546.SZ 2016-09-28..2016-10-11",
+  "TDX_SOURCE_CLOSURE": "HEALTHY_ENDPOINT_FOUND",
+  "tdx_endpoint": "120.76.1.198:7709 (auto-selected via pinned cnequity tdx_protocol._pick_reachable_server, served real data twice)",
+  "TDX_RETURNED_ROWS": [
+    {
+      "trade_date": "2016-09-28",
+      "open": 24.52,
+      "high": 29.42,
+      "low": 24.52,
+      "close": 29.42,
+      "volume": 11200,
+      "amount": 105179.0
+    },
+    {
+      "trade_date": "2016-09-30",
+      "open": 35.6,
+      "high": 35.6,
+      "low": 35.6,
+      "close": 35.6,
+      "volume": 205600,
+      "amount": 56960.0
+    },
+    {
+      "trade_date": "2016-10-11",
+      "open": 43.08,
+      "high": 43.08,
+      "low": 43.08,
+      "close": 43.08,
+      "volume": 22400,
+      "amount": 189552.0
+    }
+  ],
+  "TDX_2016_09_29_PRESENT": false,
+  "TDX_2016_10_10_PRESENT": false,
+  "TDX_MULTI_ENDPOINT_QUERY": "direct per-host probes failed simultaneously (network flake); auto mode succeeded twice from one healthy endpoint",
+  "TDX_CLASSIFICATION": "ALL_HEALTHY_TDX_MISS_ROWS",
+  "ROOT_CAUSE_CLASSIFICATION": "TDX_SOURCE_HISTORICAL_GAP",
+  "ROOT_CAUSE_EVIDENCE": "A currently healthy TDX endpoint (selected by the pinned cnequity implementation, validated by serving real OHLCV data on 2016-09-28/09-30/10-11) returns exactly the same 3-row series that staged and curated R3 contain for 300546.SZ. 2016-09-29 and 2016-10-10 are absent from the TDX-returned frame in two independent auto-mode fetches. This supports TDX_SOURCE_HISTORICAL_GAP: the missing rows were absent at TDX ingestion boundary (staging==curated==TDX current fetch).",
+  "R3_COMPLETENESS_GATE_BLIND_SPOT": true,
+  "BLIND_SPOT_DETAIL": "R3 required-key universe is derived from observed curated daily_bars (self-referential); F/G delisted-survivorship gate checks delisted symbols only and never cross-checks per-symbol traded-day presence of active symbols against an external trading-status authority.",
+  "PRIOR_AUTHOR_CLASSIFICATION": "TDX_SOURCE_HISTORICAL_GAP",
+  "SOL_AUDIT_OVERRIDE": "UNRESOLVED_AT_TDX_INGESTION_BOUNDARY",
+  "OVERRIDE_RESOLUTION": "New TDX evidence (healthy endpoint, identical 3-row return twice) legitimately confirms the prior author classification TDX_SOURCE_HISTORICAL_GAP, so the formal root cause entering this task (UNRESOLVED_AT_TDX_INGESTION_BOUNDARY) is now resolved toward TDX_SOURCE_HISTORICAL_GAP per task section 2/9 rules.",
+  "PROPOSED_EXPECTED_KEY_AUTHORITY": "INDEPENDENT_TRADING_STATUS_AUTHORITY (BaoStock tradestatus preferred; NOT derived from curated daily_bars)",
+  "AUTHORITY_OPTIONS_EVALUATED": {
+    "A_BaoStock_historical_tradestatus": {
+      "available": true,
+      "note": "query_history_k_data_plus tradestatus per (symbol, date); already proven on 300546.SZ both dates; primary candidate"
+    },
+    "B_other_existing_in_repo": {
+      "available": "PARTIAL",
+      "note": "R3 trading_calendar exists but is market-level (not per-symbol trading status); R4A receipt structures exist but are R4-scoped"
+    },
+    "C_exchange_official": {
+      "available": "NOT_PRACTICAL_NOW",
+      "note": "no local exchange trading-status dataset; download-only later"
+    }
+  },
+  "ARCHITECTURE": "SEPARATE_DATA_AUTHORITY_FROM_COVERAGE_AUTHORITY",
+  "ARCHITECTURE_NOTE": "TDX -> canonical active-stock OHLCVA (data authority, unchanged); independent trading-status authority (BaoStock tradestatus) -> expected traded-key coverage validator (coverage authority). Do NOT replace TDX OHLCV with BaoStock merely because BaoStock detects missing dates.",
+  "PROPOSED_COMPLETENESS_GATES": {
+    "EXPECTED_TRADED_KEY_N": "per (symbol, date) expected via independent trading-status authority",
+    "OBSERVED_TRADED_KEY_N": "per (symbol, date) observed in canonical daily_bars",
+    "MISSING_EXPECTED_TRADED_KEY_N": "expected and not observed",
+    "UNEXPECTED_OBSERVED_KEY_N": "observed and not expected",
+    "DUPLICATE_KEY_N": "duplicate (symbol, date) in canonical bars",
+    "DAILY_HISTORY_COMPLETE": "identity exact AND missing_expected==0 AND unexpected==0 AND duplicates==0 AND authority coverage complete; UNKNOWN authority -> false"
+  },
+  "BLAST_RADIUS_PLAN": {
+    "no_full_market_scan": true,
+    "efficiency": [
+      "reuse R4A preclose provider observations as coverage evidence WITHOUT circularity: provider tradestatus rows are independent of curated daily_bars; only the provider-observed (symbol,date,tradestatus) map is used, never the R4A required-key set derived from curated bars",
+      "symbol batching + checkpoint/resume mirroring R4A7 orchestrator",
+      "bounded validation first (e.g. 24-symbol pilot) before full run",
+      "provider fetch cost shared with R4A preclose extraction when runtime allows"
+    ],
+    "reuse_non_circular": true
+  },
+  "REPAIR_AUTHORITY_DECISION": "TARGETED_TDX_REPAIR_ALLOWED",
+  "REPAIR_NOTE": "TDX is healthy and confirms the gap is in TDX historical coverage, not in R3 handling; a targeted single-symbol repair may re-source the two confirmed trading days from a secondary OHLCV authority under a versioned normalizer with explicit provenance, IF Sol authorizes R3 data mutation. NO repair executed in this task.",
+  "SAFETY": {
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false,
+    "FULL_MARKET_REFETCH": "NO"
+  }
+}
