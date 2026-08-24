@@ -1,0 +1,69 @@
+{
+  "BASE_HEAD": "795b1b8f6b688ecc2e94f85c09d80c365e648920",
+  "RUNTIME_HEAD": "795b1b8f6b688ecc2e94f85c09d80c365e648920",
+  "AS_OF": "2026-08-17",
+  "data_root": "/Users/luke808/AI/local-a-share-data-service-data",
+  "staging_root": "/Users/luke808/AI/local-a-share-data-service-data/staging/r4a9-preclose-real-full-extraction-v01",
+  "PREFETCH_TEST_GATE": {
+    "TEST_GATE_EXECUTED_BEFORE_NETWORK": true,
+    "R4A7_TARGETED_TESTS_N": 38,
+    "R4A7_TARGETED_TESTS_PASS": 38,
+    "ADAPTER_TARGETED_TESTS_N": 64,
+    "ADAPTER_TARGETED_TESTS_PASS": 64,
+    "TOTAL_PREFETCH_TESTS_N": 102,
+    "TOTAL_PREFETCH_TESTS_PASS": 102,
+    "PREFETCH_TEST_GATE_STATUS": "PASS"
+  },
+  "provider": {
+    "runtime": "baostock-0.9.3",
+    "api": "query_history_k_data_plus"
+  },
+  "query_contract": {
+    "fields": "date,code,preclose,tradestatus",
+    "frequency": "d",
+    "adjustflag": "3"
+  },
+  "FORMAL_IDENTITY_N": 5456,
+  "FORMAL_IDENTITY_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+  "FULL_SYMBOL_N": 5456,
+  "FULL_SYMBOL_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
+  "FULL_QUERY_WINDOW_N": 60016,
+  "FULL_QUERY_PLAN_HASH": "9773875fbae9494bc1d9477cd18633dbccb92112733d9a1077fc3a43bcc38a60",
+  "RUN_STATUS": "STOPPED_UNIT_FAILED",
+  "COMPLETE_N": 2140,
+  "PENDING_N": 0,
+  "FAILED_N": 1,
+  "EXECUTED_N": 2140,
+  "SKIPPED_N": 0,
+  "NETWORK_PROVIDER_QUERY_COUNT": 23551,
+  "QUERY_COUNT_NOTE": "derived: 2140 COMPLETE x 11 windows = 23540 + 300546.SZ 11 windows fetched before quality-gate failure; latest progress log line was [query 23500/60016 symbols=2137]",
+  "PROVIDER_FETCHED_SYMBOL_N": 2141,
+  "FAILED_UNIT": {
+    "symbol": "300546.SZ",
+    "error": "RuntimeError: unit failed for 300546.SZ: FAILED_QUALITY_GATE",
+    "failed_utc": "2026-08-24T04:50:42.386459+00:00",
+    "stage": "post-fetch normalize/quality gate (provider windows already fetched)"
+  },
+  "EXTENDED_PARTIAL_EVIDENCE": {
+    "COMPLETE_UNITS_ALL_VALID": true,
+    "checked_complete_n": 2140,
+    "invalid_unit_n": 0,
+    "PARTIAL_REQUIRED_ROW_N": 4914227,
+    "PARTIAL_FORMAL_FACT_ROW_N": 4914227,
+    "PARTIAL_PROVIDER_SUSPENDED_SUPERSET_N": 124585,
+    "PARTIAL_FORMAL_FACT_HASH": "9d9c90f87490cf4614c0500c988a65c8ebacdca100c615f3a2a0446c4a836bc0",
+    "partial_note": "computed over the 2140 COMPLETE staged units only; NOT the full 5456 universe"
+  },
+  "NETWORK_PROVIDER_DATA_FETCH": "YES",
+  "CANONICAL_MARKET_DATA_WRITE": "NO",
+  "PRECLOSE_FACTS_WRITE": "NO",
+  "READINESS_MUTATION": "NO",
+  "FULL_EXTRACTION_EXECUTED": true,
+  "R4A9_REAL_FULL_EXTRACTION_PASS": false,
+  "DATA_VALIDATION_REQUIRED": true,
+  "CODE_FIX_REQUIRED": "NOT_CLAIMED",
+  "CODE_FIX_NOTE": "audited code passed all 102 prefetch tests and 2140 real units; the single failure is the quality gate on 300546.SZ provider data. Code defect not demonstrated; data-side validation required. Per task rule: no patch, no silent retry in this task.",
+  "checkpoint_preserved": true,
+  "PRECLOSE_COMPLETE": false,
+  "FULL_MARKET_AUTHORIZED": false
+}
