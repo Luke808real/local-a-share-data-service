@@ -18,6 +18,24 @@ execution_context=REAL (hardened pre-resume authority gate passed)
 FORMAL_IDENTITY_N=5456
 FORMAL_IDENTITY_HASH=2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f
 FULL_SYMBOL_N=5456
+
+## PREFETCH TEST GATE (R4A8.1 receipt closure)
+
+EVIDENCE_SOURCE=ORIGINAL_EXECUTION_LOG
+EVIDENCE_NOTE=recovered from the R4A8 execution session stdout captured
+before the first provider query: the pytest run of the two test files
+(R4A7 + adapter) printed "102 passed" and exited before the smoke runner
+was started; the first network touch (`baostock login success!`) appears
+only later in the same session.
+
+TEST_GATE_EXECUTED_BEFORE_NETWORK=true
+R4A7_TARGETED_TESTS_N=38
+R4A7_TARGETED_TESTS_PASS=38
+ADAPTER_TARGETED_TESTS_N=64
+ADAPTER_TARGETED_TESTS_PASS=64
+TOTAL_PREFETCH_TESTS_N=102
+TOTAL_PREFETCH_TESTS_PASS=102
+PREFETCH_TEST_GATE_STATUS=PASS
 FULL_SYMBOL_HASH=2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f
 FULL_QUERY_WINDOW_N=60016
 FULL_QUERY_PLAN_HASH=9773875fbae9494bc1d9477cd18633dbccb92112733d9a1077fc3a43bcc38a60

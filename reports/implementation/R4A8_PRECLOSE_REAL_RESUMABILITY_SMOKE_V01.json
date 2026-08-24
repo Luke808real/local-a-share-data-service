@@ -13,6 +13,19 @@
     "frequency": "d",
     "adjustflag": "3"
   },
+  "PREFETCH_TEST_GATE": {
+    "EVIDENCE_SOURCE": "ORIGINAL_EXECUTION_LOG",
+    "EVIDENCE_NOTE": "recovered from the R4A8 execution session stdout captured before the first provider query (pytest run of the two test files, '102 passed in 2.82s', followed by frozen-gate prints, then the smoke runner's baostock 'login success!').",
+    "ORDERING_EVIDENCE": "pytest 102 passed output precedes smoke runner output in the same session; no provider call occurs before the test command exits",
+    "TEST_GATE_EXECUTED_BEFORE_NETWORK": true,
+    "R4A7_TARGETED_TESTS_N": 38,
+    "R4A7_TARGETED_TESTS_PASS": 38,
+    "ADAPTER_TARGETED_TESTS_N": 64,
+    "ADAPTER_TARGETED_TESTS_PASS": 64,
+    "TOTAL_PREFETCH_TESTS_N": 102,
+    "TOTAL_PREFETCH_TESTS_PASS": 102,
+    "PREFETCH_TEST_GATE_STATUS": "PASS"
+  },
   "FORMAL_IDENTITY_N": 5456,
   "FORMAL_IDENTITY_HASH": "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f",
   "FULL_SYMBOL_N": 5456,
