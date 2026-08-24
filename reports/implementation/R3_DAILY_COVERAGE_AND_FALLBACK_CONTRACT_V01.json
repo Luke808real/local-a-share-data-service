@@ -1,0 +1,298 @@
+{
+  "BASE_HEAD": "27f813598c09f48caf56b82073cd0b28b9461756",
+  "PILOT_SCOPE": "frozen 24-symbol R4A pilot + 300546.SZ (25 symbols; 275 BaoStock query windows; no full-market scan)",
+  "EXPECTED_KEY_AUTHORITY": "BaoStock historical tradestatus==1 within instrument lifetime / AS_OF (independent of curated bars)",
+  "EXPECTED_KEY_AUTHORITY_DECISION": "BAOSTOCK_TRADESTATUS_AUTHORITY_VALIDATED_BOUNDED",
+  "COVERAGE_COUNTS": {
+    "symbols_with_missing": [
+      "300546.SZ"
+    ],
+    "symbols_with_unexpected": [],
+    "per_symbol": {
+      "300546.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2399,
+        "OBSERVED_TRADED_KEY_N": 2397,
+        "MISSING_EXPECTED_TRADED_KEY_N": 2,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000001.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2580,
+        "OBSERVED_TRADED_KEY_N": 2580,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000002.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2454,
+        "OBSERVED_TRADED_KEY_N": 2454,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000006.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2463,
+        "OBSERVED_TRADED_KEY_N": 2463,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000009.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2580,
+        "OBSERVED_TRADED_KEY_N": 2580,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000049.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2574,
+        "OBSERVED_TRADED_KEY_N": 2574,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000404.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2571,
+        "OBSERVED_TRADED_KEY_N": 2571,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000564.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2406,
+        "OBSERVED_TRADED_KEY_N": 2406,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000615.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2492,
+        "OBSERVED_TRADED_KEY_N": 2492,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000661.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2565,
+        "OBSERVED_TRADED_KEY_N": 2565,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000686.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2574,
+        "OBSERVED_TRADED_KEY_N": 2574,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000728.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2554,
+        "OBSERVED_TRADED_KEY_N": 2554,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000750.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2542,
+        "OBSERVED_TRADED_KEY_N": 2542,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "000797.SZ": {
+        "EXPECTED_TRADED_KEY_N": 2563,
+        "OBSERVED_TRADED_KEY_N": 2563,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600000.SH": {
+        "EXPECTED_TRADED_KEY_N": 2562,
+        "OBSERVED_TRADED_KEY_N": 2562,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600004.SH": {
+        "EXPECTED_TRADED_KEY_N": 2580,
+        "OBSERVED_TRADED_KEY_N": 2580,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600005.SH": {
+        "EXPECTED_TRADED_KEY_N": 186,
+        "OBSERVED_TRADED_KEY_N": 186,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600008.SH": {
+        "EXPECTED_TRADED_KEY_N": 2564,
+        "OBSERVED_TRADED_KEY_N": 2564,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600089.SH": {
+        "EXPECTED_TRADED_KEY_N": 2574,
+        "OBSERVED_TRADED_KEY_N": 2574,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600179.SH": {
+        "EXPECTED_TRADED_KEY_N": 2526,
+        "OBSERVED_TRADED_KEY_N": 2526,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600515.SH": {
+        "EXPECTED_TRADED_KEY_N": 2434,
+        "OBSERVED_TRADED_KEY_N": 2434,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "600580.SH": {
+        "EXPECTED_TRADED_KEY_N": 2567,
+        "OBSERVED_TRADED_KEY_N": 2567,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "603007.SH": {
+        "EXPECTED_TRADED_KEY_N": 2397,
+        "OBSERVED_TRADED_KEY_N": 2397,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "688486.SH": {
+        "EXPECTED_TRADED_KEY_N": 847,
+        "OBSERVED_TRADED_KEY_N": 847,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      },
+      "688489.SH": {
+        "EXPECTED_TRADED_KEY_N": 898,
+        "OBSERVED_TRADED_KEY_N": 898,
+        "MISSING_EXPECTED_TRADED_KEY_N": 0,
+        "UNEXPECTED_OBSERVED_KEY_N": 0,
+        "DUPLICATE_KEY_N": 0
+      }
+    }
+  },
+  "FOCUS_300546": {
+    "EXPECTED_TRADED_KEY_N": 2399,
+    "OBSERVED_TRADED_KEY_N": 2397,
+    "MISSING_EXPECTED_TRADED_KEY_N": 2,
+    "UNEXPECTED_OBSERVED_KEY_N": 0,
+    "DUPLICATE_KEY_N": 0,
+    "missing_keys": [
+      "2016-09-29",
+      "2016-10-10"
+    ]
+  },
+  "DISCREPANCY_CLASSIFICATION": {
+    "300546.SZ/2016-09-29": "R3_REAL_MISSING_BAR (BaoStock tradestatus=1; healthy TDX endpoint absent; staging/curated absent; calendar trading day)",
+    "300546.SZ/2016-10-10": "R3_REAL_MISSING_BAR (same evidence chain)",
+    "other_symbols": "no discrepancies in pilot (24/24 exact match)"
+  },
+  "SECONDARY_OHLCV_300546": {
+    "2016-09-29": {
+      "date": "2016-09-29",
+      "code": "sz.300546",
+      "open": 32.36,
+      "high": 32.36,
+      "low": 32.36,
+      "close": 32.36,
+      "volume": "100",
+      "amount": 3236.0,
+      "tradestatus": "1",
+      "source": "baostock-0.9.3 query_history_k_data_plus d/adjustflag=3"
+    },
+    "2016-10-10": {
+      "date": "2016-10-10",
+      "code": "sz.300546",
+      "open": 39.16,
+      "high": 39.16,
+      "low": 39.16,
+      "close": 39.16,
+      "volume": "100",
+      "amount": 3916.0,
+      "tradestatus": "1",
+      "source": "baostock-0.9.3 query_history_k_data_plus d/adjustflag=3"
+    }
+  },
+  "CROSS_SOURCE_CONSISTENCY": {
+    "2016-09-28": {
+      "TDX_close": 29.42,
+      "BaoStock_close": 29.42,
+      "close_equal": true,
+      "TDX_volume": 11200,
+      "BaoStock_volume": "3700",
+      "amount_equal": true,
+      "amount": 105179.0
+    },
+    "2016-09-30": {
+      "TDX_close": 35.6,
+      "BaoStock_close": 35.6,
+      "close_equal": true,
+      "TDX_volume": 205600,
+      "BaoStock_volume": "1600",
+      "amount_equal": true,
+      "amount": 56960.0
+    },
+    "2016-10-11": {
+      "TDX_close": 43.08,
+      "BaoStock_close": 43.08,
+      "close_equal": true,
+      "TDX_volume": 22400,
+      "BaoStock_volume": "4400",
+      "amount_equal": true,
+      "amount": 189552.0
+    },
+    "note": "close prices exactly equal on all three overlapping dates; amount exactly equal; volume numeric scale differs (unit semantics not interchangeable without explicit contract)"
+  },
+  "FIELD_CONTRACT_CHECK": {
+    "price_fields_semantics": "COMPATIBLE (close equals exactly on overlaps)",
+    "volume_unit": "NOT_SILENTLY_CONVERTIBLE (requires explicit unit contract before fallback write)",
+    "amount_unit": "COMPATIBLE_EQUAL on overlaps (yuan)",
+    "adjustment_semantics": "BaoStock adjustflag=3 unadjusted matches R3 RAW contract",
+    "trade_date_exact": true,
+    "symbol_identity_exact": true,
+    "no_silent_volume_conversion": true
+  },
+  "SECONDARY_OHLCV_SOURCE_DECISION": "BAOSTOCK (validated bounded)",
+  "FALLBACK_CONTRACT_CANDIDATE": {
+    "PRIMARY_OHLCV_SOURCE": "TDX",
+    "SECONDARY_OHLCV_SOURCE": "BAOSTOCK (daily OHLCV query_history_k_data_plus, adjustflag=3, unadjusted)",
+    "fallback_permitted_only_when": [
+      "external expected-key authority (BaoStock tradestatus) says traded",
+      "canonical TDX bar absent",
+      "secondary source row exists",
+      "secondary row passes field/unit/provenance gates (incl. explicit volume-unit contract)",
+      "no conflicting TDX row exists"
+    ],
+    "provenance": "every fallback row carries source=BAOSTOCK, source_version=baostock-0.9.3, explicit volume/amount unit, fetched_at, normalizer_version",
+    "UNKNOWN_means_no_repair": true
+  },
+  "FALLBACK_CONTRACT_DECISION": "CANDIDATE (Sol audit required)",
+  "REPAIR_AUTHORITY_DECISION": "R3_TARGETED_SECONDARY_REPAIR_AUTHORIZED",
+  "REPAIR_NOTE": "Secondary authority (BaoStock) provides both missing rows with tradestatus=1 and OHLCV; close/amount parity proven on three overlapping TDX dates; repair authorized ONLY under a versioned normalizer with explicit volume-unit contract and Sol approval. NO repair executed in this task.",
+  "DAILY_HISTORY_COMPLETE_CANDIDATE": {
+    "DAILY_HISTORY_COMPLETE": "identity exact AND EXPECTED_TRADED_KEY_N == OBSERVED_TRADED_KEY_N AND MISSING_EXPECTED_TRADED_KEY_N == 0 AND UNEXPECTED_OBSERVED_KEY_N == 0 AND DUPLICATE_KEY_N == 0 AND authority coverage complete; UNKNOWN authority -> false",
+    "status": "CANDIDATE (Sol audit required; old R3 frozen state untouched)"
+  },
+  "SAFETY": {
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false,
+    "full_market_scan": "NO"
+  }
+}
