@@ -1,0 +1,102 @@
+{
+  "BASE_HEAD": "487204dde84040cd3532c199f0a42cd3414b6b3d",
+  "TOOL": "tools/audits/r3_tdx_volume_anomaly_audit_v01.py",
+  "HARD_ANOMALY_CONTRACT": {
+    "definition": "positive finite canonical rows; VWAP=amount/volume; HARD_BELOW=VWAP < low*0.5; HARD_ABOVE=VWAP > high*2.0; one-price rows additionally HARD when R=amount/(close*volume) < 0.5 or > 2.0",
+    "rationale": "0.5x/2.0x margins are deliberately huge so float noise, VWAP-vs-close differences, and ordinary rounded bars cannot create false positives; outside-[low,high] rows inside the margins stay SOFT diagnostics"
+  },
+  "FULL_LOCAL_COUNTS": {
+    "TDX_POSITIVE_ROW_N": 10325793,
+    "TDX_HARD_ANOMALY_N": 1110,
+    "TDX_HARD_ANOMALY_SYMBOL_N": 466,
+    "BAOSTOCK_POSITIVE_ROW_N": 384194,
+    "BAOSTOCK_HARD_ANOMALY_N": 0,
+    "by_year": [
+      {"year": 2016, "len": 467},
+      {"year": 2017, "len": 603},
+      {"year": 2018, "len": 29},
+      {"year": 2019, "len": 9},
+      {"year": 2020, "len": 1},
+      {"year": 2025, "len": 1}
+    ],
+    "by_exchange": [
+      {"exchange": "SH", "len": 255},
+      {"exchange": "SZ", "len": 855}
+    ],
+    "top_symbols": [
+      {"symbol": "300560.SZ", "len": 10},
+      {"symbol": "300585.SZ", "len": 8},
+      {"symbol": "300562.SZ", "len": 8},
+      {"symbol": "300700.SZ", "len": 7},
+      {"symbol": "300539.SZ", "len": 7},
+      {"symbol": "300557.SZ", "len": 7},
+      {"symbol": "300546.SZ", "len": 7},
+      {"symbol": "300563.SZ", "len": 7}
+    ]
+  },
+  "LISTING_DISTANCE": {
+    "buckets": {"0-5": 762, "6-20": 342, "21-60": 0, "61-250": 0, ">250": 6, "NO_LIST_DATE": 0},
+    "ratios": {"0-5": 0.686, "6-20": 0.308, "21-60": 0.0, "61-250": 0.0, ">250": 0.005},
+    "IPO_EARLY_PERIOD_CONCENTRATION": "SUPPORTED (99.4% of hard anomalies within 20 days of listing)"
+  },
+  "R3_TDX_VOLUME_AUDIT_V01_ERRATUM": true,
+  "300546_ERRATUM_2016_09_28": "HARD_BELOW (VWAP 9.39 < low 24.52*0.5=12.26)",
+  "300546_ERRATUM_2016_09_30": "HARD_BELOW (VWAP 0.277 < 17.8)",
+  "300546_ERRATUM_2016_10_11": "HARD_BELOW (VWAP 8.46 < 21.54)",
+  "BOUNDED_SAMPLE": {
+    "algorithm": "symbols sorted by hard-anomaly count desc (stable), top 8, plus 300546.SZ; per symbol first 2 anomalous dates ascending; +4 healthy controls by same year/exchange (largest-volume rows)",
+    "selected_keys": [
+      "300539.SZ|2016-08-30", "300539.SZ|2016-09-01",
+      "300546.SZ|2016-09-28", "300546.SZ|2016-09-30",
+      "300557.SZ|2016-11-01", "300557.SZ|2016-11-03",
+      "300560.SZ|2016-11-01", "300560.SZ|2016-11-02",
+      "300562.SZ|2016-11-16", "300562.SZ|2016-11-17",
+      "300563.SZ|2016-11-14", "300563.SZ|2016-11-15",
+      "300585.SZ|2016-12-29", "300585.SZ|2016-12-30",
+      "300700.SZ|2017-09-12", "300700.SZ|2017-09-13"
+    ],
+    "healthy_controls": [
+      "300539.SZ|2025-07-29", "300546.SZ|2025-05-30", "300557.SZ|2025-12-22",
+      "300560.SZ|2025-11-18", "300562.SZ|2024-09-02", "300563.SZ|2024-04-29",
+      "300585.SZ|2023-06-21", "300700.SZ|2024-11-05"
+    ]
+  },
+  "TDX_WIRE_DIAGNOSIS": {
+    "endpoints": [
+      {"host": "120.76.1.198", "port": 7709},
+      {"host": "1.202.143.37", "port": 7709},
+      {"host": "111.203.134.118", "port": 7709}
+    ],
+    "note": "3 independently healthy endpoints; every sample key returned identical native volumes on all 3",
+    "samples": {
+      "300546.SZ|2016-09-30": {"TDX_native_volume_all_endpoints": 2056, "TDX_canonical_volume": 205600, "x100_exact": true, "BAOSTOCK_volume": 1600, "TDX_amount": 56960, "BAOSTOCK_amount": 56960},
+      "300546.SZ|2016-10-11": {"TDX_native_volume_all_endpoints": 224, "TDX_canonical_volume": 22400, "x100_exact": true, "BAOSTOCK_volume": 4400},
+      "300539.SZ|2016-08-30": {"TDX_native_volume_all_endpoints": 176, "TDX_canonical_volume": 17600, "x100_exact": true, "BAOSTOCK_volume": 4100},
+      "300700.SZ|2017-09-12": {"TDX_native_volume_all_endpoints": 384, "TDX_canonical_volume": 38400, "x100_exact": true, "BAOSTOCK_volume": 5400},
+      "300562.SZ|2016-11-16": {"TDX_native_volume_all_endpoints": 272, "TDX_canonical_volume": 27200, "x100_exact": true, "BAOSTOCK_volume": 4700}
+    },
+    "healthy_control_example": {
+      "300539.SZ|2025-07-29": {"TDX_native_volume": 497648, "TDX_canonical_volume": 49764800, "BAOSTOCK_volume": 49764874, "TDX_amount": 1342387840, "BAOSTOCK_amount": 1342387856},
+      "300546.SZ|2025-05-30": {"TDX_native_volume": 826674, "TDX_canonical_volume": 82667400, "BAOSTOCK_volume": 82667426}
+    }
+  },
+  "PER_KEY_CLASSIFICATION": "TDX_VENDOR_HISTORICAL_VOLUME_ANOMALY (all sampled anomalous keys: 3 healthy TDX endpoints agree; TDX native x100 == canonical exactly; TDX amount == BaoStock amount; TDX volume disagrees with BaoStock volume by non-constant factor; BaoStock amount/volume is close-consistent while TDX is not)",
+  "ROOT_CAUSE_CLASSIFICATION": "TDX_VENDOR_HISTORICAL_VOLUME_ANOMALY",
+  "ROOT_CAUSE_DETAIL": "TDX endpoints (3 independently healthy) return identical native volumes; R3 adapter applies x100 exactly (canonical == native*100 in every sample); TDX amount equals BaoStock amount; but TDX volume is internally inconsistent with its own amount (A/V far inside/outside the price range) and disagrees with BaoStock volume by non-constant factors (e.g. 300546 09-30: TDX 205600 vs BS 1600). The defect is in the TDX vendor historical volume field for IPO early-period rows; it is NOT an endpoint inconsistency, NOT a decoder defect, NOT an R3 transform defect.",
+  "R3_TDX_VOLUME_CORRECTNESS_PASS": false,
+  "R3_DAILY_FOUNDATION_CORRECTNESS_PASS": false,
+  "REPAIR_SCOPE_DECISION": "BOUNDED_ANOMALOUS_ROWS_SECONDARY_REPAIR_CANDIDATE",
+  "REPAIR_SCOPE_NOTE": "1110 rows / 466 symbols, 99.4% within 20 days of listing; BaoStock provides close-consistent rows for the anomaly set; a bounded secondary-repair candidate exists but no repair is executed here and Sol approval + versioned normalizer with explicit volume-unit contract remain required.",
+  "STRATEGY_IMPACT": {
+    "affected": ["volume ratios", "shrinkage", "triple-volume", "turnover inputs", "B1/B2 volume features"],
+    "scope": "IPO early-period SH/SZ rows (~1110 canonical rows, 466 symbols)",
+    "research_rerun": false
+  },
+  "SAFETY": {
+    "NETWORK_PROVIDER_DATA_FETCH": "YES_BOUNDED_SAMPLE_ONLY",
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
