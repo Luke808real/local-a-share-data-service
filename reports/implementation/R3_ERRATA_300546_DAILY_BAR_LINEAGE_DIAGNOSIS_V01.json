@@ -1,0 +1,75 @@
+{
+  "REPORT_BASE_HEAD": "d73952360c8e568c045d9cfa61c63c84cd444148",
+  "TARGET": "300546.SZ",
+  "DATES": [
+    "2016-09-29",
+    "2016-10-10"
+  ],
+  "LINEAGE_MATRIX": {
+    "2016-09-29": {
+      "SOURCE_RAW_ROW_PRESENT": "UNKNOWN_RAW_NOT_RETAINED",
+      "STAGING_ROW_PRESENT": false,
+      "CURATED_ROW_PRESENT": false
+    },
+    "2016-10-10": {
+      "SOURCE_RAW_ROW_PRESENT": "UNKNOWN_RAW_NOT_RETAINED",
+      "STAGING_ROW_PRESENT": false,
+      "CURATED_ROW_PRESENT": false
+    }
+  },
+  "ARTIFACT_FINDINGS": {
+    "raw_root": "EMPTY_OR_ABSENT (no raw layer retained)",
+    "staging_runs_inspected": [
+      "3f03bcd0...",
+      "c1be2e5c...",
+      "dd603499...",
+      "fe498fbb..."
+    ],
+    "staging_300546_row_count": "2397 in 3 TDX runs (identical to curated)",
+    "curated_300546_row_count": 2397,
+    "staging_equals_curated_for_missing_dates": true,
+    "evidence": "staging and curated contain identical 2397-row daily series for 300546.SZ with 2016-09-29 and 2016-10-10 absent in BOTH layers"
+  },
+  "TDX_REPRODUCTION": {
+    "attempted": true,
+    "result": "TDX_CALL_FAILED: no TDX server responded with data (probed 16 host(s); network down or all feeds degraded)",
+    "TDX_2016_09_29_PRESENT": "UNKNOWN_NETWORK_UNAVAILABLE",
+    "TDX_2016_10_10_PRESENT": "UNKNOWN_NETWORK_UNAVAILABLE",
+    "note": "bounded single-symbol window 2016-09-28..2016-10-11; cannot currently distinguish TDX historical gap from transient feed unavailability"
+  },
+  "BAOSTOCK_CROSS_CHECK": {
+    "source": "R4A9.1 targeted single-symbol diagnostic (previous task)",
+    "BAOSTOCK_2016_09_29_PRESENT": true,
+    "BAOSTOCK_2016_10_10_PRESENT": true,
+    "bahavior": "tradestatus=1 on both dates; preclose 29.42 and 35.60 exactly equal to R3 previous close",
+    "fields_used": "date,code,preclose,tradestatus (R4A9.1)"
+  },
+  "R3_SIDE": {
+    "instrument_list_date": "2016-09-28",
+    "first_r3_bar": "2016-09-28",
+    "last_r3_bar": "2026-08-17",
+    "required_key_count": 2397,
+    "2016_09_29_in_trading_calendar": true,
+    "2016_10_10_in_trading_calendar": true,
+    "2016_09_29_in_required_keys": false,
+    "2016_10_10_in_required_keys": false
+  },
+  "ROOT_CAUSE_CLASSIFICATION": "TDX_SOURCE_HISTORICAL_GAP (with UNKNOWN network qualifier)",
+  "ROOT_CAUSE_DETAIL": "Staging and curated are identical for 300546.SZ: both lack 2016-09-29 and 2016-10-10. Because staging is the normalized TDX fetch output, the missing rows were already absent from the TDX response at ingestion time - not dropped by a merge/recovery defect. Live TDX reproduction is currently blocked by network unavailability (16/16 hosts failed), so the historical-vs-transient distinction stays UNKNOWN; classification is therefore TDX_SOURCE_HISTORICAL_GAP qualified by TDX_NETWORK_UNAVAILABLE.",
+  "R3_COMPLETENESS_GATE_BLIND_SPOT": true,
+  "BLIND_SPOT_EXPLANATION": "R3's required-key universe is derived from the observed curated daily_bars itself (load_required_keys reads curated daily_bars), making the missing_required gate circular: a day absent from curated bars is automatically absent from the required set, so the gate cannot detect a hole in the source data. The R3 trading calendar and G_coverage delisted survivorship gate do not cross-check per-symbol traded-day presence against an external trading-status authority.",
+  "REPAIR_AUTHORITY_DECISION": "NO_REPAIR_YET",
+  "REPAIR_NOTE": "TDX live reproduction blocked (network); BaoStock confirms both dates are trading days with tradestatus=1, but OHLCV for these two rows has not been obtained from any authority yet. Options A/B require a live TDX or secondary OHLCV validation first; evidence remains incomplete => NO_REPAIR_YET.",
+  "R4A9_1_ERRATUM": {
+    "R4A9_1_ERRATUM_RECORDED": true,
+    "CORRECTION": "R4A9.1 '294 missing bars' -> '2 missing bars' (2016-09-29, 2016-10-10)",
+    "note": "errata recorded in this report; R4A9.1 history is not silently rewritten"
+  },
+  "SAFETY": {
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "CANONICAL_MARKET_DATA_WRITE": "NO",
+    "PRECLOSE_COMPLETE": false
+  }
+}
