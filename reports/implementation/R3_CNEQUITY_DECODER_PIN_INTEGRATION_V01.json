@@ -1,0 +1,79 @@
+{
+  "BASE_HEAD": "29d90638ee35fb5d6fea1a06169852c14306f3ee",
+  "OLD_CNEQUITY_PIN": "rootSunc/CNEquity@a18ee0484dfb0801650175471724def3228b8a17",
+  "NEW_CNEQUITY_PIN": "Luke808real/CNEquity@ecf57023d57dcf925e9da3aa0e023492abb1221d",
+  "CNEQUITY_RUNTIME_COMMIT": "ecf57023d57dcf925e9da3aa0e023492abb1221d",
+  "CNEQUITY_RUNTIME_SOURCE": ".venv/lib/python3.12/site-packages/cnequity (direct_url.json: url=https://github.com/Luke808real/CNEquity.git commit_id=ecf57023...)",
+  "LOCKFILE_AUTHORITY": {
+    "repository": "Luke808real/CNEquity",
+    "commit": "ecf57023d57dcf925e9da3aa0e023492abb1221d",
+    "no_rootSunc_a18ee_residual": true
+  },
+  "DECODER_CONTRACT_PROOF": {
+    "category_9": {
+      "0x41800000": 16.0,
+      "0x3f800000": 1.0,
+      "0x42300000": 44.0,
+      "0x4949d320": 826674.0
+    },
+    "non_daily_categories_0_1_2_3_8": "0x41800000 -> 2056.0 (BASE packed get_volume)"
+  },
+  "TARGETED_TESTS": {
+    "service_targeted": "118 passed (preclose adapter + orchestrator + audit tools)",
+    "r3_daily_foundation_3_failures": "RUNTIME_CONTRACT_DRIFT: r3_daily.PINNED_CNEQUITY_SHA still a18ee048 (hardcoded); expected pin-contract mismatch; NOT patched per NO production source changes; requires Sol to authorize PINNED_CNEQUITY_SHA update",
+    "project_docs_contract_1_failure": "pre-existing AS_OF mismatch (unrelated)"
+  },
+  "300546_FIXED_ROWS": {
+    "2016-09-28": {
+      "volume_shares": 3700,
+      "amount": 105179,
+      "expected": 3700,
+      "match": true
+    },
+    "2016-09-29": {
+      "volume_shares": 100,
+      "amount": 3236,
+      "expected": 100,
+      "match": true
+    },
+    "2016-09-30": {
+      "volume_shares": 1600,
+      "amount": 56960,
+      "expected": 1600,
+      "match": true
+    },
+    "2016-10-10": {
+      "volume_shares": 100,
+      "amount": 3916,
+      "expected": 100,
+      "match": true
+    },
+    "2016-10-11": {
+      "volume_shares": 4400,
+      "amount": 189552,
+      "expected": 4400,
+      "match": true
+    },
+    "HARD_ANOMALY_ALL_CLEARED": true,
+    "VWAP_within_OHLC_all": true
+  },
+  "NON_DAILY_CATEGORY_PARITY": true,
+  "CANONICAL_UNIT": "R3_CANONICAL_VOLUME_UNIT=shares; daily native lots x100 -> canonical shares (retained adapter semantics)",
+  "REBUILD_FEASIBILITY_READ_ONLY": {
+    "REBUILD_FROM_EXISTING_RAW_POSSIBLE": false,
+    "REBUILD_FROM_EXISTING_STAGING_POSSIBLE": false,
+    "NETWORK_REFETCH_REQUIRED": true,
+    "raw_wire_quantity": "NOT RETAINED (raw/ is empty (0 files))",
+    "decoded_tdx_quantity": "RETAINED INCORRECT in staging (e.g. 300546 09-30 volume=205600 = packed-decode x100) and curated (same)",
+    "canonical_shares": "RETAINED INCORRECT (curated carries the same inflated values)",
+    "note": "no retained layer contains correct float32-decoded quantities or raw bytes; rebuild requires network refetch (or another provider authority)"
+  },
+  "300546_MISSING_DAYS_2016_09_29_2016_10_10": "fixed provider path returns both rows; insertion NOT performed (separate authority decision)",
+  "SAFETY": {
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R3_DATA_REBUILD_EXECUTED": false,
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}

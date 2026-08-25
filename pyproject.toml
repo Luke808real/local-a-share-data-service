@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Local A-share market facts service runtime"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "cnequity @ git+https://github.com/rootSunc/CNEquity.git@a18ee0484dfb0801650175471724def3228b8a17",
+    "cnequity @ git+https://github.com/Luke808real/CNEquity.git@ecf57023d57dcf925e9da3aa0e023492abb1221d",
 ]
 
 [dependency-groups]

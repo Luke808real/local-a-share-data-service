@@ -97,7 +97,7 @@ wheels = [
 [[package]]
 name = "cnequity"
 version = "0.7.2"
-source = { git = "https://github.com/rootSunc/CNEquity.git?rev=a18ee0484dfb0801650175471724def3228b8a17#a18ee0484dfb0801650175471724def3228b8a17" }
+source = { git = "https://github.com/Luke808real/CNEquity.git?rev=ecf57023d57dcf925e9da3aa0e023492abb1221d#ecf57023d57dcf925e9da3aa0e023492abb1221d" }
 dependencies = [
     { name = "baostock" },
     { name = "click" },
@@ -256,7 +256,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "cnequity", git = "https://github.com/rootSunc/CNEquity.git?rev=a18ee0484dfb0801650175471724def3228b8a17" }]
+requires-dist = [{ name = "cnequity", git = "https://github.com/Luke808real/CNEquity.git?rev=ecf57023d57dcf925e9da3aa0e023492abb1221d" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = "==8.4.2" }]
