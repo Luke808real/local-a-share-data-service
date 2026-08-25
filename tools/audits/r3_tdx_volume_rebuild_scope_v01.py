@@ -1,37 +1,94 @@
 #!/usr/bin/env python3
-"""R3 TDX volume rebuild-scope offline classifier (research-only, V01).
+"""R3 TDX volume rebuild-scope offline classifier (research-only, V01.1).
 
 Classifies every existing canonical TDX security daily volume row into
 PROVABLY_UNAFFECTED / PROVABLY_AFFECTED / AMBIGUOUS using ONLY the retained
 decoded value (canonical = int(old_get_volume(raw))*100), with no raw wire
 bytes and no network.
 
-Decoder-divergence mathematics (established offline):
-  OLD = vendored packed get_volume(raw); NEW = IEEE-754 float32(raw).
-  - Normal band (quantities >= 2^8 = 256 lots, lp >= 0x43): int(OLD) ==
-    int(NEW) for every raw. The normal band is dense in integers >= 256, so
-    every integer value >= 256 has a normal-band pre-image with IEEE ==
-    old_int.
-  - Divergence band 0x3c..0x42: a full 24-bit mantissa pre-image table maps
-    old_int -> set of int(NEW) values for raws in this band only.
+V01.1 corrections (Sol audit blockers closed)
+============================================
 
-  Classification of canonical old_int (canonical = old_int * 100):
-    old_int >= 256 and absent from divergence table
-      -> PROVABLY_UNAFFECTED (normal band only; IEEE == old_int)
-    present in divergence table with >1 candidate
-      -> AMBIGUOUS (both a normal-band and an anomalous-band raw exist)
-    present with unique candidate == old_int
-      -> PROVABLY_UNAFFECTED (all paths agree)
-    present with unique candidate != old_int and old_int >= 256
-      -> AMBIGUOUS (normal band also produces old_int with IEEE == old_int,
-         so the retained value alone cannot distinguish the two raws)
-    present with unique candidate != old_int and old_int < 256
-      -> PROVABLY_AFFECTED (the only producing band is anomalous; corrected
-         value is the unique candidate)
-    absent and old_int < 256
-      -> AMBIGUOUS (unproven; never demoted to unaffected)
+A. Normal band floor corrected from 256 to 128 (re-proven, not handwaved):
+   lp >= 0x43 implies old_get_volume(raw) == IEEE-754 float32(raw) EXACTLY
+   (derivation below), and lp=0x43 starts at 0x43000000 = 128.0 lots.  The
+   integer preimages 128..255 therefore also have a normal-band raw with
+   IEEE == old_int, so they can never be PROVABLY_AFFECTED.
 
-UNKNOWN/AMBIGUOUS is never treated as unaffected.
+B. Candidate-set classification only.  Economic plausibility (amount VWAP
+   vs [low, high]) is never allowed to change a mathematical class.  It is
+   reported only as SUPPORTING_DIAGNOSTIC.
+
+C. TDX_AMOUNT_GLOBAL_CORRECTNESS is UNPROVEN: retained amount is the full-
+   precision float64 output of the SAME old get_volume() path and no raw
+   amount bytes are retained, so the decoder path of historical amount
+   cannot be proven from retained data alone.
+
+D. The rebuild decision never returns OFFLINE_DETERMINISTIC_REBUILD_POSSIBLE
+   while AMBIGUOUS_N > 0.
+
+Valid raw domain (formal)
+=========================
+
+Canonical volume = int(old_get_volume(raw)) * 100 shares (pinned
+``lots_to_shares``).  Minimum positive volume is 1 share, therefore the
+minimum positive native quantity is 0.01 lots.  The wire raw is the IEEE-754
+float32 encoding of that native quantity, rounded to nearest; rounding is
+monotone, so every valid positive raw satisfies
+
+    ieee754_float32(raw) >= RN(0.01)   (RN = round-to-nearest float32)
+
+which is exactly 0x3C23D70A = 0.009999999776482582.  Any raw below that is
+strictly less than 1 share and cannot be the encoding of a positive integer
+share volume; in particular every lp < 0x3C is excluded (its IEEE value is
+below 2^-7 lots = 0.78125 shares).
+
+Decoder equality theorem
+========================
+
+For every raw with lp = byte 3 >= 0x43:
+
+- dw_edx = 2*lp - 0x86 >= 0, so the reciprocal branch of get_volume is never
+  taken;
+- hleax <= 0x7F:  old = 2^(2lp-0x7F) * (1 + hleax/2^7 + lheax/2^15 +
+  lleax/2^23) == IEEE (b23 = 0);
+- hleax == 0x80:  old = 2^(2lp-0x7E) * (1 + lheax/2^15 + lleax/2^23) == IEEE
+  (b23 = 1, mantissa zero high bit);
+- hleax >= 0x81:  old = 2^(2lp-0x7F) * (2 + (hleax&0x7F)/2^6 + lheax/2^14 +
+  lleax/2^21) == IEEE (b23 = 1).
+
+Hence int(OLD) == int(NEW) for every raw with lp >= 0x43 (verified
+exhaustively for lp 0x43..0x47 in V01; the equality above is exact for all
+lp >= 0x43 and also exhaustively verified over the full working range
+0x43..0x4D in the V01.1 scan).
+
+The divergence band is exactly lp in 0x3C..0x42, enumerated over the full
+24-bit mantissa in the preimage tables below.
+
+Complete preimage model
+=======================
+
+For a retained old_int k the candidate set over the COMPLETE valid raw
+domain is:
+
+- every anomaly-band raw (lp 0x3C..0x42, valid domain) with
+  int(old(raw)) == k contributes corrected candidate int(ieee(raw));
+- if k >= 128, the normal band (lp >= 0x43) is dense in [k, k+1) subject to
+  float32 representability: a raw v exists with int(v) == k iff the integer
+  k is representable (k < 2^24, or k % 2^(bit_length(k)-1-23) == 0); every
+  such raw is a candidate with corrected value exactly k.
+
+Classification (pure candidate-set, no plausibility override):
+
+- PROVABLY_UNAFFECTED: every valid candidate yields the retained k.
+- PROVABLY_AFFECTED: every valid candidate yields the same corrected value
+  c != k.
+- AMBIGUOUS: the candidate set is empty (model gap -> fail closed) or
+  contains more than one distinct value.
+
+V01 legacy implementation is kept (table built without the domain filter,
+floor 256, amount-VWAP row override) solely to diff V01 vs V01.1
+classifications per row.
 """
 
 from __future__ import annotations
@@ -39,6 +96,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -46,86 +104,201 @@ from typing import Any
 import polars as pl
 from cnequity.adapters.tdx_protocol._wire.helper import get_volume
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from r3_tdx_volume_anomaly_audit_v01 import hard_anomaly_mask  # noqa: E402
+
 DATA_ROOT_DEFAULT = Path("/Users/luke808/AI/local-a-share-data-service-data")
+
+SHARES_PER_LOT = 100
+MIN_POSITIVE_VOLUME_SHARES = 1
+MIN_POSITIVE_NATIVE_LOTS = MIN_POSITIVE_VOLUME_SHARES / SHARES_PER_LOT  # 0.01
+
+# IEEE-754 float32 round-to-nearest of 0.01 lots (the smallest stored value
+# that can encode a positive integer share volume).
+_VALID_MIN_RAW = struct.unpack("<I", struct.pack("<f", MIN_POSITIVE_NATIVE_LOTS))[0]
+VALID_MIN_QUANTITY = struct.unpack("<f", struct.pack("<f", MIN_POSITIVE_NATIVE_LOTS))[0]
+
+DIVERGENCE_LP_MIN = 0x3C
+DIVERGENCE_LP_MAX = 0x42
+NORMAL_BAND_MIN_LP = 0x43
+NORMAL_BAND_FLOOR = 128  # 2**7: 0x43000000 == 128.0 lots, re-proven boundary
+MAX_REAL_LP = 0x7F  # complete positive-finite float32 high-byte ceiling
 
 
 def ieee754_float32(raw: int) -> float:
     return struct.unpack("<f", struct.pack("<I", raw & 0xFFFFFFFF))[0]
 
 
-# Divergence bands (established offline): full mantissa enumeration of these
-# bands is tractable; higher bands are provably unaffected.
-DIVERGENCE_BANDS = range(0x3C, 0x43)
-NORMAL_BAND_MIN_LP = 0x43
-MAX_REAL_LP = 0x5A  # safety ceiling for the normal-band preimage scan
-NORMAL_BAND_FLOOR = 256  # 2**8: smallest quantity in the normal band
+def is_valid_quantity_raw(raw: int) -> bool:
+    """Valid positive stock daily-volume raw domain: ieee >= RN(0.01 lots)."""
+    return ieee754_float32(raw) >= VALID_MIN_QUANTITY
 
 
-def _build_preimage_table() -> dict[int, set[int]]:
-    """old_int -> set(int(ieee754(raw))) over full mantissa, divergence bands."""
-    table: dict[int, set[int]] = defaultdict(set)
-    for lp in DIVERGENCE_BANDS:
+def valid_raw_domain_bounds() -> dict[str, Any]:
+    """Formal domain proof bundle (no handwave)."""
+    return {
+        "MIN_POSITIVE_VOLUME_SHARES": MIN_POSITIVE_VOLUME_SHARES,
+        "MIN_POSITIVE_NATIVE_LOTS": MIN_POSITIVE_NATIVE_LOTS,
+        "VALID_MIN_QUANTITY_LOTS": VALID_MIN_QUANTITY,
+        "VALID_MIN_RAW_HEX": f"0x{_VALID_MIN_RAW:08X}",
+        "LP_RANGE": [f"0x{DIVERGENCE_LP_MIN:02X}", f"0x{MAX_REAL_LP:02X}"],
+        "LP_BELOW_3C_EXCLUDED": (
+            "every lp < 0x3C decodes to an IEEE value below 2^-7 lots "
+            "(0.78125 shares) < 1 share; rounding is monotone so no "
+            "positive integer share volume can be encoded there"
+        ),
+        "NORMAL_BAND_FLOOR": NORMAL_BAND_FLOOR,
+        "NORMAL_BAND_FLOOR_PROOF": (
+            "lp >= 0x43 => old == IEEE exactly (theorem in module docstring); "
+            "lp = 0x43 begins at 0x43000000 = 128.0 lots = 2^7, hence integer "
+            "preimages 128..255 also have a normal-band raw with IEEE == old_int"
+        ),
+    }
+
+
+def normal_band_raw_candidate(old_int: int) -> int | None:
+    """An explicit normal-band raw whose IEEE value int-truncates to old_int.
+
+    For representable old_int >= 128 the exact float32 encoding of the
+    integer is itself a normal-band raw (its exponent >= 134, lp >= 0x43):
+    128 -> 0x43000000, 156 -> 0x431C0000, 208 -> 0x43500000,
+    255 -> 0x437F0000, 256 -> 0x43800000.
+    """
+    if old_int < NORMAL_BAND_FLOOR or not _float32_int_reachable(old_int):
+        return None
+    return struct.unpack("<I", struct.pack("<f", float(old_int)))[0]
+
+
+def _float32_int_reachable(k: int) -> bool:
+    """Is there any float32 v with int(v) == k (v in [k, k+1) intersect f32)?"""
+    if k <= 0:
+        return False
+    if k < 1 << 24:
+        return True  # every integer < 2^24 is exactly representable (v == k)
+    e = k.bit_length() - 1
+    t = (k & -k).bit_length() - 1  # trailing zero count
+    return (e - t) <= 23
+
+
+def normal_candidate_exists(old_int: int) -> bool:
+    return old_int >= NORMAL_BAND_FLOOR and _float32_int_reachable(old_int)
+
+
+def _build_preimage_tables() -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    """old_int -> set(int(ieee(raw))) over full mantissa, divergence band.
+
+    Returns (domain-filtered table, V01-legacy unfiltered table) built in a
+    single enumeration.
+    """
+    table_domain: dict[int, set[int]] = defaultdict(set)
+    table_full: dict[int, set[int]] = defaultdict(set)
+    for lp in range(DIVERGENCE_LP_MIN, DIVERGENCE_LP_MAX + 1):
+        base = lp << 24
         for m in range(0x1000000):
-            raw = (lp << 24) | m
+            raw = base | m
             o = int(get_volume(raw))
-            n = int(ieee754_float32(raw))
             if o <= 0:
                 continue
-            table[o].add(n)
-    return dict(table)
+            n = int(ieee754_float32(raw))
+            table_full[o].add(n)
+            if is_valid_quantity_raw(raw):
+                table_domain[o].add(n)
+    return dict(table_domain), dict(table_full)
 
 
-_TABLE: dict[int, set[int]] | None = None
+_TABLES: tuple[dict[int, set[int]], dict[int, set[int]]] | None = None
 
 
-def _table() -> dict[int, set[int]]:
-    global _TABLE
-    if _TABLE is None:
-        _TABLE = _build_preimage_table()
-    return _TABLE
+def _tables() -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    global _TABLES
+    if _TABLES is None:
+        _TABLES = _build_preimage_tables()
+    return _TABLES
+
+
+def divide_into_candidates(
+    old_int: int, anomaly_cands: set[int] | None = None
+) -> tuple[str, int | None]:
+    """Pure candidate-set classification.
+
+    anomaly_cands: the divergence-band candidate set for old_int (already
+    domain-filtered).  None -> global table is consulted.
+    """
+    if anomaly_cands is None:
+        anomaly_cands = _tables()[0].get(old_int, set())
+    cands: set[int] = set(anomaly_cands)
+    if normal_candidate_exists(old_int):
+        cands.add(old_int)
+    if not cands:
+        # Model gap: retained row must have had some raw; fail closed rather
+        # than guess.
+        return "AMBIGUOUS", None
+    if all(c == old_int for c in cands):
+        return "PROVABLY_UNAFFECTED", old_int
+    if len(cands) == 1:
+        (val,) = cands
+        if val != old_int:
+            return "PROVABLY_AFFECTED", val
+    return "AMBIGUOUS", None
 
 
 def classify_old_int(old_int: int) -> tuple[str, int | None]:
-    """Pure classification of one canonical//100 value."""
-    table = _table()
-    if old_int in table:
-        cands = table[old_int]
+    """V01.1 pure classification of one canonical//100 value."""
+    return divide_into_candidates(old_int)
+
+
+def classify_old_int_v01(old_int: int) -> tuple[str, int | None]:
+    """V01 legacy math classification (floor 256, unfiltered divergence table)."""
+    return classify_old_int_v01_with(old_int, _tables()[1].get(old_int, set()))
+
+
+def classify_old_int_v01_with(
+    old_int: int, anomaly_cands: set[int]
+) -> tuple[str, int | None]:
+    """V01 legacy math classification with an explicit candidate set (tests)."""
+    if anomaly_cands:
+        cands = anomaly_cands
         if len(cands) == 1:
             (val,) = cands
             if val == old_int:
                 return "PROVABLY_UNAFFECTED", val
-            if old_int < NORMAL_BAND_FLOOR:
+            if old_int < 256:
                 return "PROVABLY_AFFECTED", val
             return "AMBIGUOUS", None
         return "AMBIGUOUS", None
-    if old_int >= NORMAL_BAND_FLOOR:
+    if old_int >= 256:
         return "PROVABLY_UNAFFECTED", old_int
     return "AMBIGUOUS", None
 
 
-def classify_row(
+def classify_row_v01(
     *,
     old_int: int,
     amount: float,
     low: float,
     high: float,
 ) -> tuple[str, int | None]:
-    """Row-level classification with amount VWAP cross-validation.
+    """V01 legacy ROW classification, including the removed amount-VWAP
+    override.  Kept only to diff V01 vs V01.1 per row."""
+    cls, corr = classify_old_int_v01(old_int)
+    return _row_v01_apply_vwap(cls, corr, old_int, amount, low, high)
 
-    A PROVABLY_AFFECTED candidate is accepted only when the OLD canonical VWAP
-    (amount / (old_int*100)) is OUTSIDE [low, high] AND the corrected VWAP
-    (amount / (corrected*100)) falls INSIDE [low, high]. If the old VWAP is
-    already inside the price range, the economic evidence contradicts the
-    anomalous-path hypothesis (the old value is self-consistent) so the row is
-    treated as unaffected regardless of the decoder table.
-    """
-    old_vwap = amount / (old_int * 100)
-    old_plausible = low <= old_vwap <= high
-    cls, corr = classify_old_int(old_int)
+
+def _row_v01_apply_vwap(
+    cls: str,
+    corr: int | None,
+    old_int: int,
+    amount: float,
+    low: float,
+    high: float,
+) -> tuple[str, int | None]:
+    """Shared V01 row-level amount-VWAP override (legacy, kept for diff)."""
     if cls == "PROVABLY_AFFECTED":
+        old_vwap = amount / (old_int * SHARES_PER_LOT)
+        old_plausible = low <= old_vwap <= high
         if old_plausible:
             return "PROVABLY_UNAFFECTED", old_int
-        corr_vwap = amount / (corr * 100)
+        corr_vwap = amount / (corr * SHARES_PER_LOT)
         if low <= corr_vwap <= high:
             return "PROVABLY_AFFECTED", corr
         return "AMBIGUOUS", None
@@ -134,13 +307,55 @@ def classify_row(
     return cls, None
 
 
-def _normal_band_has_value(old_int: int) -> bool:
-    """Can some lp>=0x43 raw produce int(old)==old_int with int(ieee)==old_int?"""
-    # All lp>=0x43 raws have int(old)==int(ieee) (verified offline, coarse+full).
-    # Simply ask whether the value is in the achievable range of the band.
-    lo = 256  # lp=0x43 with hleax=0 -> 2**8
-    hi = 2**60  # far above any real daily giant; capped envelope
-    return lo <= old_int <= hi
+def classify_row_v01_with(
+    *,
+    old_int: int,
+    amount: float,
+    low: float,
+    high: float,
+    anomaly_cands: set[int],
+) -> tuple[str, int | None]:
+    """V01 legacy ROW classification with an explicit candidate set (tests)."""
+    cls, corr = classify_old_int_v01_with(old_int, anomaly_cands)
+    return _row_v01_apply_vwap(cls, corr, old_int, amount, low, high)
+
+
+def amount_supporting_diagnostic(
+    *,
+    old_int: int,
+    corrected: int | None,
+    amount: float,
+    low: float,
+    high: float,
+) -> dict[str, Any]:
+    """Non-classifying amount/OHLC diagnostic (SUPPORTING_DIAGNOSTIC only)."""
+    diag: dict[str, Any] = {
+        "RETAINED_VWAP": amount / (old_int * SHARES_PER_LOT),
+        "RETAINED_VWAP_IN_RANGE": low <= amount / (old_int * SHARES_PER_LOT) <= high,
+    }
+    if corrected is not None and corrected > 0:
+        corr_vwap = amount / (corrected * SHARES_PER_LOT)
+        diag["CORRECTED_VWAP"] = corr_vwap
+        diag["CORRECTED_VWAP_IN_RANGE"] = low <= corr_vwap <= high
+    else:
+        diag["CORRECTED_VWAP"] = None
+        diag["CORRECTED_VWAP_IN_RANGE"] = None
+    return diag
+
+
+def amount_global_correctness() -> dict[str, Any]:
+    """Historical TDX daily amount decoder-path gate (offline, no raw bytes)."""
+    return {
+        "TDX_AMOUNT_GLOBAL_CORRECTNESS": "UNPROVEN",
+        "note": (
+            "retained amount is the untruncated float64 output of the SAME "
+            "old get_volume() decoder on raw amount bytes that are not "
+            "retained; without raw bytes the amount decoder path cannot be "
+            "proven correct or defective from retained data alone.  Amount "
+            "and OHLC are reported only as SUPPORTING_DIAGNOSTIC and never "
+            "change AMBIGUOUS -> UNAFFECTED / AFFECTED."
+        ),
+    }
 
 
 def scan_canonical(data_root: Path) -> dict[str, Any]:
@@ -150,68 +365,218 @@ def scan_canonical(data_root: Path) -> dict[str, Any]:
         & (pl.col("volume") > 0)
         & pl.col("volume").is_finite()
     )
-    affected: dict[str, Any] = {
-        "n": 0,
-        "symbols": set(),
-        "by_year": defaultdict(int),
-        "by_exchange": defaultdict(int),
-        "by_days_from_listing": defaultdict(int),
-    }
-    unaffected_n = 0
-    ambiguous_n = 0
-    corrected_map: dict[int, int] = {}
-    _table()
-    instr = pl.read_parquet(data_root / "curated/instruments/part-merged.parquet")
-    list_map = {
-        str(r["symbol"]): r["list_date"]
-        for r in instr.select(["symbol", "list_date"]).iter_rows(named=True)
-    }
-    for row in tdx.iter_rows(named=True):
-        vol = float(row["volume"])
-        old_int = int(round(vol / 100))
-        cls, corrected = classify_row(
-            old_int=old_int,
-            amount=float(row["amount"]),
-            low=float(row["low"]),
-            high=float(row["high"]),
+    rem = tdx.with_columns((pl.col("volume") % SHARES_PER_LOT).alias("rem"))
+    non_lot_multiple = int(rem.filter(pl.col("rem") != 0).height)
+    if non_lot_multiple:
+        raise AssertionError(
+            f"{non_lot_multiple} tdx rows not divisible by {SHARES_PER_LOT}"
         )
+
+    tables = _tables()
+
+    # HARD set from the frozen V01 anomaly contract (amount>0 + finite OHLC).
+    hard_input = tdx.filter(
+        (pl.col("amount") > 0)
+        & pl.col("open").is_finite()
+        & pl.col("high").is_finite()
+        & pl.col("low").is_finite()
+        & pl.col("close").is_finite()
+        & pl.col("amount").is_finite()
+    )
+    hard_df = hard_input.with_columns(hard_anomaly_mask(hard_input).alias("hard"))
+
+    hard_keys = {
+        (str(r["symbol"]), r["trade_date"])
+        for r in hard_df.filter(pl.col("hard")).select(["symbol", "trade_date"])
+        .iter_rows(named=True)
+    }
+
+    counts = {
+        "PROVABLY_AFFECTED": 0,
+        "PROVABLY_UNAFFECTED": 0,
+        "AMBIGUOUS": 0,
+    }
+    affected_symbols: set[str] = set()
+    ambiguous_symbols: set[str] = set()
+    affected_keys: list[tuple[str, Any]] = []
+    ambiguous_keys: list[tuple[str, Any]] = []
+    corrected_map: dict[int, int] = {}
+    transitions: dict[tuple[str, str], int] = defaultdict(int)
+    vwap_override_unaffected_n = 0
+    floor128_affected_n = 0
+    supporting = {"affected_corrected_vwap_in_range_n": 0, "affected_n_with_diag": 0}
+    hard_affected = 0
+    hard_ambiguous = 0
+    hard_unaffected = 0
+
+    for row in tdx.iter_rows(named=True):
+        symbol = str(row["symbol"])
+        trade_date = row["trade_date"]
+        old_int = int(row["volume"]) // SHARES_PER_LOT
+        amount = float(row["amount"])
+        low = float(row["low"])
+        high = float(row["high"])
+
+        cls, corr = divide_into_candidates(old_int)
+        v01_cls, v01_corr = classify_row_v01(
+            old_int=old_int, amount=amount, low=low, high=high
+        )
+        transitions[(v01_cls, cls)] += 1
+
+        if v01_cls != cls:
+            # attribute the change for the report
+            if v01_cls == "PROVABLY_AFFECTED" and cls == "AMBIGUOUS":
+                if NORMAL_BAND_FLOOR <= old_int <= 255:
+                    floor128_affected_n += 1
+            if v01_cls == "PROVABLY_UNAFFECTED" and cls != "PROVABLY_UNAFFECTED":
+                vwap_override_unaffected_n += 1
+
+        counts[cls] += 1
         if cls == "PROVABLY_AFFECTED":
-            affected["n"] += 1
-            affected["symbols"].add(row["symbol"])
-            affected["by_year"][row["trade_date"].year] += 1
-            ex = "SH" if row["symbol"].endswith(".SH") else "SZ"
-            affected["by_exchange"][ex] += 1
-            ld = list_map.get(row["symbol"])
-            if ld is not None:
-                days = (row["trade_date"] - ld).days
-                b = (
-                    "0-5"
-                    if days <= 5
-                    else "6-20"
-                    if days <= 20
-                    else "21-60"
-                    if days <= 60
-                    else "61-250"
-                    if days <= 250
-                    else ">250"
-                )
-                affected["by_days_from_listing"][b] += 1
-            corrected_map[old_int] = corrected
-        elif cls == "PROVABLY_UNAFFECTED":
-            unaffected_n += 1
-        else:
-            ambiguous_n += 1
+            affected_symbols.add(symbol)
+            affected_keys.append((symbol, trade_date))
+            corrected_map[old_int] = corr
+            d = amount_supporting_diagnostic(
+                old_int=old_int, corrected=corr, amount=amount, low=low, high=high
+            )
+            if d.get("CORRECTED_VWAP_IN_RANGE"):
+                supporting["affected_corrected_vwap_in_range_n"] += 1
+            supporting["affected_n_with_diag"] += 1
+        elif cls == "AMBIGUOUS":
+            ambiguous_symbols.add(symbol)
+            ambiguous_keys.append((symbol, trade_date))
+
+        key = (symbol, trade_date)
+        if key in hard_keys:
+            if cls == "PROVABLY_AFFECTED":
+                hard_affected += 1
+            elif cls == "AMBIGUOUS":
+                hard_ambiguous += 1
+            else:
+                hard_unaffected += 1
+
+    total = sum(counts.values())
+    assert total == int(tdx.height), (total, tdx.height)
+
+    def _span(keys: list[tuple[str, Any]], sample: int = 20) -> dict[str, Any]:
+        by_sym: dict[str, list[Any]] = defaultdict(list)
+        for sym, d in keys:
+            by_sym[sym].append(d)
+        spans = {
+            s: (max(v) - min(v)).days
+            for s, v in by_sym.items()
+        }
+        span_stats: dict[str, Any] = {"SYMBOL_N": len(spans), "KEY_N": len(keys)}
+        if spans:
+            ordered = sorted(spans.values())
+            n = len(ordered)
+            span_stats["MIN_DAYS"] = ordered[0]
+            span_stats["MEDIAN_DAYS"] = ordered[n // 2]
+            span_stats["MAX_DAYS"] = ordered[-1]
+            span_stats["SAMPLE"] = [
+                {"SYMBOL": s, "KEY_N": len(v)}
+                for s, v in sorted(by_sym.items())[:sample]
+            ]
+        return {
+            "KEY_N": len(keys),
+            "SYMBOL_N": len(by_sym),
+            "SPAN_STATS": span_stats,
+        }
+
+    ambiguous_plan = _span(ambiguous_keys)
+    affected_plan = _span(affected_keys)
+
+    # Engineering cost shapes, NO execution.
+    tdx_pages = 0
+    # recompute per-symbol spans for the cost shapes (not persisted in full)
+    amb_by_sym: dict[str, list[Any]] = defaultdict(list)
+    for sym, d in ambiguous_keys:
+        amb_by_sym[sym].append(d)
+    aff_by_sym: dict[str, list[Any]] = defaultdict(list)
+    for sym, d in affected_keys:
+        aff_by_sym[sym].append(d)
+    tdx_pages = sum(max(1, -(-((max(v) - min(v)).days + 1) // 800)) for v in amb_by_sym.values())
+    tdx_pages_affected = sum(
+        max(1, -(-((max(v) - min(v)).days + 1) // 800)) for v in aff_by_sym.values()
+    )
+    baostock_requests = len(amb_by_sym)
+    baostock_requests_affected = len(aff_by_sym)
+
     return {
         "TDX_ROW_N": int(tdx.height),
-        "PROVABLY_AFFECTED_N": affected["n"],
-        "PROVABLY_UNAFFECTED_N": unaffected_n,
-        "AMBIGUOUS_N": ambiguous_n,
-        "AFFECTED_SYMBOL_N": len(affected["symbols"]),
-        "by_year": dict(sorted(affected["by_year"].items())),
-        "by_exchange": dict(affected["by_exchange"]),
-        "by_days_from_listing": dict(affected["by_days_from_listing"]),
-        "affected_old_int_corrections_sample": {
-            str(k): v for k, v in list(corrected_map.items())[:20]
+        "PROVABLY_AFFECTED_N": counts["PROVABLY_AFFECTED"],
+        "PROVABLY_UNAFFECTED_N": counts["PROVABLY_UNAFFECTED"],
+        "AMBIGUOUS_N": counts["AMBIGUOUS"],
+        "SUM_CHECK": {"sum": total, "equals_TDX_ROW_N": total == int(tdx.height)},
+        "AFFECTED_SYMBOL_N": len(affected_symbols),
+        "AMBIGUOUS_SYMBOL_N": len(ambiguous_symbols),
+        "V01_REFERENCE": {
+            "PROVABLY_AFFECTED_N": 201,
+            "PROVABLY_UNAFFECTED_N": 10295597,
+            "AMBIGUOUS_N": 29995,
+        },
+        "V01_1_DIFF": {
+            "ROWS_CHANGED_CLASSIFICATION_N": sum(
+                n for (a, b), n in transitions.items() if a != b
+            ),
+            "TRANSITIONS": {
+                f"{a} -> {b}": n for (a, b), n in sorted(transitions.items())
+            },
+            "EFFECT_CORRECTED_128_FLOOR_N": floor128_affected_n,
+            "EFFECT_VWAP_OVERRIDE_REMOVAL_N": vwap_override_unaffected_n,
+        },
+        "HARD_INTERSECTION": {
+            "KNOWN_HARD_N": len(hard_keys),
+            "HARD_AND_AFFECTED_N": hard_affected,
+            "HARD_AND_AMBIGUOUS_N": hard_ambiguous,
+            "HARD_AND_UNAFFECTED_N": hard_unaffected,
+            "ALL_HARD_IN_AFFECTED_OR_AMBIGUOUS": hard_unaffected == 0,
+        },
+        "KNOWN_HARD_1110_COMPLETE_SET": "FALSE",
+        "KNOWN_HARD_NOTE": (
+            "1110 is a heuristic subset; V01.1 PROVABLY_AFFECTED contains "
+            "non-HARD rows too, and AMBIGUOUS rows may be affected, so the "
+            "HARD set cannot be a complete affected set.  Containment in "
+            "AFFECTED u AMBIGUOUS is necessary but not sufficient."
+        ),
+        "AMOUNT_GATE": amount_global_correctness(),
+        "SUPPORTING_DIAGNOSTIC": {
+            "affected_rows_with_diagnostic_n": supporting["affected_n_with_diag"],
+            "affected_corrected_vwap_in_range_n": supporting[
+                "affected_corrected_vwap_in_range_n"
+            ],
+            "note": "amount/OHLC diagnostic only; never reclassifies",
+        },
+        "AFFECTED_KEYS": affected_plan,
+        "AMBIGUOUS_KEYS": ambiguous_plan,
+        "REBUILD_DECISION": (
+            "OFFLINE_DETERMINISTIC_REBUILD_POSSIBLE"
+            if counts["AMBIGUOUS"] == 0
+            else "TARGETED_NETWORK_REFETCH_COMPLETE_SET"
+        ),
+        "TARGET_KEY_N": counts["AMBIGUOUS"],
+        "TARGET_SYMBOL_N": len(ambiguous_symbols),
+        "NETWORK_COST_PLAN": {
+            "shape_A_TDX_CORRECTED_RUNTIME": {
+                "requests_estimate": {"AMBIGUOUS_SYMBOLS": tdx_pages, "AFFECTED_SYMBOLS": tdx_pages_affected},
+                "note": "paginated daily-K refetch per ambiguous symbol over its exact date span only (800 rows/page), targeted windows",
+            },
+            "shape_B_BAOSTOCK_SECONDARY": {
+                "requests_estimate": {"AMBIGUOUS_SYMBOLS": baostock_requests, "AFFECTED_SYMBOLS": baostock_requests_affected},
+                "note": "one bounded query per ambiguous symbol over its exact min..max date span; exact bounded windows queried safely, no full-symbol history assumed",
+            },
+            "NO_EXECUTION": True,
+        },
+        "300546_MISSING_DAYS": {
+            "2016-09-29": "separate authority decision; NO insertion in this task",
+            "2016-10-10": "separate authority decision; NO insertion in this task",
+        },
+        "SAFETY": {
+            "NETWORK_PROVIDER_DATA_FETCH": "NO",
+            "R3_MARKET_DATA_WRITE": "NO",
+            "R3_DATA_REBUILD_EXECUTED": False,
+            "R4A9_RESUME_AUTHORIZED": False,
+            "PRECLOSE_COMPLETE": False,
         },
     }
 

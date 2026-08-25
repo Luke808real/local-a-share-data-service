@@ -1,0 +1,274 @@
+{
+  "REPORT": "R3_TDX_VOLUME_REBUILD_SCOPE_CONTRACT_V01_1",
+  "DATE": "2026-08-25",
+  "AUTHOR_STATUS": "PASS_PENDING_SOL_AUDIT",
+  "BASE_HEAD": "68e34a0ce60741851169d634cd6a5564cd642398",
+  "RUNTIME_DEPENDENCY": "Luke808real/CNEquity@ecf57023d57dcf925e9da3aa0e023492abb1221d",
+  "TOOL": "tools/audits/r3_tdx_volume_rebuild_scope_v01.py",
+  "CLASSIFIER": "V01.1 candidate-set model (complete valid-domain preimage; no plausibility override)",
+  "TDX_ROW_N": 10325793,
+  "PROVABLY_AFFECTED_N": 32,
+  "PROVABLY_UNAFFECTED_N": 10296494,
+  "AMBIGUOUS_N": 29267,
+  "SUM_CHECK": {
+    "sum": 10325793,
+    "equals_TDX_ROW_N": true
+  },
+  "AFFECTED_SYMBOL_N": 31,
+  "AMBIGUOUS_SYMBOL_N": 4577,
+  "V01_REFERENCE": {
+    "PROVABLY_AFFECTED_N": 201,
+    "PROVABLY_UNAFFECTED_N": 10295597,
+    "AMBIGUOUS_N": 29995
+  },
+  "V01_1_DIFF": {
+    "ROWS_CHANGED_CLASSIFICATION_N": 1306,
+    "TRANSITIONS": {
+      "AMBIGUOUS -> AMBIGUOUS": 28978,
+      "AMBIGUOUS -> PROVABLY_AFFECTED": 8,
+      "AMBIGUOUS -> PROVABLY_UNAFFECTED": 1009,
+      "PROVABLY_AFFECTED -> AMBIGUOUS": 177,
+      "PROVABLY_AFFECTED -> PROVABLY_AFFECTED": 24,
+      "PROVABLY_UNAFFECTED -> AMBIGUOUS": 112,
+      "PROVABLY_UNAFFECTED -> PROVABLY_UNAFFECTED": 10295485
+    },
+    "EFFECT_CORRECTED_128_FLOOR_N": 177,
+    "EFFECT_VWAP_OVERRIDE_REMOVAL_N": 112
+  },
+  "HARD_INTERSECTION": {
+    "KNOWN_HARD_N": 1110,
+    "HARD_AND_AFFECTED_N": 0,
+    "HARD_AND_AMBIGUOUS_N": 1110,
+    "HARD_AND_UNAFFECTED_N": 0,
+    "ALL_HARD_IN_AFFECTED_OR_AMBIGUOUS": true
+  },
+  "KNOWN_HARD_1110_COMPLETE_SET": "FALSE",
+  "KNOWN_HARD_NOTE": "1110 is a heuristic subset; V01.1 PROVABLY_AFFECTED contains non-HARD rows too, and AMBIGUOUS rows may be affected, so the HARD set cannot be a complete affected set.  Containment in AFFECTED u AMBIGUOUS is necessary but not sufficient.",
+  "AMOUNT_GATE": {
+    "TDX_AMOUNT_GLOBAL_CORRECTNESS": "UNPROVEN",
+    "note": "retained amount is the untruncated float64 output of the SAME old get_volume() decoder on raw amount bytes that are not retained; without raw bytes the amount decoder path cannot be proven correct or defective from retained data alone.  Amount and OHLC are reported only as SUPPORTING_DIAGNOSTIC and never change AMBIGUOUS -> UNAFFECTED / AFFECTED."
+  },
+  "SUPPORTING_DIAGNOSTIC": {
+    "affected_rows_with_diagnostic_n": 32,
+    "affected_corrected_vwap_in_range_n": 24,
+    "note": "amount/OHLC diagnostic only; never reclassifies"
+  },
+  "AFFECTED_KEYS": {
+    "KEY_N": 32,
+    "SYMBOL_N": 31,
+    "SPAN_STATS": {
+      "SYMBOL_N": 31,
+      "KEY_N": 32,
+      "MIN_DAYS": 0,
+      "MEDIAN_DAYS": 0,
+      "MAX_DAYS": 1,
+      "SAMPLE": [
+        {
+          "SYMBOL": "002801.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002825.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002848.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002853.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002878.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002891.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002907.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "002912.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300508.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300530.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300563.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300579.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300606.SZ",
+          "KEY_N": 2
+        },
+        {
+          "SYMBOL": "300615.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300617.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300618.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300629.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300632.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300652.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "300698.SZ",
+          "KEY_N": 1
+        }
+      ]
+    }
+  },
+  "AMBIGUOUS_KEYS": {
+    "KEY_N": 29267,
+    "SYMBOL_N": 4577,
+    "SPAN_STATS": {
+      "SYMBOL_N": 4577,
+      "KEY_N": 29267,
+      "MIN_DAYS": 0,
+      "MEDIAN_DAYS": 1372,
+      "MAX_DAYS": 3827,
+      "SAMPLE": [
+        {
+          "SYMBOL": "000002.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "000006.SZ",
+          "KEY_N": 3
+        },
+        {
+          "SYMBOL": "000007.SZ",
+          "KEY_N": 5
+        },
+        {
+          "SYMBOL": "000009.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "000010.SZ",
+          "KEY_N": 7
+        },
+        {
+          "SYMBOL": "000011.SZ",
+          "KEY_N": 4
+        },
+        {
+          "SYMBOL": "000012.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "000014.SZ",
+          "KEY_N": 7
+        },
+        {
+          "SYMBOL": "000016.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "000017.SZ",
+          "KEY_N": 3
+        },
+        {
+          "SYMBOL": "000019.SZ",
+          "KEY_N": 1
+        },
+        {
+          "SYMBOL": "000020.SZ",
+          "KEY_N": 12
+        },
+        {
+          "SYMBOL": "000025.SZ",
+          "KEY_N": 7
+        },
+        {
+          "SYMBOL": "000026.SZ",
+          "KEY_N": 11
+        },
+        {
+          "SYMBOL": "000027.SZ",
+          "KEY_N": 4
+        },
+        {
+          "SYMBOL": "000028.SZ",
+          "KEY_N": 6
+        },
+        {
+          "SYMBOL": "000029.SZ",
+          "KEY_N": 2
+        },
+        {
+          "SYMBOL": "000030.SZ",
+          "KEY_N": 4
+        },
+        {
+          "SYMBOL": "000032.SZ",
+          "KEY_N": 5
+        },
+        {
+          "SYMBOL": "000034.SZ",
+          "KEY_N": 4
+        }
+      ]
+    }
+  },
+  "REBUILD_DECISION": "TARGETED_NETWORK_REFETCH_COMPLETE_SET",
+  "TARGET_KEY_N": 29267,
+  "TARGET_SYMBOL_N": 4577,
+  "NETWORK_COST_PLAN": {
+    "shape_A_TDX_CORRECTED_RUNTIME": {
+      "requests_estimate": {
+        "AMBIGUOUS_SYMBOLS": 11004,
+        "AFFECTED_SYMBOLS": 31
+      },
+      "note": "paginated daily-K refetch per ambiguous symbol over its exact date span only (800 rows/page), targeted windows"
+    },
+    "shape_B_BAOSTOCK_SECONDARY": {
+      "requests_estimate": {
+        "AMBIGUOUS_SYMBOLS": 4577,
+        "AFFECTED_SYMBOLS": 31
+      },
+      "note": "one bounded query per ambiguous symbol over its exact min..max date span; exact bounded windows queried safely, no full-symbol history assumed"
+    },
+    "NO_EXECUTION": true
+  },
+  "300546_MISSING_DAYS": {
+    "2016-09-29": "separate authority decision; NO insertion in this task",
+    "2016-10-10": "separate authority decision; NO insertion in this task"
+  },
+  "SAFETY": {
+    "NETWORK_PROVIDER_DATA_FETCH": "NO",
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R3_DATA_REBUILD_EXECUTED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  },
+  "REPORT_GENERATED_AT_HEAD": "68e34a0ce60741851169d634cd6a5564cd642398"
+}
