@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
-"""R3 TDX raw-volume wire decoder diagnostic tool (research only, V01).
+"""R3 TDX raw-volume wire decoder diagnostic tool (research only, V01.1).
 
-Captures the RAW 4-byte volume and amount fields of TDX daily K bars exactly
-as transmitted by the wire protocol (before the pinned get_volume() decode),
-and independently re-decodes them with a from-scratch implementation of the
-TDX packed-quantity format. It never modifies the production parser.
+Corrected for Sol audit blocker: the production TDX daily-K record uses
+VARIABLE-LENGTH get_price() fields (a UTF-8-like signed integer: bit6 = sign,
+bit7 = continuation, 7 data bits per continuation byte). A fixed 20-byte
+record layout is therefore invalid. This tool follows the exact pinned field
+position progression to locate the raw 4-byte volume and amount fields:
 
-Independent decoder: ``independent_get_volume`` follows the documented TDX
-packed-float layout (highest byte = log-point exponent byte; lower three
-bytes are mantissa chunks scaled by 2^(2*logpoint - 0x86/0x8E/0x96) with an
-implicit 0x80 high-bit doubling), re-derived from the raw byte layout and
-cross-checked against known-good modern rows. This is deliberately NOT a
-copy of the pinned function.
+  ret_count (2 bytes)
+  -> get_datetime (date 2 bytes + time 2 bytes; returns exact pos)
+  -> open_diff  (variable get_price)
+  -> close_diff (variable get_price)
+  -> high_diff  (variable get_price)
+  -> low_diff   (variable get_price)
+  -> volume raw (4 bytes)  <- capture verbatim
+  -> amount raw (4 bytes)  <- capture verbatim
+
+Production code is never modified; the pinned get_price semantics are used
+only to advance positions while raw quantity bytes are captured before the
+pinned get_volume() decode.
+
+Independent decoder: for comparison the raw 4 bytes are also reinterpreted
+as IEEE-754 float32; that comparison is performed only after record
+alignment is proven against the pinned production parser output.
 """
 
 from __future__ import annotations
@@ -19,7 +30,6 @@ from __future__ import annotations
 import argparse
 import json
 import struct
-import zlib
 import sys
 from datetime import date
 from pathlib import Path
@@ -28,177 +38,117 @@ from typing import Any
 import polars as pl
 
 
-# ---------------------------------------------------------------------------
-# Independent packed-quantity decoder (from-scratch, documented)
-# ---------------------------------------------------------------------------
+def pinned_get_datetime(category: int, buffer: bytes, pos: int):
+    """Exact pinned get_datetime semantics (position advancement only)."""
+    import sys as _sys
 
-def independent_get_volume(vol: int) -> float:
-    """Independent TDX daily-K volume decode: IEEE-754 single precision.
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from cnequity.adapters.tdx_protocol._wire.helper import get_datetime
 
-    Raw wire evidence (captured via a research-only raw-body parser, 3
-    independently healthy endpoints, 2016-2026 records) shows the TDX daily
-    volume field is a standard IEEE-754 float32:
-      0x41800000 -> 16.0 (lot)  == BaoStock 1600 shares / 100
-      0x42300000 -> 44.0 (lot)  == BaoStock 4400 shares / 100
-      0x3f800000 ->  1.0 (lot)  == BaoStock  100 shares / 100
-      0x4949d320 -> 826674.0     (modern healthy rows agree with pinned)
-    The pinned packed-decoder diverges exactly on the same rows (logpoint
-    exponent path), which is why this independent authority reproduces the
-    vendor-consistent values. Provenance: raw body capture + float32
-    reinterpretation + BaoStock cross-check; NOT a copy of pinned code.
+    return get_datetime(category, buffer, pos)
+
+
+def pinned_get_price(data: bytes, pos: int):
+    """Exact pinned get_price semantics (variable length, position only)."""
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from cnequity.adapters.tdx_protocol._wire.helper import get_price
+
+    return get_price(data, pos)
+
+
+def decode_pinned_daily_record(
+    body: bytes, start_pos: int, category: int = 9
+) -> dict[str, Any] | None:
+    """Trace one daily-K record with exact pinned field positioning.
+
+    Returns record metadata including raw volume/amount bytes and positions,
+    plus decoded datetime and OHLC diffs for alignment cross-check. Returns
+    None when the record cannot be fully positioned.
     """
-    return struct.unpack("<f", struct.pack("<I", vol & 0xFFFFFFFF))[0]
-
-
-# ---------------------------------------------------------------------------
-# Raw wire capture (research-only; no production parser changes)
-# ---------------------------------------------------------------------------
-
-class RawBarsProbe:
-    """Minimal socket-level probe for daily K bars raw body (research only)."""
-
-    def __init__(self, host: str, port: int, timeout: int = 8):
-        import socket
-
-        self.sock = socket.create_connection((host, int(port)), timeout=timeout)
-
-    def _build_request(self, market: int, code: str, start: int, count: int) -> bytes:
-        # GetSecurityBarsCmd request layout (same 0x10C packet as pinned).
-        values = (
-            0x10C,
-            0x01016408,
-            0x1C,
-            0x1C,
-            0x052D,
-            market,
-            code.encode("utf-8"),
-            9,  # category: daily
-            1,
-            start,
-            count,
-            0,
-            0,
-            0,
+    try:
+        year, month, day, hour, minute, pos = pinned_get_datetime(
+            category, body, start_pos
         )
-        return struct.pack("<HIHHHH6sHHHHIIH", *values)
-
-    def fetch_raw_bodies(
-        self, market: int, code: str, start: int = 0, count: int = 400
-    ) -> list[bytes]:
-        """Return raw (possibly compressed) bodies for each requested page."""
-        bodies = []
-        offset = start
-        while True:
-            pkg = self._build_request(market, code, offset, count)
-            self.sock.sendall(pkg)
-            head = self._recv_exact(16)
-            _, _, _, zip_size, unzip_size = struct.unpack("<IIIHH", head)
-            body = bytearray()
-            while len(body) < zip_size:
-                chunk = self.sock.recv(zip_size - len(body))
-                if not chunk:
-                    break
-                body.extend(chunk)
-            if zip_size != unzip_size:
-                body = bytearray(zlib.decompress(bytes(body)))
-            bodies.append(bytes(body))
-            if len(body) < 20:
-                break
-            offset += count
-            if len(body) < 800 * 32:
-                break
-        return bodies[: 400 * 4]  # hard bound for research
-
-    def _recv_exact(self, n: int) -> bytes:
-        buf = b""
-        while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
-            if not chunk:
-                raise ConnectionError("socket closed")
-            buf += chunk
-        return buf
-
-    def close(self) -> None:
-        try:
-            self.sock.close()
-        except Exception:  # noqa: BLE001
-            pass
+        open_diff, pos = pinned_get_price(body, pos)
+        close_diff, pos = pinned_get_price(body, pos)
+        high_diff, pos = pinned_get_price(body, pos)
+        low_diff, pos = pinned_get_price(body, pos)
+        if pos + 8 > len(body):
+            return None
+        vol_raw = struct.unpack("<I", body[pos : pos + 4])[0]
+        amount_raw = struct.unpack("<I", body[pos + 4 : pos + 8])[0]
+        end_pos = pos + 8
+        return {
+            "record_index": None,
+            "record_start_pos": start_pos,
+            "volume_pos": pos,
+            "amount_pos": pos + 4,
+            "record_end_pos": end_pos,
+            "trade_date": f"{year:04d}-{month:02d}-{day:02d}",
+            "datetime": f"{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}",
+            "open_diff": open_diff,
+            "close_diff": close_diff,
+            "high_diff": high_diff,
+            "low_diff": low_diff,
+            "vol_raw_hex": f"0x{vol_raw:08x}",
+            "vol_raw_uint32": vol_raw,
+            "amount_raw_hex": f"0x{amount_raw:08x}",
+            "amount_raw_uint32": amount_raw,
+        }
+    except Exception:  # noqa: BLE001 - truncated/malformed record fails soft
+        return None
 
 
-_BARS_RECORD = 20  # daily K record: date2+time2+4 price diffs2 + vol4 + amount4
-
-
-def parse_raw_bars_body(
-    body: bytes, *, word_for_price: bool = True
+def trace_daily_bars(
+    body: bytes, category: int = 9
 ) -> list[dict[str, Any]]:
-    """Parse the pinned-format daily K body by byte offsets (no production code).
-
-    Record layout (after 2-byte ret_count)::
-        [0:2]   year/month/day (packed)
-        [2:4]   hour/min
-        [4:6]   open_diff (price, signed int16/1000)
-        [6:8]   close_diff
-        [8:10]  high_diff
-        [10:12] low_diff
-        [12:16] vol_raw (4 bytes little-endian, packed quantity)
-        [16:20] amount_raw (4 bytes little-endian, packed quantity)
-    """
+    """Trace ALL daily-K records in a raw body (no fixed-size assumption)."""
+    if len(body) < 2:
+        return []
     ret_count = struct.unpack("<H", body[0:2])[0]
-    rows = []
+    records: list[dict[str, Any]] = []
     pos = 2
     for index in range(ret_count):
-        if pos + 20 > len(body):
+        rec = decode_pinned_daily_record(body, pos, category=category)
+        if rec is None:
             break
-        vol_raw = struct.unpack("<I", body[pos + 12 : pos + 16])[0]
-        amount_raw = struct.unpack("<I", body[pos + 16 : pos + 20])[0]
-        rows.append(
-            {
-                "index": index,
-                "vol_raw_hex": f"0x{vol_raw:08x}",
-                "vol_raw_uint32": vol_raw,
-                "amount_raw_hex": f"0x{amount_raw:08x}",
-                "amount_raw_uint32": amount_raw,
-            }
-        )
-        pos += _BARS_RECORD
-    return rows
+        rec["record_index"] = index
+        records.append(rec)
+        pos = rec["record_end_pos"]
+    return records
 
 
-def parse_daily_k_record(dt2: bytes, time2: bytes) -> tuple[int, int, int]:
-    """Decode packed year/month/day + hour/min (research-only)."""
-    zip_day = struct.unpack("<H", dt2)[0]
-    month = int((zip_day % 2048) / 100)
-    year = (zip_day >> 11) + 2004
-    day = (zip_day % 2048) % 100
-    return year, month, day
+def ieee754_float32(raw: int) -> float:
+    """Independent reinterpretation: raw 4 bytes as IEEE-754 float32."""
+    return struct.unpack("<f", struct.pack("<I", raw & 0xFFFFFFFF))[0]
 
 
 def capture_raw_bars_for_date(
     host: str, port: int, market: int, code: str, target_date: date
 ) -> dict[str, Any] | None:
-    """Research-only: page through daily K and return the raw record for a date."""
+    """Research-only: page daily K via pinned command, trace raw body."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-    try:
-        import cnequity.adapters.tdx_protocol._wire as wire
-        from cnequity.adapters.tdx_protocol._wire import TdxWireClient
-        from cnequity.adapters.tdx_protocol._wire.parser.std.get_security_bars import (
-            GetSecurityBarsCmd,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"cnequity import failed: {exc}"}
+    from cnequity.adapters.tdx_protocol._wire import TdxWireClient
+    from cnequity.adapters.tdx_protocol._wire.parser.std.get_security_bars import (
+        GetSecurityBarsCmd,
+    )
 
     class RawBarsCmd(GetSecurityBarsCmd):
         captured_body: bytes | None = None
 
         def parseResponse(self, body_buf):  # noqa: N802
             self.captured_body = bytes(body_buf)
-            return super().parseResponse(body_buf)
+            klines = super().parseResponse(body_buf)
+            self._klines = klines
+            return klines
 
     wc = TdxWireClient(multithread=False, heartbeat=False)
     wc.connect(host, int(port), time_out=8)
     wc.setup()
     try:
-        # TDX returns most-recent first; page start offsets until we have enough.
+        target = target_date.strftime("%Y-%m-%d")
         for start in (0, 800, 1600, 2400, 3200, 4000, 4800, 5600, 6400, 7200, 8000):
             cmd = RawBarsCmd(wc.client, lock=wc.lock)
             cmd.setParams(9, market, code, start, 800)
@@ -206,49 +156,37 @@ def capture_raw_bars_for_date(
             body = cmd.captured_body
             if not klines:
                 break
-            target = target_date.strftime("%Y-%m-%d")
-            for i, k in enumerate(klines):
-                if k["datetime"][:10] == target:
-                    rec = parse_raw_bars_body(body)
-                    rec_i = rec[i] if i < len(rec) else None
+            traced = trace_daily_bars(body)
+            for k, rec in zip(klines, traced):
+                if rec["trade_date"] == target:
                     return {
                         "host": host,
                         "port": port,
                         "symbol_code": code,
                         "market": market,
-                        "trade_date": target,
-                        "kline": {kk: k[kk] for kk in ("open", "close", "high", "low", "vol", "amount")},
-                        "raw": rec_i,
-                        "decoded_native_volume": (
-                            independent_get_volume(rec_i["vol_raw_uint32"])
-                            if rec_i
-                            else None
-                        ),
-                        "decoded_amount": (
-                            independent_get_volume(rec_i["amount_raw_uint32"])
-                            if rec_i
-                            else None
-                        ),
+                        "trace": rec,
+                        "pinned_kline": {
+                            "datetime": k["datetime"],
+                            "open": k["open"],
+                            "high": k["high"],
+                            "low": k["low"],
+                            "close": k["close"],
+                            "vol": k.get("vol"),
+                            "amount": k.get("amount"),
+                        },
                     }
-            # If the requested date is older than this page's tail, stop early.
             oldest = klines[-1]["datetime"][:10]
             if target > oldest:
                 break
-        return {"host": host, "port": port, "code": code, "trade_date": target_date.isoformat(), "not_found": True}
+        return {
+            "host": host,
+            "port": port,
+            "code": code,
+            "trade_date": target,
+            "not_found": True,
+        }
     finally:
         wc.close()
-
-
-def classify(market: int, code: str, host: str, port: int) -> list[dict[str, Any]]:
-    probe = RawBarsProbe(host, port)
-    try:
-        bodies = probe.fetch_raw_bodies(market, code)
-        rows: list[dict[str, Any]] = []
-        for body in bodies:
-            rows.extend(parse_raw_bars_body(body))
-        return rows
-    finally:
-        probe.close()
 
 
 def main() -> int:
@@ -256,18 +194,20 @@ def main() -> int:
     parser.add_argument("--host", default="120.76.1.198")
     parser.add_argument("--port", type=int, default=7709)
     parser.add_argument("--code", default="300546")
-    parser.add_argument("--market", type=int, default=0)  # 0=SZ
+    parser.add_argument("--market", type=int, default=0)
+    parser.add_argument("--date", default="2016-09-30")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    rows = classify(args.market, args.code, args.host, args.port)
-    for r in rows[:5]:
-        r["decoded_native_volume"] = independent_get_volume(r["vol_raw_uint32"])
-        r["decoded_amount"] = independent_get_volume(r["amount_raw_uint32"])
-    result = {"host": args.host, "port": args.port, "code": args.code, "rows": rows[:100]}
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    result = capture_raw_bars_for_date(
+        args.host, args.port, args.market, args.code, date.fromisoformat(args.date)
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     if args.out is not None:
-        args.out.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        args.out.write_text(
+            json.dumps(result, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
         print(f"written: {args.out}")
     return 0
 

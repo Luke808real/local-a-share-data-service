@@ -1,83 +1,118 @@
-"""Targeted tests for the raw wire decoder diagnostic tool (pure logic)."""
+"""Targeted tests for the corrected raw wire decoder (variable-length trace).
+
+Covers the Sol audit blocker: price diffs are variable length (UTF-8-like:
+bit6 sign, bit7 continuation, 7 data bits per continuation byte), so fixed
+20-byte records are invalid. Synthetic records exercise 1/2/3-byte prices
+and mixed consecutive records to prove record N+1 stays aligned.
+"""
 
 from __future__ import annotations
 
+import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "audits"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from r3_tdx_raw_wire_decoder_v01 import (  # noqa: E402
-    independent_get_volume,
-    parse_raw_bars_body,
+    decode_pinned_daily_record,
+    ieee754_float32,
+    trace_daily_bars,
 )
 
 
-def test_ieee754_canonical_values():
-    # TDX daily volume is IEEE-754 float32 (independent authority evidence).
-    assert independent_get_volume(0x41800000) == 16.0   # 16 lots = 1600 shares
-    assert independent_get_volume(0x42300000) == 44.0   # 44 lots = 4400 shares
-    assert independent_get_volume(0x3F800000) == 1.0    # 1 lot = 100 shares
-    assert independent_get_volume(0x4949D320) == 826674.0
-    assert independent_get_volume(0) == 0.0
+def _encode_price(value: int) -> bytes:
+    """UTF-8-like signed varint: bit6 sign, bit7 continuation, 7 data bits."""
+    sign = 0x40 if value < 0 else 0
+    mag = abs(value)
+    chunks = [mag & 0x3F]
+    mag >>= 6
+    while mag:
+        chunks.append(mag & 0x7F)
+        mag >>= 7
+    out = bytearray()
+    for i, ch in enumerate(chunks):
+        byte = ch | (0x80 if i < len(chunks) - 1 else 0)
+        if i == 0:
+            byte |= sign
+        out.append(byte)
+    return bytes(out)
 
 
-def test_small_known_volume():
-    # vol_raw = 2056 (0x808) -> logpoint=0, hleax=0, lheax=8, lleax=0x08
-    v = independent_get_volume(2056)
-    assert v > 0
-
-
-def test_independent_and_pinned_agree_on_modern_healthy_rows():
-    import cnequity.adapters.tdx_protocol._wire.helper as h  # pinned
-
-    # Modern rows: both decoders agree (float32 and packed path coincide in
-    # the range where the packed decoder is correct).
-    for raw in (0x4949D320, 0x4EFDDD87):
-        pinned = h.get_volume(raw)
-        indep = independent_get_volume(raw)
-        assert abs(pinned - indep) <= 1e-6 * max(1.0, abs(pinned)), (
-            f"raw={hex(raw)} pinned={pinned} indep={indep}"
-        )
-
-
-def test_independent_and_pinned_diverge_on_anomaly_rows():
-    import cnequity.adapters.tdx_protocol._wire.helper as h  # pinned
-
-    # The anomaly rows: pinned packed decoder outputs the inflated values that
-    # entered canonical (2056*100=205600 etc); independent IEEE-754 gives the
-    # vendor-consistent lots.
-    cases = {
-        0x41800000: (2056.0, 16.0),    # 2016-09-30 300546.SZ
-        0x3F800000: (32768.5, 1.0),    # 2016-09-29 / 2016-10-10
-        0x42300000: (224.0, 44.0),     # 2016-10-11
-    }
-    for raw, (pinned_expected, indep_expected) in cases.items():
-        assert abs(h.get_volume(raw) - pinned_expected) <= 1e-6, (hex(raw), h.get_volume(raw))
-        assert abs(independent_get_volume(raw) - indep_expected) <= 1e-6
-
-
-def test_parse_raw_bars_body_record_offsets():
-    # Build a 2-byte count + one 20-byte record manually (4 price diffs empty).
-    body = (
-        b"\x01\x00"
-        + b"\x00" * 12  # date2 time2 open2 close2 high2 low2
-        + struct_pack_u32(2056)
-        + struct_pack_u32(56960)
+def _record(
+    date_code: int,
+    prices: list[int],
+    vol_raw: int,
+    amount_raw: int,
+) -> bytes:
+    return (
+        struct.pack("<I", date_code)  # category=9: 4-byte YYYYMMDD
+        + b"".join(_encode_price(p) for p in prices)
+        + struct.pack("<I", vol_raw)
+        + struct.pack("<I", amount_raw)
     )
-    rows = parse_raw_bars_body(body)
-    assert len(rows) == 1
-    assert rows[0]["vol_raw_uint32"] == 2056
-    assert rows[0]["amount_raw_uint32"] == 56960
-    assert rows[0]["vol_raw_hex"] == "0x00000808"
 
 
-def struct_pack_u32(value: int) -> bytes:
-    import struct
+def test_price_encoding_lengths():
+    # 6 data bits in first byte; each continuation byte carries 7 bits.
+    assert len(_encode_price(63)) == 1    # fits 6 bits
+    assert len(_encode_price(64)) == 2    # needs 7 bits
+    assert len(_encode_price(-64)) == 2   # magnitude 64, needs 7 bits
+    assert len(_encode_price(8191)) == 2  # 13 bits = 6 + 7
+    assert len(_encode_price(8192)) == 3  # 14 bits = 6 + 7 + 1
+    assert len(_encode_price(-8192)) == 3
 
-    return struct.pack("<I", value)
+
+def test_single_record_1byte_prices_alignment():
+    body = b"\x01\x00" + struct.pack("<I", 20160930) + b"".join(
+        _encode_price(p) for p in (1, 2, 3, 4)
+    ) + struct.pack("<I", 0x41800000) + struct.pack("<I", 0x475E8000)
+    rec = decode_pinned_daily_record(body, 2)
+    assert rec is not None
+    assert rec["trade_date"] == "2016-09-30"
+    assert rec["vol_raw_uint32"] == 0x41800000
+    assert rec["amount_raw_uint32"] == 0x475E8000
+    assert rec["record_start_pos"] == 2
+    assert rec["volume_pos"] == 2 + 4 + 4  # date4 + 4x1-byte prices
+    assert rec["record_end_pos"] == rec["volume_pos"] + 8
 
 
-def test_parse_raw_truncated_body_safe():
-    rows = parse_raw_bars_body(b"\x05\x00" + b"\x00" * 8)
-    assert rows == []
+def test_mixed_length_records_alignment():
+    # Two records: first with 1-byte prices, second with 3-byte prices.
+    rec1 = _record(20160930, [1, 2, 3, 4], 0x41800000, 0x475E8000)
+    rec2 = _record(
+        20161011, [8191, -8192, 1000, -1000], 0x42300000, 0x48391C00
+    )
+    body = b"\x02\x00" + rec1 + rec2
+    records = trace_daily_bars(body)
+    assert len(records) == 2
+    assert records[0]["trade_date"] == "2016-09-30"
+    assert records[1]["trade_date"] == "2016-10-11"
+    assert records[0]["vol_raw_uint32"] == 0x41800000
+    assert records[1]["vol_raw_uint32"] == 0x42300000
+    assert records[1]["amount_raw_uint32"] == 0x48391C00
+    # record 2 start == record 1 end
+    assert records[1]["record_start_pos"] == records[0]["record_end_pos"]
+
+
+def test_three_records_consecutive_alignment():
+    recs = [
+        _record(20161013, [5, 6, 7, 8], 0x424C0000, 0x47CD6D80),
+        _record(20161014, [9, 10, 11, 12], 0x42380000, 0x47B6F000),
+        _record(20161017, [13, 14, 15, 16], 0x42300000, 0x47A11000),
+    ]
+    body = b"\x03\x00" + b"".join(recs)
+    records = trace_daily_bars(body)
+    assert len(records) == 3
+    dates = [r["trade_date"] for r in records]
+    assert dates == ["2016-10-13", "2016-10-14", "2016-10-17"]
+    for prev, nxt in zip(records, records[1:]):
+        assert nxt["record_start_pos"] == prev["record_end_pos"]
+
+
+def test_ieee754_reinterpretation():
+    assert ieee754_float32(0x41800000) == 16.0
+    assert ieee754_float32(0x3F800000) == 1.0
+    assert ieee754_float32(0x42300000) == 44.0
+    assert ieee754_float32(0x4949D320) == 826674.0

@@ -1,0 +1,85 @@
+{
+  "BASE_HEAD": "728c1225d5273fb4f4f310308cfe9ecf40c35e24",
+  "SOL_AUDIT_BLOCKER": true,
+  "PRIOR_RAW_WIRE_REPORT_STATUS": "INVALID_RAW_POSITION_ASSUMPTION",
+  "PRIOR_FIXED_RECORD_BYTES": 20,
+  "PINNED_RECORD_LAYOUT": "VARIABLE_LENGTH (ret_count + 4-byte YYYYMMDD date (category=9) + 4x variable get_price diffs + vol 4B + amount 4B)",
+  "PRIOR_FIX": "trace parser follows exact pinned field positioning; fixed pos+=20 removed; volume/amount captured at positions produced by pinned get_price advancement",
+  "TRACE_PARSER": {
+    "ret_count": "2 bytes",
+    "date": "4 bytes YYYYMMDD via pinned get_datetime (category=9 branch)",
+    "prices": "open/close/high/low diffs via pinned get_price (variable length: bit6 sign, bit7 continuation, 7 data bits per continuation byte)",
+    "capture": "volume raw 4B at volume_pos, amount raw 4B at amount_pos",
+    "positions": [
+      "record_index",
+      "record_start_pos",
+      "volume_pos",
+      "amount_pos",
+      "record_end_pos"
+    ]
+  },
+  "INDEPENDENT_POSITION_TESTS": {
+    "1_byte_prices": "single-record alignment proven",
+    "2_byte_prices": "mixed-length record 2 alignment proven",
+    "3_byte_prices": "8191/-8192/1000/-1000 prices -> 3-byte lengths; record alignment proven",
+    "consecutive_records": "record N+1 start == record N end; 3 consecutive records aligned",
+    "test_pass": 5
+  },
+  "REAL_BODY_CROSS_CHECK": {
+    "keys": [
+      "300546.SZ|2016-09-28",
+      "300546.SZ|2016-09-29",
+      "300546.SZ|2016-09-30",
+      "300546.SZ|2016-10-10",
+      "300546.SZ|2016-10-11"
+    ],
+    "TRACE_DATE_MATCH_ALL": true,
+    "TRACE_OHLC_MATCH_ALL": true,
+    "TRACE_ALIGNMENT_PASS": true
+  },
+  "BOUNDED_SAMPLE": {
+    "ANOMALY_SAMPLE_KEY_N": 16,
+    "CONTROL_SAMPLE_KEY_N": 4,
+    "NETWORK_UNIQUE_KEY_N": 20,
+    "endpoints": [
+      "120.76.1.198:7709",
+      "1.202.143.37:7709",
+      "111.203.134.118:7709"
+    ]
+  },
+  "RAW_ENDPOINT_EQUALITY": {
+    "RAW_VOLUME_BYTES_ENDPOINTS_EQUAL": "20/20 keys",
+    "RAW_AMOUNT_BYTES_ENDPOINTS_EQUAL": "20/20 keys",
+    "note": "all three healthy endpoints returned identical raw 4-byte volume and amount fields for every key"
+  },
+  "DECODER_COMPARISON": {
+    "volume": {
+      "PINNED_GET_VOLUME_vs_IEEE754": "16 of 20 keys differ; differences exactly on the HARD anomaly rows",
+      "IEEE754_vs_BAOSTOCK": "IEEE754*100 == BaoStock shares on 14/16 significant anomaly rows (2 show ~1.4% residual TDX rounding), and on all 4 controls",
+      "note": "edge keys 300539.SZ 2016-09-01 and 300557.SZ 2016-11-01: IEEE=40 lots (4000) vs BaoStock 4057/4039 (~1.4% TDX source rounding); both are HARD in canonical but IEEE is much closer to truth than pinned 160 lots"
+    },
+    "amount": {
+      "PINNED_AMOUNT_DECODER_PASS": true,
+      "IEEE754_AMOUNT_DECODER_PASS": true,
+      "note": "amount raw pinned get_volume == IEEE754 on all 20 keys, and equals BaoStock amount; amount decoding is NOT affected by the volume decoder defect"
+    }
+  },
+  "ROOT_CAUSE_CLASSIFICATION": "TDX_PACKED_VOLUME_DECODER_DEFECT",
+  "ROOT_CAUSE_REQUIREMENTS_CHECK": {
+    "correct_raw_field_alignment_proven": true,
+    "same_raw_bytes_across_endpoints": true,
+    "independent_ieee754_matches_baostock_on_anomaly_and_controls": true,
+    "pinned_disagrees_specifically_on_anomaly_rows": true,
+    "healthy_controls_work_correctly": true,
+    "no_source_raw_corruption_evidence": true
+  },
+  "DECISIONS": {
+    "TDX_DECODER_FIX_AUTHORIZED": false,
+    "R3_DATA_REBUILD_AUTHORIZED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "R3_MARKET_DATA_WRITE": "NO",
+    "PRODUCTION_SOURCE_CHANGE": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
