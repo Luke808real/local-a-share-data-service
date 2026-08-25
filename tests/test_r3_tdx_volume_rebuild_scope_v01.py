@@ -23,6 +23,7 @@ from r3_tdx_volume_rebuild_scope_v01 import (  # noqa: E402
     divide_into_candidates,
     ieee754_float32,
     is_valid_quantity_raw,
+    manifest_byte_form,
     normal_band_raw_candidate,
     normal_candidate_exists,
     valid_raw_domain_bounds,
@@ -227,3 +228,20 @@ def test_v01_unaffected_case_unchanged():
     )
     assert v01_row == ("PROVABLY_UNAFFECTED", 7)
     assert divide_into_candidates(7, {7}) == ("PROVABLY_UNAFFECTED", 7)
+
+
+def test_manifest_byte_form_deterministic():
+    rows = [
+        {"b": 2, "a": 1},
+        {"a": 2, "b": 1},
+    ]
+    b1 = manifest_byte_form(rows)
+    b2 = manifest_byte_form(rows)
+    # stable serialization: same input order, keys sorted by sort_keys
+    assert b1 == b2
+    import hashlib
+
+    assert hashlib.sha256(b1).hexdigest() == hashlib.sha256(b2).hexdigest()
+    # array order is preserved and therefore part of the manifest contract;
+    # the tool sorts rows by (symbol, trade_date) before serializing.
+    assert manifest_byte_form(list(reversed(rows))) != b1

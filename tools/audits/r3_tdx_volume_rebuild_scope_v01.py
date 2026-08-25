@@ -94,6 +94,7 @@ classifications per row.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import struct
 import sys
@@ -358,6 +359,68 @@ def amount_global_correctness() -> dict[str, Any]:
     }
 
 
+def _hash_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def manifest_byte_form(rows: list[dict[str, Any]]) -> bytes:
+    """Deterministic canonical serialization for key manifests."""
+    return json.dumps(rows, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def build_input_file_manifest(data_root: Path) -> dict[str, Any]:
+    """Deterministic read-only manifest of every curated daily_bars parquet."""
+    base = data_root / "curated" / "daily_bars"
+    files = sorted(base.rglob("*.parquet"))
+    rows: list[dict[str, Any]] = []
+    for p in files:
+        digest = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        rows.append(
+            {
+                "relative_path": str(p.relative_to(data_root)),
+                "file_size": p.stat().st_size,
+                "sha256": digest.hexdigest(),
+            }
+        )
+    payload = manifest_byte_form(rows)
+    return {
+        "INPUT_FILE_N": len(rows),
+        "INPUT_MANIFEST_HASH": _hash_bytes(payload),
+        "CANONICAL_SERIALIZATION": (
+            "json.dumps(rows, ensure_ascii=True, sort_keys=True, "
+            "separators=(',', ':')) sorted by relative_path"
+        ),
+        "FILES": rows,
+    }
+
+
+def write_target_manifest(target_rows: list[dict[str, Any]], out: Path) -> dict[str, Any]:
+    """Persist the complete non-unaffected key manifest with hashes."""
+    affected = [r for r in target_rows if r["classification"] == "PROVABLY_AFFECTED"]
+    ambiguous = [r for r in target_rows if r["classification"] == "AMBIGUOUS"]
+    affected_bytes = manifest_byte_form(affected)
+    ambiguous_bytes = manifest_byte_form(ambiguous)
+    superset_bytes = manifest_byte_form(target_rows)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(superset_bytes)
+    return {
+        "AFFECTED_KEY_N": len(affected),
+        "AMBIGUOUS_KEY_N": len(ambiguous),
+        "REPAIR_SUPERSET_KEY_N": len(target_rows),
+        "AFFECTED_KEY_HASH": _hash_bytes(affected_bytes),
+        "AMBIGUOUS_KEY_HASH": _hash_bytes(ambiguous_bytes),
+        "REPAIR_SUPERSET_KEY_HASH": _hash_bytes(superset_bytes),
+        "TARGET_MANIFEST_FILE": str(out),
+        "CANONICAL_SERIALIZATION": (
+            "json.dumps(rows, ensure_ascii=True, sort_keys=True, "
+            "separators=(',', ':')) sorted by (symbol, trade_date)"
+        ),
+    }
+
+
 def scan_canonical(data_root: Path) -> dict[str, Any]:
     df = pl.read_parquet(str(data_root / "curated/daily_bars/**/*.parquet"))
     tdx = df.filter(
@@ -400,6 +463,7 @@ def scan_canonical(data_root: Path) -> dict[str, Any]:
     ambiguous_symbols: set[str] = set()
     affected_keys: list[tuple[str, Any]] = []
     ambiguous_keys: list[tuple[str, Any]] = []
+    target_key_rows: list[dict[str, Any]] = []
     corrected_map: dict[int, int] = {}
     transitions: dict[tuple[str, str], int] = defaultdict(int)
     vwap_override_unaffected_n = 0
@@ -436,6 +500,18 @@ def scan_canonical(data_root: Path) -> dict[str, Any]:
             affected_symbols.add(symbol)
             affected_keys.append((symbol, trade_date))
             corrected_map[old_int] = corr
+            target_key_rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": trade_date.isoformat(),
+                    "current_volume": int(row["volume"]),
+                    "classification": cls,
+                    "corrected_volume_if_provably_affected": int(
+                        corr * SHARES_PER_LOT
+                    ),
+                    "source": "tdx_protocol",
+                }
+            )
             d = amount_supporting_diagnostic(
                 old_int=old_int, corrected=corr, amount=amount, low=low, high=high
             )
@@ -445,6 +521,16 @@ def scan_canonical(data_root: Path) -> dict[str, Any]:
         elif cls == "AMBIGUOUS":
             ambiguous_symbols.add(symbol)
             ambiguous_keys.append((symbol, trade_date))
+            target_key_rows.append(
+                {
+                    "symbol": symbol,
+                    "trade_date": trade_date.isoformat(),
+                    "current_volume": int(row["volume"]),
+                    "classification": cls,
+                    "corrected_volume_if_provably_affected": None,
+                    "source": "tdx_protocol",
+                }
+            )
 
         key = (symbol, trade_date)
         if key in hard_keys:
@@ -578,6 +664,9 @@ def scan_canonical(data_root: Path) -> dict[str, Any]:
             "R4A9_RESUME_AUTHORIZED": False,
             "PRECLOSE_COMPLETE": False,
         },
+        "TARGET_KEY_ROWS": sorted(
+            target_key_rows, key=lambda r: (r["symbol"], r["trade_date"])
+        ),
     }
 
 
@@ -585,8 +674,31 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=DATA_ROOT_DEFAULT)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--input-manifest-out", type=Path, default=None)
+    parser.add_argument("--target-manifest-out", type=Path, default=None)
     args = parser.parse_args()
     result = scan_canonical(args.data_root)
+    manifest_section: dict[str, Any] = {}
+    if args.input_manifest_out is not None:
+        input_manifest = build_input_file_manifest(args.data_root)
+        manifest_section["INPUT_FILE_N"] = input_manifest["INPUT_FILE_N"]
+        manifest_section["INPUT_MANIFEST_HASH"] = input_manifest["INPUT_MANIFEST_HASH"]
+        manifest_section["INPUT_MANIFEST_CANONICAL"] = input_manifest[
+            "CANONICAL_SERIALIZATION"
+        ]
+        args.input_manifest_out.parent.mkdir(parents=True, exist_ok=True)
+        args.input_manifest_out.write_text(
+            json.dumps(input_manifest, indent=1, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        print(f"written: {args.input_manifest_out}")
+    if args.target_manifest_out is not None:
+        manifest_section.update(
+            write_target_manifest(result["TARGET_KEY_ROWS"], args.target_manifest_out)
+        )
+        print(f"written: {args.target_manifest_out}")
+    result["MANIFEST"] = manifest_section
+    result.pop("TARGET_KEY_ROWS", None)
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     if args.out is not None:
         args.out.write_text(
