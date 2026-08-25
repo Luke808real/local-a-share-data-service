@@ -1,0 +1,89 @@
+{
+  "BASE_HEAD": "947735b0c75300637793a79ae253c8e052fe62ab",
+  "RUNTIME_DEPENDENCY": "Luke808real/CNEquity@ecf57023d57dcf925e9da3aa0e023492abb1221d",
+  "OLD_PIPELINE_INFORMATION_LOSS": "PARTIAL (finite_int64 int-truncation drops the fractional part of get_volume output; the mapping raw -> int(get_volume(raw)) is not injective, so raw cannot be recovered from canonical)",
+  "OLD_CANONICAL_TO_RAW_INVERTIBILITY": "FINITE_AMBIGUOUS",
+  "INVERTIBILITY_NOTE": "canonical = int(old_get_volume(raw))*100. The pre-image of a canonical value is a finite set of raws; for values >= 256 both a normal-band raw (IEEE==old_int) and an anomalous-band raw (IEEE!=old_int) exist, so the raw is not uniquely recoverable from the retained value alone. Amount VWAP cross-validation disambiguates most rows.",
+  "TOOL": "tools/audits/r3_tdx_volume_rebuild_scope_v01.py",
+  "CLASSIFIER": {
+    "normal_band": "lp>=0x43 (>=256 lots): int(OLD)==int(NEW) for all raw; dense in integers >= 256, so any value >= 256 absent from the divergence table is PROVABLY_UNAFFECTED",
+    "divergence_band": "lp 0x3c..0x42 full 24-bit mantissa preimage table (old_int -> set(int(NEW)))",
+    "row_validation": "amount VWAP (amount / volume) inside [low, high]: if OLD VWAP is already plausible the row is treated unaffected (economically self-consistent); PROVABLY_AFFECTED only when OLD VWAP outside range AND corrected VWAP inside range",
+    "UNKNOWN_NOTE": "AMBIGUOUS is never demoted to unaffected"
+  },
+  "FULL_LOCAL_SCAN": {
+    "TDX_ROW_N": 10325793,
+    "PROVABLY_AFFECTED_N": 201,
+    "PROVABLY_UNAFFECTED_N": 10295597,
+    "AMBIGUOUS_N": 29995,
+    "AFFECTED_SYMBOL_N": 159,
+    "by_year": {
+      "2016": 82,
+      "2017": 113,
+      "2018": 4,
+      "2019": 2
+    },
+    "by_exchange": {
+      "SZ": 142,
+      "SH": 59
+    },
+    "by_days_from_listing": {
+      "0-5": 133,
+      "6-20": 67,
+      ">250": 1
+    },
+    "HARD_INTERSECTION": {
+      "KNOWN_HARD_N": 1110,
+      "HARD_AND_AFFECTED": 177,
+      "HARD_AND_AMBIGUOUS": 933,
+      "HARD_NOT_IN_SUPERSEt": 0,
+      "requirement_all_hard_subset_affected_or_ambiguous": true
+    }
+  },
+  "KNOWN_HARD_1110_COMPLETE_SET": false,
+  "ADDITIONAL_NON_HARD_AFFECTED_N": 24,
+  "ADDITIONAL_NON_HARD_SAMPLE": [
+    "002853.SZ 2017-03-13",
+    "300629.SZ 2017-03-27",
+    "603579.SH 2017-01-11",
+    "300615.SZ 2017-02-20",
+    "603722.SH 2017-10-25"
+  ],
+  "REBUILD_DECISION": "OFFLINE_DETERMINISTIC_REBUILD_POSSIBLE (201 rows only; ambiguous 29995 require network/secondary)",
+  "REBUILD_NOTE": "The 201 PROVABLY_AFFECTED rows can be deterministically corrected offline (corrected volume = unique table candidate, amount-VWAP validated). The remaining 29,995 AMBIGUOUS rows cannot be classified offline; they require bounded network refetch or raw-byte access.",
+  "COST_ESTIMATE": {
+    "offline_path": {
+      "key_n": 201,
+      "symbol_n": 159,
+      "provider_requests": 0,
+      "note": "pure offline deterministic correction"
+    },
+    "ambiguous_network_path": {
+      "key_n": 29995,
+      "symbol_n": "~high",
+      "provider_requests_estimate": "requires paginated TDX full history per affected symbol (800 rows/page ~2-4 pages/symbol for 2016-2017 rows) or BaoStock per-symbol 11-year window (~11 requests/symbol); exact depends on Sol-approved scope",
+      "note": "engineering estimate only, no execution"
+    }
+  },
+  "300546_MISSING_DAYS": {
+    "2016-09-29": "confirmed real row; corrected runtime fetches it; insertion authority separate (NOT merged with volume rebuild)",
+    "2016-10-10": "same"
+  },
+  "R4A9_COMPATIBILITY": {
+    "R4A9_EXISTING_COMPLETE_N": 2140,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "impact": "proposed R3 volume repair alters ONLY volume fields; it does NOT change R4 required-key membership or required-row counts (R4 required keys derive from R3 daily_bars presence, not volume values)"
+  },
+  "SECONDARY_AUTHORITY_FEASIBILITY": {
+    "BAOSTOCK_REPAIR_AUTHORITY": "VALIDATED_BOUNDED",
+    "note": "20-key bounded sample: BaoStock volume matches corrected IEEE floats (14/16 exact, 2/16 bounded TDX rounding, 4/4 controls); unit semantics shares; OHLC/amount reconciliation validated on sample"
+  },
+  "SAFETY": {
+    "NETWORK_PROVIDER_DATA_FETCH": "NO",
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R3_DATA_REBUILD_EXECUTED": false,
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
