@@ -10,6 +10,8 @@ import struct
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "audits"))
 
 from cnequity.adapters.tdx_protocol._wire.helper import get_volume  # noqa: E402
@@ -22,10 +24,14 @@ from r3_tdx_volume_rebuild_scope_v01 import (  # noqa: E402
     classify_row_v01_with,
     divide_into_candidates,
     ieee754_float32,
+    InputDriftDuringScan,
+    input_manifests_equal,
     is_valid_quantity_raw,
     manifest_byte_form,
     normal_band_raw_candidate,
     normal_candidate_exists,
+    run_target_freeze,
+    scan_canonical_with_input_manifest,
     valid_raw_domain_bounds,
 )
 
@@ -245,3 +251,100 @@ def test_manifest_byte_form_deterministic():
     # array order is preserved and therefore part of the manifest contract;
     # the tool sorts rows by (symbol, trade_date) before serializing.
     assert manifest_byte_form(list(reversed(rows))) != b1
+
+
+# ---------------------------------------------------------------------------
+# 8. INPUT MANIFEST PROVENANCE CLOSURE
+# ---------------------------------------------------------------------------
+
+
+def _fake_input_manifest(tag: str) -> dict:
+    return {
+        "INPUT_FILE_N": 1,
+        "INPUT_MANIFEST_HASH": tag,
+        "CANONICAL_SERIALIZATION": "test serialization",
+        "FILES": [{"relative_path": "curated/daily_bars/x.parquet", "tag": tag}],
+    }
+
+
+def test_pre_equals_post_runs_scan_and_binds_input():
+    calls: list[str] = []
+    manifests = iter([_fake_input_manifest("same"), _fake_input_manifest("same")])
+
+    def manifest_builder(_: Path) -> dict:
+        calls.append("manifest")
+        return next(manifests)
+
+    def scanner(_: Path) -> dict:
+        calls.append("scan")
+        return {"TARGET_KEY_ROWS": []}
+
+    result, pre, post = scan_canonical_with_input_manifest(
+        Path("/unused"), manifest_builder=manifest_builder, scanner=scanner
+    )
+
+    assert calls == ["manifest", "scan", "manifest"]
+    assert input_manifests_equal(pre, post)
+    assert result == {"TARGET_KEY_ROWS": []}
+
+
+def test_pre_post_drift_fails_closed_before_target_manifest_write(tmp_path: Path):
+    calls: list[str] = []
+    manifests = iter([_fake_input_manifest("pre"), _fake_input_manifest("post")])
+
+    def manifest_builder(_: Path) -> dict:
+        calls.append("manifest")
+        return next(manifests)
+
+    def scanner(_: Path) -> dict:
+        calls.append("scan")
+        return {
+            "TARGET_KEY_ROWS": [
+                {
+                    "symbol": "000001.SZ",
+                    "trade_date": "2026-08-26",
+                    "classification": "AMBIGUOUS",
+                }
+            ]
+        }
+
+    input_out = tmp_path / "input.json"
+    target_out = tmp_path / "target.json"
+    with pytest.raises(InputDriftDuringScan, match="INPUT_DRIFT_DURING_SCAN"):
+        run_target_freeze(
+            Path("/unused"),
+            input_manifest_out=input_out,
+            target_manifest_out=target_out,
+            manifest_builder=manifest_builder,
+            scanner=scanner,
+        )
+
+    assert calls == ["manifest", "scan", "manifest"]
+    assert not input_out.exists()
+    assert not target_out.exists()
+
+
+def test_pre_equals_post_allows_target_manifest_write(tmp_path: Path):
+    manifest = _fake_input_manifest("same")
+    input_out = tmp_path / "input.json"
+    target_out = tmp_path / "target.json"
+    result = run_target_freeze(
+        Path("/unused"),
+        input_manifest_out=input_out,
+        target_manifest_out=target_out,
+        manifest_builder=lambda _: manifest,
+        scanner=lambda _: {
+            "TARGET_KEY_ROWS": [
+                {
+                    "symbol": "000001.SZ",
+                    "trade_date": "2026-08-26",
+                    "classification": "AMBIGUOUS",
+                }
+            ]
+        },
+    )
+
+    assert input_out.exists()
+    assert target_out.exists()
+    assert result["MANIFEST"]["INPUT_STABLE_DURING_SCAN"] is True
+    assert result["MANIFEST"]["PRE_POST_FILES_EQUAL"] is True

@@ -100,7 +100,7 @@ import struct
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import polars as pl
 from cnequity.adapters.tdx_protocol._wire.helper import get_volume
@@ -670,6 +670,90 @@ def scan_canonical(data_root: Path) -> dict[str, Any]:
     }
 
 
+class InputDriftDuringScan(RuntimeError):
+    """Raised when the canonical input changes while it is being scanned."""
+
+    def __init__(self, pre: dict[str, Any], post: dict[str, Any]) -> None:
+        super().__init__("INPUT_DRIFT_DURING_SCAN")
+        self.pre = pre
+        self.post = post
+
+
+def input_manifests_equal(pre: dict[str, Any], post: dict[str, Any]) -> bool:
+    """Compare the complete input binding required by the freeze contract."""
+    return (
+        pre["INPUT_FILE_N"] == post["INPUT_FILE_N"]
+        and pre["INPUT_MANIFEST_HASH"] == post["INPUT_MANIFEST_HASH"]
+        and pre["FILES"] == post["FILES"]
+    )
+
+
+def scan_canonical_with_input_manifest(
+    data_root: Path,
+    *,
+    manifest_builder: Callable[[Path], dict[str, Any]] | None = None,
+    scanner: Callable[[Path], dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Run the audited scan only when its complete input is provenance-bound.
+
+    The pre-scan manifest is deliberately built immediately before the
+    existing scanner, and the post-scan manifest is built immediately after
+    it.  No output is written by this function; callers can therefore fail
+    closed before accepting or persisting a target freeze.
+    """
+    build_manifest = manifest_builder or build_input_file_manifest
+    scan = scanner or scan_canonical
+
+    pre = build_manifest(data_root)
+    result = scan(data_root)
+    post = build_manifest(data_root)
+    if not input_manifests_equal(pre, post):
+        raise InputDriftDuringScan(pre, post)
+    return result, pre, post
+
+
+def run_target_freeze(
+    data_root: Path,
+    *,
+    input_manifest_out: Path | None = None,
+    target_manifest_out: Path | None = None,
+    scanner: Callable[[Path], dict[str, Any]] | None = None,
+    manifest_builder: Callable[[Path], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run the scan and write outputs only after PRE == POST."""
+    result, pre, post = scan_canonical_with_input_manifest(
+        data_root,
+        manifest_builder=manifest_builder,
+        scanner=scanner,
+    )
+
+    manifest_section: dict[str, Any] = {
+        "PRE_INPUT_FILE_N": pre["INPUT_FILE_N"],
+        "PRE_INPUT_MANIFEST_HASH": pre["INPUT_MANIFEST_HASH"],
+        "POST_INPUT_FILE_N": post["INPUT_FILE_N"],
+        "POST_INPUT_MANIFEST_HASH": post["INPUT_MANIFEST_HASH"],
+        "INPUT_STABLE_DURING_SCAN": True,
+        "PRE_POST_FILES_EQUAL": True,
+        "INPUT_MANIFEST_CANONICAL": pre["CANONICAL_SERIALIZATION"],
+    }
+    if input_manifest_out is not None:
+        manifest_section["INPUT_MANIFEST_FILE"] = str(input_manifest_out)
+        input_manifest_out.parent.mkdir(parents=True, exist_ok=True)
+        input_manifest_out.write_text(
+            json.dumps(pre, indent=1, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        print(f"written: {input_manifest_out}")
+    if target_manifest_out is not None:
+        manifest_section.update(
+            write_target_manifest(result["TARGET_KEY_ROWS"], target_manifest_out)
+        )
+        print(f"written: {target_manifest_out}")
+    result["MANIFEST"] = manifest_section
+    result.pop("TARGET_KEY_ROWS", None)
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=DATA_ROOT_DEFAULT)
@@ -677,28 +761,15 @@ def main() -> int:
     parser.add_argument("--input-manifest-out", type=Path, default=None)
     parser.add_argument("--target-manifest-out", type=Path, default=None)
     args = parser.parse_args()
-    result = scan_canonical(args.data_root)
-    manifest_section: dict[str, Any] = {}
-    if args.input_manifest_out is not None:
-        input_manifest = build_input_file_manifest(args.data_root)
-        manifest_section["INPUT_FILE_N"] = input_manifest["INPUT_FILE_N"]
-        manifest_section["INPUT_MANIFEST_HASH"] = input_manifest["INPUT_MANIFEST_HASH"]
-        manifest_section["INPUT_MANIFEST_CANONICAL"] = input_manifest[
-            "CANONICAL_SERIALIZATION"
-        ]
-        args.input_manifest_out.parent.mkdir(parents=True, exist_ok=True)
-        args.input_manifest_out.write_text(
-            json.dumps(input_manifest, indent=1, ensure_ascii=False, default=str),
-            encoding="utf-8",
+    try:
+        result = run_target_freeze(
+            args.data_root,
+            input_manifest_out=args.input_manifest_out,
+            target_manifest_out=args.target_manifest_out,
         )
-        print(f"written: {args.input_manifest_out}")
-    if args.target_manifest_out is not None:
-        manifest_section.update(
-            write_target_manifest(result["TARGET_KEY_ROWS"], args.target_manifest_out)
-        )
-        print(f"written: {args.target_manifest_out}")
-    result["MANIFEST"] = manifest_section
-    result.pop("TARGET_KEY_ROWS", None)
+    except InputDriftDuringScan as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     if args.out is not None:
         args.out.write_text(
