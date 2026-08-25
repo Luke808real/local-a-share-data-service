@@ -48,7 +48,7 @@ def test_frozen_constants_consistent():
     assert BASE_HEAD == "0254122a99f0a365d2be12f29a2a59b951497fd3"
     assert PLAN_SHA == "3ab1f184edeea1d0e408c45df4a706248b6558d0"
     assert len(PLAN_SHA) == 40
-    assert PINNED_CNEQUITY_SHA == "a18ee0484dfb0801650175471724def3228b8a17"
+    assert PINNED_CNEQUITY_SHA == "ecf57023d57dcf925e9da3aa0e023492abb1221d"
     assert PINNED_CNEQUITY_VERSION == "0.7.2"
     assert len(LOCK_SHA) == 64
     assert len(CONFIG_SHA) == 64

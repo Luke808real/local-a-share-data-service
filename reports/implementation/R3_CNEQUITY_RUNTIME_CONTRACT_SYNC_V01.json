@@ -1,0 +1,53 @@
+{
+  "BASE_HEAD": "de1c64b011d9a3e488cb2cb732b31a3c8f8aaf1c",
+  "OLD_PINNED_CNEQUITY_SHA": "a18ee0484dfb0801650175471724def3228b8a17",
+  "NEW_PINNED_CNEQUITY_SHA": "ecf57023d57dcf925e9da3aa0e023492abb1221d",
+  "OLD_LOCK_SHA": "5f233fa9434624391c06e56a4596edfd52c1ec596d66688753b78f424dd571ac",
+  "NEW_LOCK_SHA": "dc0e597ab9c2895cefa12dd0ae96297b1dde8c72852e211293b54036a8d9dbaf",
+  "LOCK_SHA_SOURCE": "SHA-256 of uv.lock at BASE_HEAD (no regeneration)",
+  "REFERENCE_CLASSIFICATION": {
+    "RUNTIME_AUTHORITY": [
+      "src/ashare_data/r3_daily.py PINNED_CNEQUITY_SHA",
+      "src/ashare_data/r3_daily.py LOCK_SHA",
+      "tests/test_r3_daily_foundation.py test_frozen_constants_consistent PINNED_CNEQUITY_SHA assertion"
+    ],
+    "HISTORICAL_PROVENANCE_UNTOUCHED": [
+      "src/ashare_data/r4a0_corporate_actions_gate.py CNEQUITY_PIN_SHA",
+      "src/ashare_data/r4a_preclose_bounded_adapter.py CNEQUITY_PIN",
+      "src/ashare_data/r4a0_bounded_adapter.py PIN_EXPECTED",
+      "tools/verify_r2_baseline.py UPSTREAM_SHA",
+      "tests/test_r2_baseline_contract.py UPSTREAM_SHA",
+      "tests/test_project_docs_contract.py references"
+    ],
+    "STALE_CONTRACT_REFERENCE": [],
+    "note": "R2/R4A historical provenance and receipts reference the then-frozen a18ee pin; they are historical evidence and were NOT rewritten. Only live execution-contract references in r3_daily.py and its frozen-constants test were synchronized."
+  },
+  "CHANGED": {
+    "src/ashare_data/r3_daily.py": "PINNED_CNEQUITY_SHA -> ecf57023..., LOCK_SHA -> dc0e597a... (only these two constants)",
+    "tests/test_r3_daily_foundation.py": "frozen-constants assertion updated to the new audited pin (explicit runtime authority tracker)"
+  },
+  "RUNTIME_PIN_PROOF": {
+    "verified": true,
+    "version": "0.7.2",
+    "commit": "ecf57023d57dcf925e9da3aa0e023492abb1221d"
+  },
+  "RUNTIME_PROVENANCE_PASS": true,
+  "TARGETED_TESTS": {
+    "test_r3_daily_foundation.py": "219 passed (incl. formerly RUNTIME_CONTRACT_DRIFT failing tests)",
+    "combined_r3_r4a_audit": "337 passed",
+    "UNRELATED_FAILURES": null
+  },
+  "DECODER_REGRESSION": {
+    "category_9": "0x41800000 -> 16.0 (float32)",
+    "category_8": "0x41800000 -> 2056.0 (BASE packed)",
+    "network_required": false
+  },
+  "SAFETY": {
+    "R3_MARKET_DATA_WRITE": "NO",
+    "R3_DATA_REBUILD_EXECUTED": false,
+    "NETWORK_PROVIDER_DATA_FETCH": "NO",
+    "R4A9_CHECKPOINT_MUTATED": false,
+    "R4A9_RESUME_AUTHORIZED": false,
+    "PRECLOSE_COMPLETE": false
+  }
+}
