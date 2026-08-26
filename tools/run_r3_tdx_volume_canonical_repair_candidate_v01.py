@@ -104,6 +104,27 @@ def key_of(row: dict[str, Any]) -> tuple[str, str]:
     return str(row["symbol"]), date_text(row["trade_date"])
 
 
+def require_isolated_candidate_root(data_root: Path, stage_root: Path) -> Path:
+    """Enforce the one permitted candidate root before any staging write."""
+    data_root_input = Path(data_root).expanduser()
+    stage_root_input = Path(stage_root).expanduser()
+    if not data_root_input.is_absolute() or not stage_root_input.is_absolute():
+        raise CandidateRepairError("ISOLATED_STAGE_ROOT_NOT_ABSOLUTE")
+    if not data_root_input.is_dir():
+        raise CandidateRepairError("DATA_ROOT_NOT_DIRECTORY")
+
+    data_root_resolved = data_root_input.resolve(strict=True)
+    stage_root_resolved = stage_root_input.resolve(strict=False)
+    expected_root = data_root_resolved / "staging" / STAGING_ROOT_NAME
+    if data_root_input != data_root_resolved:
+        raise CandidateRepairError("DATA_ROOT_SYMLINK_OR_TRAVERSAL")
+    if stage_root_resolved != expected_root or stage_root_input != stage_root_resolved:
+        raise CandidateRepairError("ISOLATED_STAGE_ROOT_FORBIDDEN")
+    if (data_root_resolved / "staging").is_symlink() or stage_root_input.is_symlink():
+        raise CandidateRepairError("ISOLATED_STAGE_ROOT_SYMLINK")
+    return stage_root_resolved
+
+
 def require_input_stable(pre: dict[str, Any], post: dict[str, Any]) -> None:
     if (
         pre.get("INPUT_FILE_N") != post.get("INPUT_FILE_N")
@@ -297,6 +318,7 @@ def _candidate_dataset_hash(records: list[dict[str, Any]]) -> str:
 def run_candidate(
     *, repo_root: Path, data_root: Path, stage_root: Path
 ) -> dict[str, Any]:
+    require_isolated_candidate_root(data_root, stage_root)
     if stage_root.exists():
         raise CandidateRepairError("CANDIDATE_STAGE_ALREADY_EXISTS")
     temporary_root = stage_root.with_name(stage_root.name + ".in_progress")
