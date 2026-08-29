@@ -1,27 +1,48 @@
 # PROJECT_STATE
 
-AS_OF: 2026-08-19
+AS_OF: 2026-08-29
 SPEC_VERSION: V1.0 FROZEN
 
 ## CURRENT_PHASE
 
-CURRENT_PHASE: R3 SH/SZ MVP COMPLETE — R4 SH/SZ PLANNING NEXT
+CURRENT_PHASE: R3 DAILY_USABLE REPAIR — PENDING INDEPENDENT AUDIT
 
-- R3_SHSZ_DAILY_FOUNDATION = PASS
-- R3_SHSZ_CLOSEOUT = FROZEN
-- ALL_A_DAILY_READY = FALSE
-- DAILY_READY = FALSE (legacy phase label; current readiness uses D026 below)
+- HISTORICAL_R3_SHSZ_DAILY_FOUNDATION = PASS
+- HISTORICAL_R3_SHSZ_CLOSEOUT = FROZEN
+- DAILY_USABLE_CANDIDATE = TRUE
+- DAILY_COVERAGE_STATUS = PARTIAL
+- FULL_HISTORY_CERTIFIED = FALSE
+- R4_EXECUTION_AUTHORIZED = FALSE
+- R4_EXECUTION_AUTHORIZATION_STATUS = PENDING_INDEPENDENT_AUDIT
 - BJ_EXTENSION = DEFERRED
 
-This records the R3 SH/SZ MVP (V08) closeout only. The full all-A R3 daily
-usability exit (ROADMAP semantics) is NOT complete; BJ current/historical is a
-deferred extension and BJ_HISTORICAL_AUTHORITY is not proven.
+The former R3 SH/SZ MVP (V08) closeout is historical evidence. The bounded
+four-key repair has closed the four proven material daily defects, but the
+current daily readiness remains a candidate pending independent audit. BJ
+current/historical is a deferred extension and BJ_HISTORICAL_AUTHORITY is not
+proven.
 
-## READINESS_REALIGNMENT (D026)
+## CURRENT R3 DAILY USABILITY REPAIR
 
-The V08 closeout fields above are retained as historical phase evidence. They do
-not certify full historical session coverage and do not override the current
-readiness split:
+- PRE_INPUT_MANIFEST_HASH: `ba720d8f75bd3308cab55963df6df64c9ce65c7df86757c8cc58a4e220da5731`
+- POST_INPUT_MANIFEST_HASH: `dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045`
+- PROVEN_MATERIAL_DAILY_DEFECT_N_AFTER: `0`
+- KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: `15047`
+- KNOWN_HISTORICAL_QUALITY_EXCEPTION_KEYSET_HASH: `4f2832a314d34dc0eb797d56ef69dcee12c977621febe838b2f046acd75ad195`
+- DAILY_USABLE_CANDIDATE: `true`
+- DAILY_COVERAGE_STATUS: `PARTIAL`
+- FULL_HISTORY_CERTIFIED: `false`
+- NEXT_ACTION: `SOL_INDEPENDENT_AUDIT_THEN_R4_RESUME_COMPATIBILITY`
+
+The four repaired keys are the only material daily-defect repair scope in this
+phase. The 15,047 historical quality exceptions remain tracked and unresolved;
+they are not promoted to full-history certification.
+
+## HISTORICAL READINESS REALIGNMENT (D026 PRE-REPAIR SNAPSHOT)
+
+The following pre-repair snapshot is retained for lineage only. It does not
+override the current readiness fields above and does not certify full historical
+session coverage:
 
 ```text
 DAILY_USABLE=false
@@ -55,7 +76,7 @@ historical forensic evidence is
 `HISTORICAL_FORENSIC_EVIDENCE` and `NONBLOCKING_FOR_DAILY_USABLE` unless it
 proves another concrete material daily-bar defect.
 
-## CODE
+## HISTORICAL V08 CODE METADATA (AS OF 2026-08-19)
 
 BRANCH: codex/r3-v08-shsz-closeout-r4-handoff-v01
 HEAD: SELF — commit containing this file
@@ -63,6 +84,13 @@ CODE_HEAD: 3914b7a4988f3d202eba5b6b81b3069aec78bd4e
 PLAN_SHA: 3ab1f184edeea1d0e408c45df4a706248b6558d0
 V08_SCOPE_DECISION_SHA: 00085fed36f50312b6a5475dc26f0c5e347c6768
 WORKTREE: TRACKED_CLEAN
+
+## CODE
+
+BRANCH: codex/r3-proven-missing-4key-repair-v01
+HEAD: SELF — commit containing this file
+BASE_HEAD: c820d5897720e24d9cd65a61523016fb8d581292
+WORKTREE: TRACKED_CLEAN_AT_COMMIT
 
 ## UPSTREAM_CNEQUITY
 
@@ -85,7 +113,7 @@ CONFIG_SHA256: fac5abd136cb2ae00c07d7ca408eb1d47eed69c26c3547a0547ef9d214063fb5
 
 instruments: BUILT (7757 rows) — R3 Stage A
 trading_calendar: BUILT (4247 rows) — R3 Stage D
-daily_bars: BUILT (10,709,989 rows; SH/SZ MVP: 5208 active + 248 formal delisted) — R3 Stages E/F
+daily_bars: BUILT (10,709,995 rows; SH/SZ MVP: 5208 active + 248 formal delisted) — R3 Stages E/F plus bounded four-key repair
 trading_status: NOT_BUILT — CONTRACT_FROZEN_R4_IMPLEMENTATION_REQUIRED
 turnover: NOT_BUILT — CONTRACT_FROZEN_R4_IMPLEMENTATION_REQUIRED
 5m: NOT_BUILT
@@ -93,7 +121,7 @@ adj: NOT_BUILT
 industry: NOT_BUILT
 index: NOT_BUILT
 
-## R3 SH/SZ MVP FINAL STATE (AS_OF 2026-08-17)
+## HISTORICAL R3 SH/SZ MVP FINAL STATE (AS_OF 2026-08-17)
 
 ### Scope / Authority
 
@@ -199,20 +227,8 @@ recorded above. R3_SHSZ_CLOSEOUT is FROZEN at the audited exact commit.
 
 ## NEXT_ACTION
 
-R3_PROVEN_MISSING_4KEY_REPAIR_V01
+SOL_INDEPENDENT_AUDIT_THEN_R4_RESUME_COMPATIBILITY
 
-After the bounded R3 repair and independent revalidation of `DAILY_USABLE`,
-continue the R4 SH/SZ planning handoff:
-
-1. Prepare the R4 Stable Market Facts implementation plan (SH/SZ scope).
-2. Priority facts:
-   preclose · trading_status / ST / STAR_ST / suspension ·
-   turnover_rate · high_limit / low_limit · is_limit_up / is_limit_down.
-3. Prefer existing CNEquity contracts/providers first.
-4. No R4 real execution until the R4 plan passes independent audit.
-5. BJ extension remains deferred.
-
-- R4_SHSZ_PLANNING = AUTHORIZED
-- R4_SHSZ_REAL_EXECUTION = FORBIDDEN_PENDING_PLAN_AUDIT
-
-Do not execute R4 real stages before the independent R4 plan audit PASS.
+R4 execution remains unauthorized until the independent audit of this bounded
+repair candidate passes. No R4/R4A9 resume has been authorized by this state
+update; BJ extension remains deferred.
