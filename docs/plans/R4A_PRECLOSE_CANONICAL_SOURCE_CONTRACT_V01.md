@@ -501,3 +501,30 @@ CODE_CHANGE=NO
 All evidence citations in this contract are bound to the frozen R4A2/R4A2.1/
 R4A3/R4A3.1 receipts and the frozen R4 plan. No secondary authority source is
 used as authority.
+
+---
+
+## 15. Proven traded status-conflict overlay (V01)
+
+The ordinary `R4A_PRECLOSE_V01` path is unchanged: a BaoStock row with
+`tradestatus=0` remains `PROVIDER_SUSPENDED_SUPERSET`.  The only exception is
+the frozen `R4A_PRECLOSE_PROVEN_STATUS_CONFLICT_OVERLAY_V01` registry:
+
+```text
+002087.SZ:2024-06-13
+600647.SH:2024-06-13
+600766.SH:2024-06-13
+603133.SH:2024-06-13
+```
+
+Its exact four-key hash is
+`49fd7d316e2a09bbb18f0b840d4a5034f3efb2dbba57e9f60255c7a8910b2663`.
+Each key was independently adjudicated `EXPECTED_BAR` with a local,
+hash-verified `TUSHARE_LOCAL_RAW_DAILY` record.  For an exact overlay key only,
+BaoStock `tradestatus=0` is recorded as `PRIMARY_STATUS_CONFLICT`; the formal
+row uses `TUSHARE_LOCAL_RAW_PRECLOSE_FALLBACK` only when the local Tushare
+record is trading and has a finite positive preclose equal at display precision
+to the prior effective canonical close.  The formal row remains `COVERED` with
+`provider_tradestatus=1`, while receipts retain primary source/status conflict
+metadata.  Any registry, source hash, predecessor, or parity drift fails
+closed.  No other status-0 key may use this fallback.

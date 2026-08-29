@@ -13,6 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import run_r4a9_bounded_recovery_v01 as recovery  # noqa: E402
 
 
+def test_full_continuation_candidate_requires_both_bounded_phases_to_pass() -> None:
+    assert recovery.full_continuation_candidate("PASS", "PASS") is True
+    assert recovery.full_continuation_candidate("FAILED", "PASS") is False
+    assert recovery.full_continuation_candidate("PASS", "FAILED") is False
+    assert recovery.full_continuation_candidate("FAILED", "NOT_EXECUTED") is False
+
+
 def test_frozen_authority_and_scope_are_exact() -> None:
     assert recovery.BASE_HEAD == "5f4f509615cb99419029792fdb5c48b3bc591b76"
     assert recovery.EXPECTED_CHECKPOINT_SHA256 == "b3cf88438c94a46d077e0d37df6b70cb45d29c741e646264a061dc0ea8d804de"

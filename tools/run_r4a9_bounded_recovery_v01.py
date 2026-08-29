@@ -346,6 +346,11 @@ def _quality_counters(result: dict[str, Any]) -> dict[str, int]:
     return {field: int(result.get(field, -1)) for field in REQUIRED_COUNTERS}
 
 
+def full_continuation_candidate(phase_1_status: str | None, phase_2_status: str | None) -> bool:
+    """Only both successful bounded phases may nominate a full continuation."""
+    return phase_1_status == "PASS" and phase_2_status == "PASS"
+
+
 def _verify_formal_result(
     *,
     adapter: Any,
@@ -782,7 +787,7 @@ def _base_report(
         "R4_RESULT_WRITE_EXECUTED": r4_result_write_executed,
         "CHECKPOINT_MUTATED": checkpoint_mutated,
         "UNVISITED_EXECUTION_N": 0,
-        "FULL_R4A9_CONTINUATION_CANDIDATE": True,
+        "FULL_R4A9_CONTINUATION_CANDIDATE": full_continuation_candidate(phase_1.get("status"), phase_2.get("status")),
         "FULL_R4A9_CONTINUATION_AUTHORIZED": False,
         "R4A9_RESUME_AUTHORIZED": False,
         "PRECLOSE_COMPLETE": False,
@@ -1046,7 +1051,7 @@ def run_recovery(
     report["PHASE_2_RECEIPT_SHA256"] = phase_2.get("phase_receipt_sha256")
     report["OLD_CHECKPOINT_HASH"] = old_checkpoint_sha
     report["DAILY_MANIFEST_STABLE_DURING_RECOVERY"] = True
-    report["FULL_R4A9_CONTINUATION_CANDIDATE"] = True
+    report["FULL_R4A9_CONTINUATION_CANDIDATE"] = full_continuation_candidate(phase_1.get("status"), phase_2.get("status"))
     report["FULL_R4A9_CONTINUATION_AUTHORIZED"] = False
     report["R4A9_RESUME_AUTHORIZED"] = False
     _write_report(repo_root, report)
