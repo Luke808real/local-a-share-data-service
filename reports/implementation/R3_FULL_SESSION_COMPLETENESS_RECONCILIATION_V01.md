@@ -20,7 +20,7 @@ Offline exact-key reconciliation between the frozen BaoStock session authority a
 - CANONICAL_ON_NOT_EXPECTED_KEY_N: `2`.
 - CANONICAL_ON_UNKNOWN_KEY_N: `0`.
 - CANONICAL_OUTSIDE_SESSION_AUTHORITY_KEY_N: `0`.
-- UNEXPECTED_CANONICAL_TOTAL_N (specified cancellation formula): `2`.
+- UNEXPECTED_CANONICAL_TOTAL_N (additive exact-key formula): `2`.
 - EXPECTED_KEY_N == CANONICAL_ROW_N: `false`; this is not a completeness PASS because the exact key gate remains authoritative.
 
 ## 300546 audit anchors
@@ -47,7 +47,7 @@ These two keys are present in the current frozen post-repair canonical input and
 
 ## Verification
 
-- TEST_RESULT: `90 passed in 6.44s`
+- TEST_RESULT: `32 passed in 0.02s`
 - PY_COMPILE: `PASS`
 - GIT_DIFF_CHECK: `PASS`
 

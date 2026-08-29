@@ -15,6 +15,10 @@ def k(symbol: str, value: str) -> tuple[str, date]:
     return symbol, date.fromisoformat(value)
 
 
+def test_unexpected_canonical_total_uses_addition() -> None:
+    assert audit.unexpected_canonical_total(2, 3, 4) == 9
+
+
 def test_keyset_hash_changes_when_date_changes_even_with_same_count() -> None:
     left = audit.keyset_hash(sorted([k("000001.SZ", "2016-01-04"), k("000002.SZ", "2016-01-05")]))
     right = audit.keyset_hash(sorted([k("000001.SZ", "2016-01-04"), k("000002.SZ", "2016-01-06")]))

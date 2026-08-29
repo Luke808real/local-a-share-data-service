@@ -648,6 +648,16 @@ def _input_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
     )
 
 
+def unexpected_canonical_total(
+    on_not_expected_n: int,
+    on_unknown_n: int,
+    outside_authority_n: int,
+) -> int:
+    """Return the additive total of canonical keys outside EXPECTED_BAR."""
+
+    return on_not_expected_n + on_unknown_n + outside_authority_n
+
+
 def _anchor_report(session: dict[str, Any], canonical: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for symbol, trade_date in ANCHORS:
@@ -697,7 +707,7 @@ def _report_markdown(report: dict[str, Any]) -> str:
         f"- CANONICAL_ON_NOT_EXPECTED_KEY_N: `{report['CANONICAL_ON_NOT_EXPECTED_KEY_N']}`.",
         f"- CANONICAL_ON_UNKNOWN_KEY_N: `{report['CANONICAL_ON_UNKNOWN_KEY_N']}`.",
         f"- CANONICAL_OUTSIDE_SESSION_AUTHORITY_KEY_N: `{report['CANONICAL_OUTSIDE_SESSION_AUTHORITY_KEY_N']}`.",
-        f"- UNEXPECTED_CANONICAL_TOTAL_N (specified cancellation formula): `{report['UNEXPECTED_CANONICAL_TOTAL_N']}`.",
+        f"- UNEXPECTED_CANONICAL_TOTAL_N (additive exact-key formula): `{report['UNEXPECTED_CANONICAL_TOTAL_N']}`.",
         f"- EXPECTED_KEY_N == CANONICAL_ROW_N: `{str(report['EXPECTED_KEY_N'] == report['CANONICAL_ROW_N']).lower()}`; this is not a completeness PASS because the exact key gate remains authoritative.",
         "",
         "## 300546 audit anchors",
@@ -795,10 +805,10 @@ def run_reconciliation(
         "CANONICAL_ON_UNKNOWN_KEYSET_HASH": on_unknown_manifest["KEYSET_HASH"],
         "CANONICAL_OUTSIDE_SESSION_AUTHORITY_KEY_N": len(canonical["CANONICAL_OUTSIDE_KEYS"]),
         "CANONICAL_OUTSIDE_SESSION_AUTHORITY_KEYSET_HASH": outside_manifest["KEYSET_HASH"],
-        "UNEXPECTED_CANONICAL_TOTAL_N": (
-            len(canonical["CANONICAL_ON_NOT_EXPECTED_KEYS"])
-            - len(canonical["CANONICAL_ON_UNKNOWN_KEYS"])
-            - len(canonical["CANONICAL_OUTSIDE_KEYS"])
+        "UNEXPECTED_CANONICAL_TOTAL_N": unexpected_canonical_total(
+            len(canonical["CANONICAL_ON_NOT_EXPECTED_KEYS"]),
+            len(canonical["CANONICAL_ON_UNKNOWN_KEYS"]),
+            len(canonical["CANONICAL_OUTSIDE_KEYS"]),
         ),
         "UNKNOWN_MANIFEST": {"name": UNKNOWN_MANIFEST_NAME, "KEY_N": unknown_manifest["KEY_N"], "KEYSET_HASH": unknown_manifest["KEYSET_HASH"]},
         "MISMATCH_MANIFESTS": {
