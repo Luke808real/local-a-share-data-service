@@ -11,6 +11,7 @@ quality gate failed, so Phase 2 was not executed.
 - PHASE_1_STATUS: `FAILED`; required/formal `2026/2025`
 - PHASE_1_STATUS_DETAIL: `FAILED_QUALITY_GATE`; `MISSING_REQUIRED_N=1`
 - PHASE_2_STATUS: `NOT_EXECUTED`; required/formal `None/None`
+- Current canonical anchors for both symbols were present; no 300546 provider phase was started.
 - FINAL_COMPLETE_N: `2139`
 - RECOMPUTE_REQUIRED_N: `1`
 - RETRY_REQUIRED_N: `1`
