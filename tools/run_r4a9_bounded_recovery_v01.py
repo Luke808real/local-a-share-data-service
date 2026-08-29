@@ -28,8 +28,6 @@ from rebase_r4a9_checkpoint_lineage_v01 import (
     CURRENT_DAILY_INPUT_MANIFEST_HASH,
     FORMAL_IDENTITY_HASH,
     FORMAL_IDENTITY_N,
-    NEW_CHECKPOINT_SCHEMA_VERSION,
-    NEW_R4A9_STAGE_DIRNAME,
     RebaseError,
     build_input_file_manifest,
     canonical_json_bytes,
@@ -37,7 +35,6 @@ from rebase_r4a9_checkpoint_lineage_v01 import (
     load_json,
     load_current_symbol_dates,
     parse_date,
-    require_isolated_stage_root,
     sha256_file,
     validate_resume_input_gate,
 )
@@ -45,35 +42,41 @@ from rebase_r4a9_checkpoint_lineage_v01 import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT_DEFAULT = Path("/Users/luke808/AI/local-a-share-data-service-data")
-TASK = "R4A9_BOUNDED_RECOVERY_002087_300546_V01"
-BRANCH = "codex/r4a9-bounded-recovery-002087-300546-v01"
-BASE_HEAD = "5f4f509615cb99419029792fdb5c48b3bc591b76"
+TASK = "R4A9_STATUS_CONFLICT_RECOVERY_WIRING_REEXEC_V01"
+BRANCH = "codex/r4a9-status-conflict-recovery-reexec-v01"
+BASE_HEAD = "352763992e89e049695aae71153c7edbf65f26de"
 
+NEW_R4A9_STAGE_DIRNAME = "r4a9-preclose-resume-status-conflict-v01"
+NEW_CHECKPOINT_SCHEMA_VERSION = "R4A9_STATUS_CONFLICT_RESUME_V01"
 CHECKPOINT_REL = Path("staging") / NEW_R4A9_STAGE_DIRNAME / "manifest.json"
 RECEIPT_DIRNAME = "recovery_receipts"
 UNIT_DIRNAME = "units"
 
 EXPECTED_CHECKPOINT_SHA256 = (
-    "b3cf88438c94a46d077e0d37df6b70cb45d29c741e646264a061dc0ea8d804de"
+    "6d133a0d140fcc3d8adf2b2b3b5de16982e5741cf539fda710f9ba0abed44282"
 )
 EXPECTED_DAILY_MANIFEST_HASH = CURRENT_DAILY_INPUT_MANIFEST_HASH
 COMPATIBILITY_VERDICT = "BOUNDED_INVALIDATION"
 
-R4A9_CODE_HEAD = "795b1b8f6b688ecc2e94f85c09d80c365e648920"
+R4A9_CODE_HEAD = "5748318662c0433baf72dec7c368754baf4b27f0"
+UPSTREAM_SAFE_ADAPTER_AUTHORITY_SHA = "795b1b8f6b688ecc2e94f85c09d80c365e648920"
+OVERLAY_KEY_N = 4
+OVERLAY_KEYSET_HASH = "49fd7d316e2a09bbb18f0b840d4a5034f3efb2dbba57e9f60255c7a8910b2663"
+OVERLAY_CONTRACT = "R4A_PRECLOSE_PROVEN_STATUS_CONFLICT_OVERLAY_V01"
 R4A9_QUERY_PLAN_HASH = (
     "9773875fbae9494bc1d9477cd18633dbccb92112733d9a1077fc3a43bcc38a60"
 )
 R4A9_QUERY_CONTRACT_VERSION = "R4A_PRECLOSE_V01"
 R4A9_SOURCE_VERSION = "baostock-0.9.3"
-R4A9_ADAPTER_SOURCE_SHA256 = (
-    "1f9b28e86e2d8194ab23e38b287dcbcba568babf048982f17f7b119e00eff124"
-)
+R4A9_ADAPTER_SOURCE_SHA256 = "52322e254329c2b5fef8fdaf02c16490d9b77498b2dda6e9af98ce8ec128e0fe"
+R4A9_OVERLAY_SOURCE_SHA256 = "35546e4e353850a71390213423cbd3301b9093261480be0773e2b940316aed79"
 R4A9_ORCHESTRATOR_SOURCE_SHA256 = (
     "8973dfda278a41f820f87b958b1849a501676c1a961190975a6aa46e8ad75fc5"
 )
-EXTERNAL_R4_REPO = Path("/Users/luke808/ASL-r4a9-1-300546-diag-runtime-795b1b8")
+EXTERNAL_R4_REPO = Path("/Users/luke808/ASL-r4a-preclose-status-conflict-runtime-5748318")
 EXTERNAL_SRC = EXTERNAL_R4_REPO / "src"
 ADAPTER_SOURCE = EXTERNAL_SRC / "ashare_data" / "r4a_preclose_bounded_adapter.py"
+OVERLAY_SOURCE = EXTERNAL_SRC / "ashare_data" / "r4a_preclose_status_conflict_overlay.py"
 ORCHESTRATOR_SOURCE = EXTERNAL_SRC / "ashare_data" / "r4a7_preclose_full_extraction.py"
 
 RECOVERY_SYMBOLS = ("002087.SZ", "300546.SZ")
@@ -137,20 +140,36 @@ def require_base_head(repo_root: Path) -> None:
     _require(actual == BASE_HEAD, "BASE_HEAD_MISMATCH", actual)
 
 
-def _resolve_external_runtime() -> tuple[Any, Any]:
+def require_recovery_stage_root(data_root: Path, stage_root: Path) -> Path:
+    """Guard the exact status-conflict staging root before every write."""
+    root = Path(data_root).resolve(strict=True)
+    expected = root / "staging" / NEW_R4A9_STAGE_DIRNAME
+    requested = Path(stage_root).expanduser()
+    _require(requested.is_absolute(), "RECOVERY_STAGE_ROOT_NOT_ABSOLUTE", str(requested))
+    _require(requested.resolve(strict=False) == expected, "RECOVERY_STAGE_ROOT_MISMATCH", str(requested))
+    _require(expected.is_dir() and not expected.is_symlink(), "RECOVERY_STAGE_ROOT_INVALID", str(expected))
+    return expected
+
+
+def _resolve_external_runtime() -> tuple[Any, Any, Any]:
     _require(EXTERNAL_R4_REPO.is_dir(), "R4_RUNTIME_REPO_MISSING", str(EXTERNAL_R4_REPO))
     _require(_git_head(EXTERNAL_R4_REPO) == R4A9_CODE_HEAD, "R4_RUNTIME_HEAD_MISMATCH")
     _require(_git_clean(EXTERNAL_R4_REPO), "R4_RUNTIME_WORKTREE_DIRTY")
     _require(sha256_file(ADAPTER_SOURCE) == R4A9_ADAPTER_SOURCE_SHA256, "R4_ADAPTER_SOURCE_HASH_MISMATCH")
+    _require(sha256_file(OVERLAY_SOURCE) == R4A9_OVERLAY_SOURCE_SHA256, "R4_OVERLAY_SOURCE_HASH_MISMATCH")
     _require(sha256_file(ORCHESTRATOR_SOURCE) == R4A9_ORCHESTRATOR_SOURCE_SHA256, "R4_ORCHESTRATOR_SOURCE_HASH_MISMATCH")
     _require(str(EXTERNAL_SRC) not in sys.path, "R4_RUNTIME_PATH_PRELOADED")
     sys.path.insert(0, str(EXTERNAL_SRC))
     try:
         adapter = importlib.import_module("ashare_data.r4a_preclose_bounded_adapter")
+        overlay = importlib.import_module("ashare_data.r4a_preclose_status_conflict_overlay")
         orchestrator = importlib.import_module("ashare_data.r4a7_preclose_full_extraction")
     except Exception as exc:  # pragma: no cover - environment-specific gate
         raise RebaseError("R4_RUNTIME_IMPORT_FAILED") from exc
     _require(sha256_file(Path(adapter.__file__)) == R4A9_ADAPTER_SOURCE_SHA256, "IMPORTED_ADAPTER_HASH_MISMATCH")
+    _require(sha256_file(Path(overlay.__file__)) == R4A9_OVERLAY_SOURCE_SHA256, "IMPORTED_OVERLAY_HASH_MISMATCH")
+    _require(Path(adapter.__file__).resolve().is_relative_to(EXTERNAL_SRC), "IMPORTED_ADAPTER_PATH_MISMATCH")
+    _require(Path(overlay.__file__).resolve().is_relative_to(EXTERNAL_SRC), "IMPORTED_OVERLAY_PATH_MISMATCH")
     _require(sha256_file(Path(orchestrator.__file__)) == R4A9_ORCHESTRATOR_SOURCE_SHA256, "IMPORTED_ORCHESTRATOR_HASH_MISMATCH")
     computed_plan = adapter.build_query_plan(
         ["002087.SZ", "300546.SZ"],
@@ -159,7 +178,7 @@ def _resolve_external_runtime() -> tuple[Any, Any]:
     )
     _require(computed_plan["QUERY_WINDOW_N"] == 22, "BOUNDED_UNIT_QUERY_WINDOW_COUNT_MISMATCH")
     _require(computed_plan["QUERY_PLAN_HASH"] != R4A9_QUERY_PLAN_HASH, "UNIT_PLAN_UNEXPECTEDLY_EQUALS_FULL_PLAN")
-    return adapter, orchestrator
+    return adapter, orchestrator, overlay
 
 
 def _checkpoint_path(data_root: Path) -> Path:
@@ -168,8 +187,7 @@ def _checkpoint_path(data_root: Path) -> Path:
 
 def _load_lineage_checkpoint(data_root: Path, formal_symbols: set[str]) -> tuple[Path, dict[str, Any], str]:
     root = data_root.resolve(strict=True)
-    stage_root = root / "staging" / NEW_R4A9_STAGE_DIRNAME
-    require_isolated_stage_root(root, stage_root, allow_existing=True)
+    stage_root = require_recovery_stage_root(root, root / "staging" / NEW_R4A9_STAGE_DIRNAME)
     path = stage_root / "manifest.json"
     _require(path.is_file() and not path.is_symlink(), "LINEAGE_CHECKPOINT_MISSING", str(path))
     checkpoint_sha = sha256_file(path)
@@ -182,6 +200,11 @@ def _load_lineage_checkpoint(data_root: Path, formal_symbols: set[str]) -> tuple
     _require(checkpoint.get("formal_identity_hash") == FORMAL_IDENTITY_HASH, "LINEAGE_IDENTITY_HASH_MISMATCH")
     _require(checkpoint.get("full_query_plan_hash") == R4A9_QUERY_PLAN_HASH, "LINEAGE_QUERY_PLAN_HASH_MISMATCH")
     _require(checkpoint.get("adapter_authority_sha") == R4A9_CODE_HEAD, "LINEAGE_ADAPTER_AUTHORITY_MISMATCH")
+    _require(checkpoint.get("resume_adapter_authority_sha") == R4A9_CODE_HEAD, "LINEAGE_RESUME_ADAPTER_AUTHORITY_MISMATCH")
+    _require(checkpoint.get("upstream_safe_adapter_authority_sha") == UPSTREAM_SAFE_ADAPTER_AUTHORITY_SHA, "LINEAGE_UPSTREAM_SAFE_ADAPTER_AUTHORITY_MISMATCH")
+    _require(checkpoint.get("status_conflict_overlay_contract") == OVERLAY_CONTRACT, "LINEAGE_OVERLAY_CONTRACT_MISMATCH")
+    _require(checkpoint.get("status_conflict_overlay_key_n") == OVERLAY_KEY_N, "LINEAGE_OVERLAY_COUNT_MISMATCH")
+    _require(checkpoint.get("status_conflict_overlay_keyset_hash") == OVERLAY_KEYSET_HASH, "LINEAGE_OVERLAY_HASH_MISMATCH")
     _require(checkpoint.get("query_contract_version") == R4A9_QUERY_CONTRACT_VERSION, "LINEAGE_QUERY_CONTRACT_MISMATCH")
     units = checkpoint.get("units")
     _require(isinstance(units, dict), "LINEAGE_UNITS_INVALID")
@@ -239,6 +262,35 @@ def _canonical_close(data_root: Path, symbol: str, trade_day: date) -> float:
     )
     _require(frame.height == 1, "CANONICAL_CLOSE_NOT_UNIQUE", f"{symbol}:{trade_day}")
     return float(frame["close"][0])
+
+
+def verify_002087_pre_network_overlay_proof(
+    overlay: dict[tuple[str, date], dict[str, Any]], data_root: Path
+) -> None:
+    key = ("002087.SZ", date(2024, 6, 13))
+    evidence = overlay.get(key)
+    _require(evidence is not None, "002087_OVERLAY_KEY_MISSING")
+    _require(evidence.get("r3_required_key") is True and evidence.get("proven_expected_bar") is True, "002087_OVERLAY_REQUIRED_PROOF_MISSING")
+    _require(evidence.get("tushare_trade_status") is True, "002087_OVERLAY_TUSHARE_STATUS_MISMATCH")
+    _require(float(evidence.get("fallback_preclose", 0.0)) == 0.17, "002087_OVERLAY_PRECLOSE_MISMATCH")
+    _require(evidence.get("predecessor_parity") is True, "002087_OVERLAY_PARITY_MISMATCH")
+    _require(_canonical_close(data_root, "002087.SZ", date(2024, 6, 12)) == 0.17, "002087_CANONICAL_20240612_CLOSE_MISMATCH")
+    _require(_canonical_close(data_root, "002087.SZ", date(2024, 6, 13)) == 0.16, "002087_CANONICAL_20240613_CLOSE_MISMATCH")
+
+
+def status_conflict_receipt_metadata(
+    symbol: str, overlay: dict[tuple[str, date], dict[str, Any]]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "symbol": key[0], "trade_date": key[1].isoformat(),
+            "primary_source": value["primary_source"], "primary_tradestatus": value["primary_tradestatus"],
+            "primary_status_conflict": value["primary_status_conflict"],
+            "fallback_source": value["source"], "fallback_preclose": value["fallback_preclose"],
+            "predecessor_parity": value["predecessor_parity"],
+        }
+        for key, value in sorted(overlay.items()) if key[0] == symbol
+    ]
 
 
 def _write_json_atomic(path: Path, payload: Any) -> str:
@@ -346,6 +398,26 @@ def _quality_counters(result: dict[str, Any]) -> dict[str, int]:
     return {field: int(result.get(field, -1)) for field in REQUIRED_COUNTERS}
 
 
+def _verify_recovery_formal_rows(
+    rows: list[dict[str, Any]], *, symbol: str, adapter: Any,
+    proven_status_conflicts: dict[tuple[str, date], dict[str, Any]],
+) -> None:
+    """Keep normal formal provenance strict while admitting one proven fallback."""
+    for row in rows:
+        trade_day = parse_date(row["trade_date"])
+        _require(str(row.get("symbol")) == symbol, "R4_UNIT_FORMAL_SYMBOL_MISMATCH")
+        _require(row.get("provider_tradestatus") == 1 and row.get("coverage_status") == "COVERED", "R4_UNIT_FORMAL_COVERAGE_MISMATCH")
+        _require(row.get("adapter_version") == R4A9_CODE_HEAD and row.get("query_contract_version") == R4A9_QUERY_CONTRACT_VERSION, "R4_UNIT_FORMAL_RUNTIME_MISMATCH")
+        _require(math.isfinite(float(row["preclose"])) and float(row["preclose"]) > 0, "R4_UNIT_FORMAL_PRECLOSE_INVALID")
+        key = (symbol, trade_day)
+        if key in proven_status_conflicts:
+            fallback = proven_status_conflicts[key]
+            _require(row.get("source") == fallback["source"] and row.get("source_version") == fallback["source_version"], "R4_UNIT_FALLBACK_PROVENANCE_MISMATCH")
+            _require(adapter.display_equal(row["preclose"], fallback["fallback_preclose"]), "R4_UNIT_FALLBACK_PRECLOSE_MISMATCH")
+        else:
+            _require(row.get("source") == "BAOSTOCK_HISTORY_K_PRECLOSE" and row.get("source_version") == R4A9_SOURCE_VERSION, "R4_UNIT_NORMAL_SOURCE_MISMATCH")
+
+
 def full_continuation_candidate(phase_1_status: str | None, phase_2_status: str | None) -> bool:
     """Only both successful bounded phases may nominate a full continuation."""
     return phase_1_status == "PASS" and phase_2_status == "PASS"
@@ -359,6 +431,7 @@ def _verify_formal_result(
     symbol: str,
     formal_path: Path,
     data_root: Path,
+    proven_status_conflicts: dict[tuple[str, date], dict[str, Any]],
 ) -> dict[str, Any]:
     _require(result.get("STATUS") == "COMPLETE", "R4_UNIT_STATUS_NOT_COMPLETE", result.get("STATUS"))
     _require(result.get("QUALITY_GATE_PASS") is True, "R4_UNIT_QUALITY_GATE_FAILED", symbol)
@@ -377,27 +450,24 @@ def _verify_formal_result(
     formal_hash = orchestrator.formal_fact_hash(readback_rows)
     staged_hash = orchestrator.staged_formal_content_hash(readback_rows)
     _require(formal_hash == orchestrator.formal_fact_hash(formal_rows), "R4_UNIT_READBACK_FACT_HASH_MISMATCH", symbol)
-    ok, issues = orchestrator.verify_staged_formal_rows(
-        readback_rows,
-        expected_symbol=symbol,
-        contract=orchestrator.contract_identity(
-            as_of=adapter.AS_OF,
-            window_start=adapter.WINDOW_START,
-            adapter_authority_sha=R4A9_CODE_HEAD,
-            full_query_plan_hash=R4A9_QUERY_PLAN_HASH,
-        ),
-        as_of=adapter.AS_OF,
-    )
-    _require(ok, "R4_UNIT_FORMAL_ROW_VALIDATION_FAILED", issues[:5])
+    _verify_recovery_formal_rows(readback_rows, symbol=symbol, adapter=adapter, proven_status_conflicts=proven_status_conflicts)
     _require(len(readback_rows) == int(result["REQUIRED_ROW_N"]), "R4_UNIT_REQUIRED_FORMAL_COUNT_MISMATCH", symbol)
     _require(len(readback_rows) == int(result["FORMAL_FACT_ROW_N"]), "R4_UNIT_FORMAL_COUNT_MISMATCH", symbol)
     if symbol == "002087.SZ":
+        _require(int(result.get("PRIMARY_STATUS_CONFLICT_N", 0)) == 1, "002087_PRIMARY_STATUS_CONFLICT_COUNT_MISMATCH")
         dates = {parse_date(row["trade_date"]): row for row in readback_rows}
         _require(date(2024, 6, 13) in dates, "002087_FORMAL_20240613_MISSING")
         _require(date(2024, 6, 14) in dates, "002087_FORMAL_20240614_MISSING")
         provider_preclose = float(dates[date(2024, 6, 14)]["preclose"])
         canonical_predecessor = _canonical_close(data_root, symbol, date(2024, 6, 13))
         _require(adapter.display_equal(provider_preclose, canonical_predecessor), "002087_PREDECESSOR_PARITY_FAILED")
+        fallback = dates[date(2024, 6, 13)]
+        _require(fallback["source"] == "TUSHARE_LOCAL_RAW_PRECLOSE_FALLBACK", "002087_FALLBACK_SOURCE_MISMATCH")
+        _require(adapter.display_equal(fallback["preclose"], 0.17), "002087_FALLBACK_PRECLOSE_MISMATCH")
+        _require(fallback["provider_tradestatus"] == 1 and fallback["coverage_status"] == "COVERED", "002087_FALLBACK_FORMAL_PROVENANCE_MISMATCH")
+        _require(proven_status_conflicts[("002087.SZ", date(2024, 6, 13))]["primary_tradestatus"] == 0, "002087_OVERLAY_PRIMARY_STATUS_MISMATCH")
+    else:
+        _require(int(result.get("PRIMARY_STATUS_CONFLICT_N", 0)) == 0, "NONMATCHING_OVERLAY_FALLBACK_DETECTED")
     return {
         "formal_path": str(formal_path),
         "FORMAL_FILE_SHA256": file_sha,
@@ -456,6 +526,7 @@ def _new_complete_entry(
         },
         **{field: int(result[field]) for field in REQUIRED_COUNTERS},
         "PROVIDER_SUSPENDED_SUPERSET_N": int(result["PROVIDER_SUSPENDED_SUPERSET_N"]),
+        "PRIMARY_STATUS_CONFLICT_N": int(result.get("PRIMARY_STATUS_CONFLICT_N", 0)),
         "provider_raw_receipt_path": str(raw_receipt_path),
         "provider_raw_receipt_sha256": raw_receipt_sha,
         "normalized_receipt_path": str(normalized_receipt_path),
@@ -474,6 +545,7 @@ def _execute_symbol(
     symbol: str,
     recovery_kind: str,
     reason: str,
+    proven_status_conflicts: dict[tuple[str, date], dict[str, Any]],
     progress: Callable[[str], None] | None,
 ) -> dict[str, Any]:
     enforce_network_scope(symbol)
@@ -498,6 +570,7 @@ def _execute_symbol(
             adapter_version=R4A9_CODE_HEAD,
             expected_adapter_sha=R4A9_CODE_HEAD,
             runtime_adapter_sha=R4A9_CODE_HEAD,
+            proven_status_conflicts=proven_status_conflicts,
             fetched_at=datetime.now(timezone.utc).isoformat(),
             as_of=adapter.AS_OF,
             window_start=adapter.WINDOW_START,
@@ -562,6 +635,9 @@ def _execute_symbol(
         "quality_counters": _quality_counters(result),
         "query_window_n": int(result.get("QUERY_WINDOW_N", -1)),
         "query_plan_hash": result.get("QUERY_PLAN_HASH"),
+        "primary_status_conflict_n": int(result.get("PRIMARY_STATUS_CONFLICT_N", 0)),
+        "status_conflict_audit": [row for row in result.get("audit_summary", []) if row.get("issue") == "PRIMARY_STATUS_CONFLICT"],
+        "status_conflict_overlay": status_conflict_receipt_metadata(symbol, proven_status_conflicts),
     }
     normalized_receipt_path = stage_root / RECEIPT_DIRNAME / f"{symbol}.normalized.json"
     normalized_receipt_sha = _write_json_atomic(normalized_receipt_path, normalized_payload)
@@ -574,6 +650,7 @@ def _execute_symbol(
             symbol=symbol,
             formal_path=formal_path,
             data_root=data_root,
+            proven_status_conflicts=proven_status_conflicts,
         )
     except Exception as exc:
         failure = {
@@ -647,11 +724,7 @@ def _update_checkpoint(
     expected_before_sha: str,
     data_root: Path,
 ) -> tuple[str, str]:
-    require_isolated_stage_root(
-        data_root,
-        data_root.resolve(strict=True) / "staging" / NEW_R4A9_STAGE_DIRNAME,
-        allow_existing=True,
-    )
+    require_recovery_stage_root(data_root, data_root.resolve(strict=True) / "staging" / NEW_R4A9_STAGE_DIRNAME)
     before = sha256_file(checkpoint_path)
     _require(before == expected_before_sha, "CHECKPOINT_BEFORE_SHA_MISMATCH", before)
     after = _write_json_atomic(checkpoint_path, checkpoint)
@@ -752,6 +825,7 @@ def _base_report(
         "PHASE_1_STAGED_FORMAL_CONTENT_HASH": (phase_1.get("artifact") or {}).get("STAGED_FORMAL_CONTENT_HASH"),
         "PHASE_1_STATUS_DETAIL": phase_1_result.get("STATUS"),
         "PHASE_1_QUALITY_COUNTERS": _quality_counters(phase_1_result) if phase_1_result else None,
+        "PHASE_1_PRIMARY_STATUS_CONFLICT_N": int(phase_1_result.get("PRIMARY_STATUS_CONFLICT_N", 0)),
         "PHASE_1_20240613_PRESENT": phase_1.get("status") == "PASS",
         "PHASE_1_20240614_PREDECESSOR_PARITY": phase_1.get("status") == "PASS",
         "PHASE_2_STATUS": phase_2.get("status"),
@@ -764,6 +838,9 @@ def _base_report(
         "PHASE_2_STATUS_DETAIL": phase_2_result.get("STATUS"),
         "PHASE_2_QUALITY_COUNTERS": _quality_counters(phase_2_result) if phase_2_result else None,
         "002087_20240613_PRESENT": phase_1.get("status") == "PASS",
+        "002087_20240613_SOURCE": "TUSHARE_LOCAL_RAW_PRECLOSE_FALLBACK" if phase_1.get("status") == "PASS" else None,
+        "002087_20240613_PRECLOSE": 0.17 if phase_1.get("status") == "PASS" else None,
+        "002087_20240613_PRIMARY_TRADESTATUS": 0 if phase_1.get("status") == "PASS" else None,
         "002087_20240614_PREDECESSOR_PARITY": phase_1.get("status") == "PASS",
         "300546_20160929_PRESENT": phase_2.get("status") == "PASS",
         "300546_20161010_PRESENT": phase_2.get("status") == "PASS",
@@ -848,27 +925,31 @@ def run_recovery(
     repo_root = Path(repo_root).resolve(strict=True)
     data_root = Path(data_root).expanduser()
     require_base_head(repo_root)
-    stage_root = require_isolated_stage_root(
-        data_root,
-        data_root / "staging" / NEW_R4A9_STAGE_DIRNAME,
-        allow_existing=True,
-    )
+    stage_root = require_recovery_stage_root(data_root, data_root.resolve(strict=True) / "staging" / NEW_R4A9_STAGE_DIRNAME)
     pre_manifest, formal_symbols, current_dates = _load_current_authority(data_root)
     checkpoint_path, checkpoint, start_checkpoint_sha = _load_lineage_checkpoint(data_root, formal_symbols)
     validate_resume_input_gate(checkpoint, pre_manifest["INPUT_MANIFEST_HASH"])
+    prior_checkpoint_path = data_root.resolve(strict=True) / "staging" / "r4a9-preclose-resume-post-r3-repair-v01" / "manifest.json"
+    prior_checkpoint_sha = sha256_file(prior_checkpoint_path)
+    _require(prior_checkpoint_sha == checkpoint["upstream_checkpoint_sha256"], "UPSTREAM_CHECKPOINT_DRIFT", prior_checkpoint_sha)
     old_checkpoint_path = data_root.resolve(strict=True) / "staging" / "r4a9-preclose-real-full-extraction-v01" / "manifest.json"
     old_checkpoint_sha = sha256_file(old_checkpoint_path)
-    _require(old_checkpoint_sha == checkpoint["upstream_checkpoint_sha256"], "UPSTREAM_CHECKPOINT_DRIFT", old_checkpoint_sha)
+    prior_checkpoint = load_json(prior_checkpoint_path)
+    _require(old_checkpoint_sha == prior_checkpoint.get("upstream_checkpoint_sha256"), "OLD_HISTORICAL_CHECKPOINT_DRIFT", old_checkpoint_sha)
     _require(_git_head(EXTERNAL_R4_REPO) == R4A9_CODE_HEAD, "R4_RUNTIME_HEAD_MISMATCH")
 
     # Importing the frozen R4 modules is still pre-provider: BaoStock is lazy
     # in the wrapper and login is not called until _execute_symbol below.
-    adapter, orchestrator = _resolve_external_runtime()
+    adapter, orchestrator, overlay_module = _resolve_external_runtime()
     _require(adapter.FORMAL_IDENTITY_N == FORMAL_IDENTITY_N, "R4_RUNTIME_IDENTITY_COUNT_MISMATCH")
     _require(adapter.FORMAL_IDENTITY_HASH == FORMAL_IDENTITY_HASH, "R4_RUNTIME_IDENTITY_HASH_MISMATCH")
     _require(adapter.QUERY_FIELDS == "date,code,preclose,tradestatus", "R4_RUNTIME_QUERY_FIELDS_MISMATCH")
     _require(adapter.QUERY_FREQUENCY == "d", "R4_RUNTIME_QUERY_FREQUENCY_MISMATCH")
     _require(adapter.QUERY_ADJUSTFLAG == "3", "R4_RUNTIME_QUERY_ADJUSTFLAG_MISMATCH")
+    proven_status_conflicts = overlay_module.load_proven_traded_status_conflicts(EXTERNAL_R4_REPO, data_root)
+    _require(len(proven_status_conflicts) == OVERLAY_KEY_N, "RUNTIME_OVERLAY_COUNT_MISMATCH")
+    _require(overlay_module.keyset_hash(set(proven_status_conflicts)) == OVERLAY_KEYSET_HASH, "RUNTIME_OVERLAY_HASH_MISMATCH")
+    verify_002087_pre_network_overlay_proof(proven_status_conflicts, data_root)
 
     # These dates are loaded before the first provider login and are retained
     # for explicit report anchors.
@@ -885,6 +966,7 @@ def run_recovery(
         symbol="002087.SZ",
         recovery_kind="RECOMPUTE_AFTER_R3_KEYSET_CHANGE",
         reason="R3_DAILY_REQUIRED_KEYSET_CHANGED",
+        proven_status_conflicts=proven_status_conflicts,
         progress=progress,
     )
     network_records = list(phase_1.get("request_records", []))
@@ -902,6 +984,7 @@ def run_recovery(
         }
         failure_manifest = build_input_file_manifest(data_root)
         _require(failure_manifest == pre_manifest, "DAILY_MANIFEST_CHANGED_DURING_FAILED_PHASE_1")
+        _require(sha256_file(prior_checkpoint_path) == prior_checkpoint_sha, "UPSTREAM_CHECKPOINT_MUTATED_DURING_FAILED_PHASE_1")
         _require(sha256_file(old_checkpoint_path) == old_checkpoint_sha, "OLD_R4A9_CHECKPOINT_MUTATED_DURING_FAILED_PHASE_1")
         final_checkpoint = load_json(checkpoint_path)
         report = _base_report(
@@ -978,6 +1061,7 @@ def run_recovery(
         symbol="300546.SZ",
         recovery_kind="RETRY_AFTER_UPSTREAM_R3_REPAIR",
         reason="UPSTREAM_R3_DEFECT_REPAIRED",
+        proven_status_conflicts=proven_status_conflicts,
         progress=progress,
     )
     network_records.extend(phase_2.get("request_records", []))
@@ -1027,6 +1111,7 @@ def run_recovery(
         final_checkpoint = load_json(checkpoint_path)
 
     # Final local-only immutability and state gates.
+    _require(sha256_file(prior_checkpoint_path) == prior_checkpoint_sha, "UPSTREAM_CHECKPOINT_MUTATED")
     _require(sha256_file(old_checkpoint_path) == old_checkpoint_sha, "OLD_R4A9_CHECKPOINT_MUTATED")
     final_manifest = build_input_file_manifest(data_root)
     _require(final_manifest == pre_manifest, "DAILY_MANIFEST_CHANGED_AFTER_RECOVERY")
