@@ -43,6 +43,8 @@ from typing import Protocol
 
 import polars as pl
 
+from ashare_data.r4a_preclose_status_conflict_overlay import validate_overlay_registry
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT_DEFAULT = Path("/Users/luke808/AI/local-a-share-data-service-data")
@@ -349,11 +351,13 @@ def normalize_baostock_preclose_rows(
     *,
     as_of: date = AS_OF,
     requested_window: dict[str, Any] | None = None,
+    proven_status_conflicts: dict[tuple[str, date], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Strictly classify provider rows into the frozen contract's bins.
 
     Classifications:
-      ELIGIBLE_REQUIRED_ROW / PROVIDER_SUSPENDED_SUPERSET / UNEXPECTED_TRADED /
+      ELIGIBLE_REQUIRED_ROW / PRIMARY_STATUS_CONFLICT /
+      PROVIDER_SUSPENDED_SUPERSET / UNEXPECTED_TRADED /
       TRADESTATUS_UNKNOWN / IDENTITY_FAILURE / WINDOW_SCOPE_FAILURE /
       POST_ASOF / DUPLICATE / INVALID_PRECLOSE
 
@@ -362,9 +366,13 @@ def normalize_baostock_preclose_rows(
     classification, so any duplicate (status0+status0, status0+status1,
     invalid+valid, unexpected, eligible) is a blocker.
     """
+    overlay = proven_status_conflicts or {}
+    if overlay:
+        validate_overlay_registry(overlay)
     expected_code = {symbol: bs_code(symbol) for symbol in symbols}
     counts = {
         "ELIGIBLE_REQUIRED_ROW": 0,
+        "PRIMARY_STATUS_CONFLICT": 0,
         "PROVIDER_SUSPENDED_SUPERSET": 0,
         "UNEXPECTED_TRADED": 0,
         "TRADESTATUS_UNKNOWN": 0,
@@ -418,6 +426,35 @@ def normalize_baostock_preclose_rows(
                 }
             )
             continue
+        if ts == "0" and pk in overlay:
+            fallback = overlay[pk]
+            if pk not in required_keys:
+                counts["UNEXPECTED_TRADED"] += 1
+                audit.append({"symbol": symbol, "date": parsed_date.isoformat(), "issue": "OVERLAY_KEY_NOT_REQUIRED"})
+                continue
+            preclose = parse_float(fallback.get("fallback_preclose"))
+            if preclose is None or not (math.isfinite(preclose) and preclose > 0):
+                counts["INVALID_PRECLOSE"] += 1
+                audit.append({"symbol": symbol, "date": parsed_date.isoformat(), "issue": "INVALID_OVERLAY_PRECLOSE"})
+                continue
+            eligible_keys.add(pk)
+            eligible.append({
+                "symbol": symbol,
+                "trade_date": parsed_date,
+                "preclose": preclose,
+                "provider_tradestatus": 1,
+                "coverage_status": "COVERED",
+                "source": fallback["source"],
+                "source_version": fallback["source_version"],
+                "primary_source": fallback["primary_source"],
+                "primary_tradestatus": 0,
+                "primary_status_conflict": True,
+                "fallback_evidence_file_sha256": fallback["evidence_file_sha256"],
+            })
+            counts["ELIGIBLE_REQUIRED_ROW"] += 1
+            counts["PRIMARY_STATUS_CONFLICT"] += 1
+            audit.append({"symbol": symbol, "date": parsed_date.isoformat(), "issue": "PRIMARY_STATUS_CONFLICT"})
+            continue
         if ts == "0":
             counts["PROVIDER_SUSPENDED_SUPERSET"] += 1
             audit.append(
@@ -450,6 +487,8 @@ def normalize_baostock_preclose_rows(
                 "preclose": preclose,
                 "provider_tradestatus": 1,
                 "coverage_status": "COVERED",
+                "source": SOURCE,
+                "source_version": SOURCE_VERSION,
             }
         )
         counts["ELIGIBLE_REQUIRED_ROW"] += 1
@@ -474,8 +513,8 @@ def build_formal_facts(
             "symbol": row["symbol"],
             "trade_date": row["trade_date"],
             "preclose": float(row["preclose"]),
-            "source": SOURCE,
-            "source_version": SOURCE_VERSION,
+            "source": row.get("source", SOURCE),
+            "source_version": row.get("source_version", SOURCE_VERSION),
             "adapter_version": adapter_version,
             "query_contract_version": QUERY_CONTRACT_VERSION,
             "fetched_at": fetched_at,
@@ -705,6 +744,7 @@ def run_bounded_adapter(
     fetched_at: str,
     expected_adapter_sha: str | None = None,
     runtime_adapter_sha: str | None = None,
+    proven_status_conflicts: dict[tuple[str, date], dict[str, Any]] | None = None,
     as_of: date = AS_OF,
     window_start: date = WINDOW_START,
 ) -> dict[str, Any]:
@@ -867,6 +907,7 @@ def run_bounded_adapter(
         required["required_keys"],
         symbol_list,
         as_of=as_of,
+        proven_status_conflicts=proven_status_conflicts,
     )
     formal_rows = build_formal_facts(
         normalized["eligible_rows"],
@@ -888,6 +929,7 @@ def run_bounded_adapter(
         "FORMAL_FACT_ROW_N": len(formal_rows),
         "MISSING_REQUIRED_N": normalized["missing_required_n"],
         "PROVIDER_SUSPENDED_SUPERSET_N": counts["PROVIDER_SUSPENDED_SUPERSET"],
+        "PRIMARY_STATUS_CONFLICT_N": counts["PRIMARY_STATUS_CONFLICT"],
         "UNEXPECTED_TRADED_N": counts["UNEXPECTED_TRADED"],
         "TRADESTATUS_UNKNOWN_N": counts["TRADESTATUS_UNKNOWN"],
         "IDENTITY_FAILURE_N": counts["IDENTITY_FAILURE"],

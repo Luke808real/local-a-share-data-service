@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from ashare_data.r4a_preclose_bounded_adapter import (
     AS_OF,
@@ -45,6 +46,12 @@ from ashare_data.r4a_preclose_bounded_adapter import (
     verify_window_boundary_rows,
     verify_provider_field_identity,
     parse_date,
+)
+from ashare_data.r4a_preclose_status_conflict_overlay import (
+    OVERLAY_CONTRACT,
+    OVERLAY_KEYS,
+    OVERLAY_KEYSET_HASH,
+    validate_overlay_registry,
 )
 
 
@@ -89,6 +96,26 @@ def _normalize(
         ["000001.SZ"],
         as_of=AS_OF,
     )
+
+
+def _proven_overlay() -> dict[tuple[str, date], dict[str, object]]:
+    return {
+        key: {
+            "contract": OVERLAY_CONTRACT,
+            "r3_required_key": True,
+            "proven_expected_bar": True,
+            "tushare_trade_status": True,
+            "fallback_preclose": 10.0,
+            "source": "TUSHARE_LOCAL_RAW_PRECLOSE_FALLBACK",
+            "source_version": "tushare-1.4.29",
+            "evidence_file_sha256": "evidence-sha",
+            "primary_source": "BAOSTOCK_HISTORY_K_PRECLOSE",
+            "primary_tradestatus": 0,
+            "primary_status_conflict": True,
+            "predecessor_parity": True,
+        }
+        for key in OVERLAY_KEYS
+    }
 
 
 def _bars(symbol: str = "000001.SZ") -> pl.DataFrame:
@@ -269,6 +296,53 @@ def test_11_formal_schema_always_coverage_covered_and_status1():
     assert all(row["coverage_status"] == "COVERED" for row in formal)
     assert all(row["provider_tradestatus"] == 1 for row in formal)
     assert all(isinstance(row["preclose"], float) and math.isfinite(row["preclose"]) for row in formal)
+
+
+def test_status0_non_overlay_never_uses_fallback():
+    overlay = _proven_overlay()
+    result = normalize_baostock_preclose_rows(
+        [_provider_row("000001.SZ", date(2016, 1, 6), preclose=10.0, tradestatus="0")],
+        {("000001.SZ", date(2016, 1, 6))},
+        ["000001.SZ"],
+        proven_status_conflicts=overlay,
+    )
+    assert result["counts"]["PROVIDER_SUSPENDED_SUPERSET"] == 1
+    assert result["counts"]["PRIMARY_STATUS_CONFLICT"] == 0
+    assert result["eligible_rows"] == []
+
+
+def test_exact_status0_overlay_key_uses_only_valid_local_fallback():
+    key = OVERLAY_KEYS[0]
+    overlay = _proven_overlay()
+    overlay[key]["fallback_preclose"] = 0.17
+    result = normalize_baostock_preclose_rows(
+        [_provider_row(key[0], key[1], preclose=0.17, tradestatus="0")],
+        {key},
+        [key[0]],
+        proven_status_conflicts=overlay,
+    )
+    assert result["counts"]["PRIMARY_STATUS_CONFLICT"] == 1
+    assert result["counts"]["PROVIDER_SUSPENDED_SUPERSET"] == 0
+    formal = build_formal_facts(result["eligible_rows"], adapter_version="TEST", fetched_at="t")
+    assert formal == [{
+        "symbol": key[0], "trade_date": key[1], "preclose": 0.17,
+        "source": "TUSHARE_LOCAL_RAW_PRECLOSE_FALLBACK", "source_version": "tushare-1.4.29",
+        "adapter_version": "TEST", "query_contract_version": "R4A_PRECLOSE_V01",
+        "fetched_at": "t", "provider_tradestatus": 1, "coverage_status": "COVERED",
+    }]
+    assert result["audit_rows"][0]["issue"] == "PRIMARY_STATUS_CONFLICT"
+
+
+def test_overlay_scope_or_authority_defect_fails_closed_before_normalization():
+    bad_scope = _proven_overlay()
+    bad_scope.pop(OVERLAY_KEYS[-1])
+    with pytest.raises(Exception, match="OVERLAY_SCOPE_MISMATCH"):
+        validate_overlay_registry(bad_scope)
+    bad_parity = _proven_overlay()
+    bad_parity[OVERLAY_KEYS[0]]["predecessor_parity"] = False
+    with pytest.raises(Exception, match="FALLBACK_PRECLOSE_PARITY_FAILURE"):
+        validate_overlay_registry(bad_parity)
+    assert OVERLAY_KEYSET_HASH == "49fd7d316e2a09bbb18f0b840d4a5034f3efb2dbba57e9f60255c7a8910b2663"
 
 
 # ---------------------------------------------------------------------------
