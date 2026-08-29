@@ -28,3 +28,14 @@ Rule: New decisions append; superseded decisions remain visible and identify the
 **D023** MCP / ChatGPT Web 不属于 Local Data MVP blocker。
 **D024** Codex AUTHOR_PASS 不等于正式 AUDIT_PASS。
 **D025** Master Spec → Roadmap → Project State → Phase Plan → Codex Task 构成长期工程控制链。
+
+**D026** R3 readiness split: `DAILY_USABLE ∈ {true,false}` is the daily
+facts/usability flag; `DAILY_COVERAGE_STATUS ∈ {COMPLETE, PARTIAL, UNKNOWN}`
+exposes coverage separately; and `FULL_HISTORY_CERTIFIED ∈ {true,false}` is an
+independent forensic-certification flag. `FULL_HISTORY_CERTIFIED=false` does
+not by itself block R4 execution, R8 development, research queries, or Local
+Data V1 research usability. Known historical exceptions remain explicitly
+hash-bound and visible; a concrete material daily-bar defect remains a
+`DAILY_USABLE` blocker until repaired. This decision supersedes any prior
+interpretation that full historical session certification is an R4 entry
+prerequisite; earlier decisions and their evidence remain retained.

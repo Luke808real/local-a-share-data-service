@@ -10,12 +10,50 @@ CURRENT_PHASE: R3 SH/SZ MVP COMPLETE — R4 SH/SZ PLANNING NEXT
 - R3_SHSZ_DAILY_FOUNDATION = PASS
 - R3_SHSZ_CLOSEOUT = FROZEN
 - ALL_A_DAILY_READY = FALSE
-- DAILY_READY = FALSE
+- DAILY_READY = FALSE (legacy phase label; current readiness uses D026 below)
 - BJ_EXTENSION = DEFERRED
 
-This records the R3 SH/SZ MVP (V08) closeout only. The full all-A R3 / DAILY_READY
-exit (ROADMAP semantics) is NOT complete; BJ current/historical is a deferred
-extension and BJ_HISTORICAL_AUTHORITY is not proven.
+This records the R3 SH/SZ MVP (V08) closeout only. The full all-A R3 daily
+usability exit (ROADMAP semantics) is NOT complete; BJ current/historical is a
+deferred extension and BJ_HISTORICAL_AUTHORITY is not proven.
+
+## READINESS_REALIGNMENT (D026)
+
+The V08 closeout fields above are retained as historical phase evidence. They do
+not certify full historical session coverage and do not override the current
+readiness split:
+
+```text
+DAILY_USABLE=false
+DAILY_USABLE_BLOCKER=4_PROVEN_MISSING_TRADED_BARS
+DAILY_COVERAGE_STATUS=PARTIAL
+FULL_HISTORY_CERTIFIED=false
+HISTORICAL_FORENSICS_STATUS=OPEN_NONBLOCKING
+R4_EXECUTION_AUTHORIZED=false
+```
+
+Current frozen evidence references, without copying provider receipt corpora:
+
+- `PROVEN_MATERIAL_DAILY_DEFECT_N=4`; keyset hash
+  `49fd7d316e2a09bbb18f0b840d4a5034f3efb2dbba57e9f60255c7a8910b2663`, from
+  `reports/implementation/R3_STATUS0_SECONDARY_AUTHORITY_PILOT_V01.json`
+  (`ADJUDICATION_MANIFEST_HASH=fbfbd2dd29c35ca686bf3373c2b70aa24ff615f1d2c853542fa7ba3d334a3a30`).
+- `STATUS_CONTRADICTION_UNKNOWN_N=4`, keyset hash
+  `9c864bd40fad37bc5952b9ab12fc3ff805278aae5b942986c95a7ea7521580b7`.
+- `STATUS0_DOUBLE_BLANK_UNKNOWN_N=15004`, keyset hash
+  `006d47931ab65628abc6825e86baa2c1659e3661ab54b6fa386d796d4fd8960d`.
+- `PROVIDER_ROW_ABSENT_UNKNOWN_N=39`, keyset hash
+  `fff37a6ac7cff43ad1a9b6ce9265851f56ee9248f10a1f5544ec9cceb633a852`.
+
+The three unresolved historical exception scopes are disjoint in the current
+evidence, so `KNOWN_HISTORICAL_QUALITY_EXCEPTION_N=15047` (4 + 15004 + 39).
+The four proven material defect keys are tracked separately as the current
+hard blocker; the total tracked exception-related key count is 15051. The
+known-exception count alone does not make `DAILY_USABLE=false`; the four
+concrete material missing bars are the current hard blocker. The remaining
+historical forensic evidence is
+`HISTORICAL_FORENSIC_EVIDENCE` and `NONBLOCKING_FOR_DAILY_USABLE` unless it
+proves another concrete material daily-bar defect.
 
 ## CODE
 
@@ -161,7 +199,10 @@ recorded above. R3_SHSZ_CLOSEOUT is FROZEN at the audited exact commit.
 
 ## NEXT_ACTION
 
-R4 SH/SZ PLANNING handoff:
+R3_PROVEN_MISSING_4KEY_REPAIR_V01
+
+After the bounded R3 repair and independent revalidation of `DAILY_USABLE`,
+continue the R4 SH/SZ planning handoff:
 
 1. Prepare the R4 Stable Market Facts implementation plan (SH/SZ scope).
 2. Priority facts:

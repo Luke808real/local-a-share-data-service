@@ -7,7 +7,7 @@ SPEC: V1.0 FROZEN
 | R0 | Freeze project authority documents | MASTER_SPEC/ROADMAP/STATE/DECISIONS/AGENTS present and verified |
 | R1 | Read-only local asset audit | Legacy Inventory + Compatibility Matrix + Coverage Map + Reuse Decisions |
 | R2 | CNEquity baseline | Clean data root + pinned runtime/config + storage contract |
-| R3 | Daily foundation | DAILY_READY |
+| R3 | Daily foundation | DAILY_USABLE |
 | R4 | Stable market facts | FACTS_READY |
 | R5 | 5m history | 5M_READY |
 | R6 | Market and SW industry context | MARKET_CONTEXT_READY |
@@ -15,3 +15,7 @@ SPEC: V1.0 FROZEN
 | R8 | Query Core / Stock Context | LOCAL_DATA_MVP = PASS |
 | R9 | EOD operationalization | manual update/catch-up/resume stable, then scheduler |
 | R10 | AI access | MCP / ChatGPT access without changing data contracts |
+
+`FULL_HISTORY_CERTIFIED` is an independent forensic flag, not an R4 entry
+prerequisite. `DAILY_COVERAGE_STATUS` carries partial/unknown coverage without
+silently promoting it to complete.

@@ -975,6 +975,66 @@ Fail Closed 不意味着任何一行缺失都让全市场永久无法发布。
 
 ---
 
+## 34A. R3 READINESS SPLIT (D026)
+
+R3 的 daily usability 与 full-history forensic certification 是两个正交
+维度，不得互相替代：
+
+```text
+DAILY_USABLE ∈ {true, false}
+
+DAILY_COVERAGE_STATUS ∈ {COMPLETE, PARTIAL, UNKNOWN}
+
+FULL_HISTORY_CERTIFIED ∈ {true, false}
+```
+
+`DAILY_USABLE=true` 当且仅当以下条件全部满足：
+
+- authoritative canonical input manifest 稳定；
+- formal SH/SZ identity PASS；
+- trading calendar PASS；
+- schema/type PASS；
+- duplicate PK = 0；
+- conflicting duplicate = 0；
+- OHLC invariant PASS；
+- volume/amount units PASS；
+- provenance PASS；
+- AS_OF safe；
+- 不存在 outstanding `PROVEN_MATERIAL_DAILY_DEFECT`；
+- known historical exception manifest 已冻结并 hash-bound。
+
+`KNOWN_EXCEPTION_N > 0` 不会单独令 `DAILY_USABLE=false`。只要异常本身已
+显式冻结、可追溯，尚未解决的 historical exception 将使
+`DAILY_COVERAGE_STATUS=PARTIAL`；无法建立可靠 coverage 判断时使用
+`UNKNOWN`。Query 和 downstream consumer 必须暴露 coverage、quality 与
+exception manifest，不得静默声称 `COMPLETE`。
+
+`FULL_HISTORY_CERTIFIED` 是独立且更严格的 forensic flag。它可以要求 exact
+lifecycle session authority、全部 historical session classifications 已
+解决，以及 unresolved historical exception = 0；但
+`FULL_HISTORY_CERTIFIED=false` 不得单独阻断 R4 execution、R8 development、
+research query 或 Local Data V1 research usability。它不得被重新定义为
+`DAILY_USABLE`。
+
+R3/R4 responsibility boundary：
+
+| Owner | Facts and contract |
+|---|---|
+| R3 | instruments、trading_calendar、canonical daily traded-bar facts、provenance、daily quality |
+| R4 | historical trading status、suspension interpretation、preclose、turnover、price-limit facts、stable_market_facts |
+
+R3 不要求先完成全部 `symbol × trading_date` 的独立 secondary-provider
+status certification 才允许 R4 开始。R3 仍不得把 missing/unknown session
+猜成 `NORMAL` 或 `SUSPENDED`；该解释属于 R4 自己的 fail-closed contract。
+R3 daily acquisition 继续使用 `PRIMARY + FALLBACK`，fallback 必须显式
+provenance，且禁止重建 VFlash 式 all-provider daily reconciliation。
+
+旧 receipt/文档中的 `DAILY_READY` 仅作为历史 R3 phase label 保留；当前
+readiness 判断使用本节的 `DAILY_USABLE`，不得把 `DAILY_READY` 或
+`FULL_HISTORY_CERTIFIED` 作为 R4 的替代 entry gate。
+
+---
+
 ## 35. EOD RECEIPT
 
 每个成功/失败 EOD batch 都保存轻量 receipt。
@@ -1252,6 +1312,10 @@ Stock Context 必须附：
 
 ```text
 daily status / coverage
+DAILY_USABLE
+DAILY_COVERAGE_STATUS
+FULL_HISTORY_CERTIFIED
+known exception manifest / hash
 5m status / coverage
 turnover status / coverage
 adjustment status
@@ -1574,11 +1638,21 @@ CNEquity backfill
 daily quality
 ```
 
-Exit：`DAILY_READY`
+Exit：`DAILY_USABLE`
+
+历史 session forensic certification 不属于 R3 daily usability 的隐含前置
+条件；其结果由 `FULL_HISTORY_CERTIFIED` 独立表达。
 
 ### R4 — MARKET FACTS
 
 建立 adj、trading_status、turnover、preclose、price limits、limit-up facts。
+
+R4 execution entry prerequisite：`DAILY_USABLE=true`。
+`FULL_HISTORY_CERTIFIED=true` 不是 R4 execution prerequisite；R4 可以开始
+自己的 bounded implementation/validation，但只有 R4 自己的
+`FACTS_READY` fail-closed contract 通过后才能宣称 `FACTS_READY=true`。
+R4 required facts 受 known exception 影响时继续保持 `UNKNOWN`/`PARTIAL`，
+不得从 `DAILY_USABLE=true` 推导 `FACTS_READY=true`。
 
 Exit：`FACTS_READY`
 
@@ -1634,7 +1708,7 @@ Exit：`LOCAL_DATA_MVP = PASS`
 
 ```text
 LOCAL_DATA_MVP =
-DAILY_READY
+DAILY_USABLE
 AND FACTS_READY
 AND 5M_READY
 AND MARKET_CONTEXT_READY
@@ -1643,6 +1717,8 @@ AND QUERY_CORE_PASS
 ```
 
 Scheduler automation、MCP、ChatGPT Web Bridge 不属于 MVP 必需。
+`FULL_HISTORY_CERTIFIED` 不属于 `LOCAL_DATA_MVP` 的额外必需条件；它是
+独立的 forensic certification flag。
 
 ---
 

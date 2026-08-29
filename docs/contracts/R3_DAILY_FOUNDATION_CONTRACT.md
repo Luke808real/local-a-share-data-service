@@ -44,8 +44,9 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
   Rationale: quick reliable local data for ChatGPT Web; SH/SZ identity +
   quarterly audit already have complete successful evidence; EastMoney BJ
   current (clist) failed twice consecutively at provider level; no new akshare
-  dependency for BJ. **FULL ALL-A DAILY_READY remains FALSE**; the MVP only
-  forms the intermediate fact `R3_SHSZ_SCOPE = ACTIVE`.
+  dependency for BJ. **FULL ALL-A readiness remains FALSE**; the MVP only
+  forms the intermediate fact `R3_SHSZ_SCOPE = ACTIVE`. This is distinct from
+  the SH/SZ `DAILY_USABLE` flag defined below.
 - Stage B is V07.4 upstream-aligned identity completion — NO Sina issued-code
   sweep, and NO 2,580-date full daily roster closure.
   - SH/SZ formal historical identity authority: Baostock `query_stock_basic`
@@ -181,6 +182,53 @@ state. `LATEST_GOOD_AS_OF` stays `NOT_PUBLISHED`.
 - Coverage requires at least one positive-volume in-window row. Zero-volume
   placeholder rows are not coverage evidence.
 
+## R3/R4 responsibility and readiness boundary (D026)
+
+R3 owns `instruments`, `trading_calendar`, canonical daily traded-bar facts,
+their provenance, and daily quality. R4 owns historical trading status,
+suspension interpretation, preclose, turnover, price-limit facts, and
+`stable_market_facts`.
+
+The original `NO 2,580-date full daily roster closure` rule remains in force.
+R3 does not require a full independent `symbol × trading_date`
+secondary-provider status certification before R4 may start. Missing or
+unknown sessions must not be guessed as `NORMAL` or `SUSPENDED`; their status
+explanation remains R4-owned and fail-closed.
+
+The readiness flags are separate:
+
+```text
+DAILY_USABLE ∈ {true, false}
+DAILY_COVERAGE_STATUS ∈ {COMPLETE, PARTIAL, UNKNOWN}
+FULL_HISTORY_CERTIFIED ∈ {true, false}
+```
+
+`DAILY_USABLE=true` iff the authoritative canonical input manifest, formal
+SH/SZ identity, trading calendar, schema/types, PK and duplicate checks,
+OHLC invariants, volume/amount units, provenance, AS_OF safety, and known
+historical-exception manifest/hash all pass, and there is no outstanding
+`PROVEN_MATERIAL_DAILY_DEFECT`.
+
+Known historical exceptions do not by themselves make `DAILY_USABLE=false`.
+When unresolved exceptions remain but are explicitly frozen and hash-bound,
+`DAILY_COVERAGE_STATUS=PARTIAL`; an unestablished coverage state is
+`UNKNOWN`. Query and downstream consumers must expose these fields and the
+exception manifest rather than silently report `COMPLETE`.
+
+`FULL_HISTORY_CERTIFIED` is the independent forensic flag. It may require
+exact lifecycle session authority, all historical session classifications
+resolved, and zero unresolved historical exceptions. It is not a synonym for
+`DAILY_USABLE` and, by itself, does not block R4 execution, R8 development,
+research query, or Local Data V1 research usability. R4 may start only after
+`DAILY_USABLE=true`, and must still satisfy its own `FACTS_READY` contract.
+
+The existing 10.9M-session artifacts are retained and re-labelled as
+`HISTORICAL_FORENSIC_EVIDENCE`: they are
+`NONBLOCKING_FOR_DAILY_USABLE` unless they prove a concrete material daily-bar
+defect. R3 acquisition continues to preserve the frozen `PRIMARY + FALLBACK`
+provenance rule and does not create an all-provider daily reconciliation
+system.
+
 ## Provider vs coverage enum separation
 
 ```text
@@ -226,17 +274,14 @@ Wedged `running/current=G_coverage` (completed through F_daily) is recovered by
 `--recover-interrupted-control-plane` with an append-only abandon (replacement
 `G_coverage_operator_retry`); no market-data write, no G re-verification.
 
-## Daily-close gate (V07.2)
+## Historical certification gate (V07.2 lineage)
 
-```text
-if BJ_HISTORICAL_AUTHORITY != PROVEN or BJ_HISTORICAL_UNRESOLVED_N != 0:
-    DAILY_READY = FALSE
-    R3_EXIT      = BLOCKED_BJ_HISTORICAL_IDENTITY
-    R4_EXECUTION = FORBIDDEN
-```
-
-`UNKNOWN_CARRIED` / null unresolved is never treated as 0. Author DAILY_READY is
-not written solely because SH/SZ + current BJ daily are complete.
+The former V07.2 BJ/full-history closeout text is retained as historical
+lineage only. Under D026, `BJ_HISTORICAL_AUTHORITY` and unresolved historical
+session status belong to `FULL_HISTORY_CERTIFIED`/coverage reporting; they are
+not a standalone R4 entry gate. `UNKNOWN_CARRIED` / null unresolved is never
+treated as 0, and no historical forensic result may be silently promoted to
+`COMPLETE`.
 
 ## Quality classification
 
@@ -245,11 +290,13 @@ EXPECTED
 OBSERVED
 EXPLAINED_MISSING        (only structural/pre-list/effective-span exclusions)
 PENDING_R4_STATUS_EXPLANATION  (interior/bounded gap with an observed row)
-UNEXPLAINED_MISSING      (zero in-window rows; blocks DAILY_READY)
+UNEXPLAINED_MISSING      (zero in-window rows; a concrete material defect
+                          blocks DAILY_USABLE)
 ```
 
 Missing sessions are never asserted normal without a status dataset; R4 owns
-status/turnover/price-limit facts. Sina null amount is
+status/turnover/price-limit facts and the `PENDING_R4_STATUS_EXPLANATION`
+classification remains R4-owned. Sina null amount is
 `EXPLAINED_MISSING_SOURCE_FIELD` (verified source limitation), split by
 exchange/ownership/date/rows/hash; any non-Sina null amount blocks the gate.
 Sina volume is cross-checked against EastMoney kline on a deterministic sample
@@ -263,5 +310,7 @@ volume ratio in `[0.99, 1.01]`.
 - Compact only after zero incomplete scopes; compact input inventory/hash and a
   curated PK/provenance post-proof are recorded. Staging is never deleted; a
   retry writes a new staging file.
-- `DAILY_READY` means all gates above pass; it is author status until an
-  independent review of the exact pushed R3 commit records `AUDIT_PASS`.
+- `DAILY_USABLE` means the R3 daily facts/usability gates above pass; it is
+  author status until an independent review of the exact pushed R3 commit
+  records `AUDIT_PASS`. Historical `DAILY_READY` labels remain lineage only
+  and must not be interpreted as `FULL_HISTORY_CERTIFIED`.

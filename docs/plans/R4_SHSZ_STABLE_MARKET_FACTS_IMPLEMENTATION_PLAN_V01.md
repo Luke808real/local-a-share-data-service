@@ -10,6 +10,26 @@ R3_BASIS: R3 SH/SZ MVP CLOSEOUT FROZEN (R3_SHSZ_DAILY_FOUNDATION = PASS)
 Scope: SH/SZ only. BJ = DEFERRED_EXTENSION (no BJ research this round).
 No code, no real R4 execution, no market-data write, no legacy promotion.
 
+## 0. R3 readiness entry gate (D026)
+
+R4 execution prerequisite is:
+
+```text
+DAILY_USABLE=true
+```
+
+`FULL_HISTORY_CERTIFIED=true` is not an R4 execution prerequisite. A false
+full-history forensic flag does not by itself prevent R4 development or
+bounded execution after the daily facts usability gate passes. This entry gate
+does not grant `FACTS_READY`: R4 must still run its own fail-closed quality
+contracts and may leave any affected required fact as `UNKNOWN`/`PARTIAL`.
+
+The current R3 state is `DAILY_USABLE=false` because four proven material
+missing traded bars remain unrepaired. Therefore this plan remains
+`R4_EXECUTION_AUTHORIZED=false` at the current state. Once that bounded R3
+defect is repaired and the daily gate is independently revalidated, R4 may
+begin without waiting for full historical session certification.
+
 ## 1. Source policy (frozen in V01.1)
 
 Price-limit and trading-rule authority is ONLY:
