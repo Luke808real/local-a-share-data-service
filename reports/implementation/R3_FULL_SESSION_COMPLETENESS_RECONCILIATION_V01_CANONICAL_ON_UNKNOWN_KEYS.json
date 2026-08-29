@@ -1,0 +1,1 @@
+{"KEYS":[],"KEYSET_HASH":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","KEYSET_SERIALIZATION":"UTF-8 lines: symbol<TAB>trade_date ISO YYYY-MM-DD<LF>, sorted by (symbol, trade_date); duplicate keys are rejected before hashing","KEY_N":0,"MANIFEST_KIND":"CANONICAL_ON_UNKNOWN_KEYS","TASK":"R3_FULL_SESSION_COMPLETENESS_RECONCILIATION_V01"}
