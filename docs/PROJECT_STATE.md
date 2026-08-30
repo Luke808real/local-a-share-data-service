@@ -190,6 +190,13 @@ This recovery does not convert the R1 audit into strict read-only PASS.
    is not proven (UNKNOWABLE under the frozen V08 bounded research), so any
    all-A daily readiness remains FALSE.
 
+## R4A9_CANARY_INCIDENT
+
+R4A9_CANARY_INCIDENT=SCOPE_CONTROL_DEFECT
+CURRENT_COMPLETE_N: 2146
+CURRENT_UNVISITED_N: 3310
+FULL_R4A9_CONTINUATION_AUTHORIZED: false
+
 ## R2_AUDIT
 
 R2_AUTHOR_STATUS: PASS — AUTHOR_ONLY
