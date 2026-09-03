@@ -48,6 +48,13 @@ EXPECTED_ADAPTER_AUTHORITY_SHA = "5748318662c0433baf72dec7c368754baf4b27f0"
 EXPECTED_OVERLAY_KEYSET_HASH = (
     "49fd7d316e2a09bbb18f0b840d4a5034f3efb2dbba57e9f60255c7a8910b2663"
 )
+EXPECTED_START_UNVISITED_SET_HASH = (
+    "e962e4c054fd7e84fb1e9c26367a6096561f6fce0d598b166dedc6797f955c04"
+)
+EXPECTED_EXECUTION_SYMBOL_HASH = EXPECTED_START_UNVISITED_SET_HASH
+EXPECTED_FULL_CONTINUATION_PLAN_HASH = (
+    "c4312e961b2790eb0ef5870db25e60db44c9a5a6c11335de4c8d75a2e858a647"
+)
 
 
 class FullContinuationPlanError(RuntimeError):
@@ -129,12 +136,25 @@ def state_counts(checkpoint: Mapping[str, Any]) -> dict[str, int]:
     return counts
 
 
-def _canonical_symbols(symbols: Iterable[str]) -> tuple[str, ...]:
+def _validate_symbol_sequence(symbols: Iterable[str]) -> tuple[str, ...]:
     values = tuple(symbols)
     require(all(isinstance(symbol, str) and symbol for symbol in values), "SYMBOL_VALUE_INVALID")
     require(len(values) == len(set(values)), "DUPLICATE_EXECUTION_SYMBOL")
     require(all(symbol.endswith((".SH", ".SZ")) for symbol in values), "SYMBOL_SCOPE_INVALID")
-    return tuple(sorted(values))
+    return values
+
+
+def _canonical_symbols(symbols: Iterable[str]) -> tuple[str, ...]:
+    """Validate a newly derived symbol set and return canonical sorted order."""
+
+    return tuple(sorted(_validate_symbol_sequence(symbols)))
+
+
+def _persisted_symbol_sequence(value: Any, field: str) -> tuple[str, ...]:
+    """Validate persisted symbols without changing their stored order."""
+
+    require(isinstance(value, list), "PLAN_SYMBOL_SEQUENCE_INVALID", field)
+    return _validate_symbol_sequence(value)
 
 
 def start_unvisited_symbols(checkpoint: Mapping[str, Any]) -> tuple[str, ...]:
@@ -380,8 +400,10 @@ def plan_from_record(record: Mapping[str, Any]) -> FullContinuationPlan:
     )
     for field in required:
         require(field in record, "PLAN_FIELD_MISSING", field)
-    start_set = _canonical_symbols(record["START_UNVISITED_SET"])
-    ordered = _canonical_symbols(record["ORDERED_EXECUTION_SYMBOLS"])
+    start_set = _persisted_symbol_sequence(record["START_UNVISITED_SET"], "START_UNVISITED_SET")
+    ordered = _persisted_symbol_sequence(record["ORDERED_EXECUTION_SYMBOLS"], "ORDERED_EXECUTION_SYMBOLS")
+    require(start_set == tuple(sorted(start_set)), "PLAN_START_SET_ORDER_NOT_CANONICAL")
+    require(ordered == tuple(sorted(ordered)), "PLAN_EXECUTION_ORDER_NOT_CANONICAL")
     require(start_set == ordered, "PLAN_SET_ORDER_MISMATCH")
     require(record.get("START_UNVISITED_N") == len(start_set), "PLAN_START_COUNT_MISMATCH")
     require(record.get("EXECUTION_SYMBOL_N") == len(ordered), "PLAN_EXECUTION_COUNT_MISMATCH")
@@ -424,6 +446,21 @@ def validate_persisted_plan(
     require(plan.start_checkpoint_hash == expected_start_checkpoint_hash, "RESUME_START_CHECKPOINT_DRIFT")
     require(plan.start_unvisited_n == EXPECTED_UNVISITED_N, "RESUME_START_SCOPE_DRIFT")
     require(plan.execution_symbol_n == EXPECTED_UNVISITED_N, "RESUME_EXECUTION_SCOPE_DRIFT")
+    require(
+        plan.start_unvisited_set_hash == EXPECTED_START_UNVISITED_SET_HASH,
+        "RESUME_START_UNVISITED_SET_IDENTITY_DRIFT",
+        plan.start_unvisited_set_hash,
+    )
+    require(
+        plan.execution_symbol_hash == EXPECTED_EXECUTION_SYMBOL_HASH,
+        "RESUME_EXECUTION_SYMBOL_IDENTITY_DRIFT",
+        plan.execution_symbol_hash,
+    )
+    require(
+        plan.plan_hash == EXPECTED_FULL_CONTINUATION_PLAN_HASH,
+        "RESUME_PLAN_IDENTITY_DRIFT",
+        plan.plan_hash,
+    )
     require(plan.daily_input_manifest_hash == expected_daily_manifest_hash, "RESUME_DAILY_MANIFEST_DRIFT")
     require(plan.adapter_authority_sha == expected_adapter_authority_sha, "RESUME_ADAPTER_DRIFT")
     require(plan.overlay_keyset_hash == expected_overlay_keyset_hash, "RESUME_OVERLAY_DRIFT")
@@ -702,7 +739,10 @@ __all__ = [
     "EXPECTED_BASE_HEAD",
     "EXPECTED_BRANCH",
     "EXPECTED_DAILY_INPUT_MANIFEST_HASH",
+    "EXPECTED_EXECUTION_SYMBOL_HASH",
+    "EXPECTED_FULL_CONTINUATION_PLAN_HASH",
     "EXPECTED_OVERLAY_KEYSET_HASH",
+    "EXPECTED_START_UNVISITED_SET_HASH",
     "EXPECTED_START_CHECKPOINT_HASH",
     "EXPECTED_TOTAL_N",
     "EXPECTED_UNVISITED_N",

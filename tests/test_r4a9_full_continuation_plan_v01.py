@@ -142,7 +142,7 @@ def test_completed_progress_does_not_change_plan_identity() -> None:
     assert frozen.plan_hash == _plan().plan_hash
 
 
-def test_persisted_plan_round_trip_and_tamper_fail_closed(tmp_path: Path) -> None:
+def test_plan_from_record_round_trip_and_tamper_fail_closed(tmp_path: Path) -> None:
     frozen = _plan()
     record = {
         **frozen.record(),
@@ -156,16 +156,44 @@ def test_persisted_plan_round_trip_and_tamper_fail_closed(tmp_path: Path) -> Non
     }
     path = tmp_path / "manifest.json"
     path.write_bytes(plan.canonical_json_bytes(record) + b"\n")
-    loaded = plan.load_persisted_plan(path)
+    loaded = plan.plan_from_record(record)
     assert loaded.plan_hash == frozen.plan_hash
     assert loaded.ordered_execution_symbols == frozen.ordered_execution_symbols
     tampered = json.loads(path.read_text())
     tampered["ORDERED_EXECUTION_SYMBOLS"][0] = "9999.SZ"
     with pytest.raises(
         plan.FullContinuationPlanError,
-        match="PLAN_SET_ORDER_MISMATCH|PLAN_EXECUTION_HASH_MISMATCH|PLAN_HASH_MISMATCH",
+        match="PLAN_START_SET_ORDER_NOT_CANONICAL|PLAN_EXECUTION_ORDER_NOT_CANONICAL|PLAN_SET_ORDER_MISMATCH|PLAN_EXECUTION_HASH_MISMATCH|PLAN_HASH_MISMATCH",
     ):
-        plan.validate_persisted_plan(tampered)
+        plan.plan_from_record(tampered)
+
+    reordered = json.loads(path.read_text())
+    reordered["START_UNVISITED_SET"] = list(reversed(reordered["START_UNVISITED_SET"]))
+    with pytest.raises(plan.FullContinuationPlanError, match="PLAN_START_SET_ORDER_NOT_CANONICAL"):
+        plan.plan_from_record(reordered)
+
+
+def test_self_consistent_nonfrozen_plan_is_rejected() -> None:
+    record = _plan().record()
+    with pytest.raises(
+        plan.FullContinuationPlanError,
+        match="RESUME_START_UNVISITED_SET_IDENTITY_DRIFT",
+    ):
+        plan.validate_persisted_plan(record)
+
+
+def test_real_frozen_plan_identity_is_pinned() -> None:
+    path = (
+        plan.DATA_ROOT_DEFAULT
+        / plan.PLAN_STAGE_REL
+        / plan.PLAN_CHECKPOINT_NAME
+    )
+    if not path.is_file():
+        pytest.skip("local plan-bound checkpoint unavailable")
+    loaded = plan.load_persisted_plan(path)
+    assert loaded.start_unvisited_set_hash == plan.EXPECTED_START_UNVISITED_SET_HASH
+    assert loaded.execution_symbol_hash == plan.EXPECTED_EXECUTION_SYMBOL_HASH
+    assert loaded.plan_hash == plan.EXPECTED_FULL_CONTINUATION_PLAN_HASH
 
 
 def test_resume_authority_drift_is_not_complete() -> None:
