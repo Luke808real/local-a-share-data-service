@@ -1,0 +1,6 @@
+# Read access runtime only: does not install or replace the CNEquity writer.
+# Install with: uv pip install --python .venv-mcp/bin/python -r requirements-mcp.txt
+mcp==1.29.1
+duckdb==1.5.5
+pyarrow==25.0.1
+pytest==9.1.1

@@ -1,5 +1,55 @@
 # PROJECT_STATE
 
+## Current operational snapshot — 2026-09-06
+
+This section supersedes the historical 2026-08-18 snapshot below. It records
+local observations, not a new independent audit PASS. Original R2 history is
+preserved below.
+
+- CURRENT_WORK: read-only daily publication boundary and market-data MCP.
+- BASE_CODE_COMMIT: `25f4f5434b7b99a1461cf56343552c9f50100695`
+  (`feat: add local A-share read query MVP`).
+- DATA_ROOT: `/Users/luke808/AI/local-a-share-data-service-data`.
+- FOUNDATION: CNEquity; Parquet is the existing store, DuckDB is the read engine.
+  The query runtime does not replace or update the ingestion runtime.
+- DAILY_PHYSICAL_FILE_N: 2589; DAILY_PHYSICAL_ROW_N: 10756825
+  (Parquet metadata, not a new historical quality scan).
+- DAILY_PHYSICAL_LATEST: 2026-08-28.
+- DAILY_PHYSICAL_MANIFEST_HASH:
+  `6da4140ba0d0a3b4f70e4a1fcb0de2d41abc775695d5de36fa18363e92622731`.
+- R3_PROMOTED_DAILY_FILE_N: 2580; R3_PROMOTED_DAILY_AS_OF: 2026-08-17.
+- R3_PROMOTED_DAILY_MANIFEST_HASH:
+  `dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045`.
+- DAILY_COVERAGE_STATUS: PARTIAL; FULL_HISTORY_CERTIFIED: false.
+- KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: 15047 (prior authority, not re-audited).
+- FORMAL_IDENTITY_N: 5456 (SH/SZ formal R3 scope; not all instrument rows).
+- NINE_INCREMENTAL_DATES: 2026-08-18 through 2026-08-28. Physical files exist;
+  coverage/publication closure is not established. Do not promote by replacing
+  the old manifest hash with the current physical hash.
+- QUERY_BASELINE: use the exact promoted file universe only after verification;
+  do not include the nine extra files. Display both physical and queryable dates.
+- R4A9: prior summary COMPLETE=2146, UNVISITED=3310. The original checkpoint
+  hash was rechecked unchanged:
+  `d013e171734d9c688e8c370163a617f35ce45c55c134ca6cee655b2a2c1e8f7b`.
+- PRECLOSE_COMPLETE: false; FACTS_READY: false.
+- FULL_R4A9_CONTINUATION_AUTHORIZED: false; R7_FIRST_PUBLISH_PASS: false.
+- MCP_STATUS: local implementation validated; 88 targeted tests PASS and all
+  four tools passed real loopback HTTP/MCP calls. ChatGPT-side acceptance is
+  NOT_VERIFIED; local success is not independent audit or remote acceptance.
+- NEXT_GATE: independent review and authenticated ChatGPT connection setup.
+- ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
+  read-only MCP at `http://127.0.0.1:8766/mcp`; no public tunnel configured.
+- NETWORK_PROVIDER_JOB: none authorized or running.
+- DATA_CLEANUP_OR_REPAIR: not authorized; preserve all physical incremental
+  partitions and their audit evidence.
+
+No provider catch-up or canonical/checkpoint mutation is authorized by this
+read-access task. The incomplete incremental execution requires a separate
+bounded quality/publication decision. R4/5m/industry/strategy work is not a
+prerequisite for exposing the verified R3 RAW daily subset.
+
+## Historical R2 snapshot — retained verbatim
+
 AS_OF: 2026-08-18
 SPEC_VERSION: V1.0 FROZEN
 

@@ -1,10 +1,8 @@
 """Read-only queries over the published ASL daily data.
 
 This module deliberately has no provider imports and no write path.  It uses
-the existing read-only DuckDB catalog when the catalog points at the selected
-data root, and otherwise uses a read-only DuckDB connection over the existing
-Parquet files.  The latter is a query plan, not a second database or a data
-copy.
+an in-memory DuckDB connection over an explicitly verified published file
+allowlist. Physical candidate files never enter the daily SQL relation.
 """
 
 from __future__ import annotations
@@ -13,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -210,35 +209,82 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _published_manifest_reference(root: Path) -> tuple[Path, dict[str, Any]] | None:
-    """Locate the current durable post-promotion manifest authority.
+def _file_identity(root: Path, path: Path) -> tuple[int, ...]:
+    """Reject symlinks in every component, including in-root redirections."""
+    if not path.is_relative_to(root):
+        raise QueryError("DATA_ROOT_ESCAPE", "file escapes data root")
+    current = root
+    try:
+        for part in path.relative_to(root).parts:
+            current = current / part
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise QueryError("DATA_ROOT_ESCAPE", "symlink in query path")
+        if not stat.S_ISREG(info.st_mode):
+            raise QueryError("DAILY_MANIFEST_DRIFT", "query file is not regular")
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+    except OSError as exc:
+        raise QueryError("DAILY_MANIFEST_DRIFT", "query file missing or inaccessible") from exc
 
-    The first path is the latest bounded canonical promotion receipt.  The
-    older two-day promotion manifest is retained only as a fallback for a
-    clean fixture or an earlier local data root; its hash is always checked
-    against live files by ``status``.
-    """
 
-    candidates = (
-        root
-        / "staging/r3_proven_missing_4key_repair_v01/transaction/promotion_receipt.json",
-        root / "staging/r3_300546_missing_days_promotion_v01/promotion_receipt.json",
-        root
-        / "staging/r3_300546_missing_days_promotion_v01/observed_post_input_manifest.json",
-        root
-        / "staging/r3_300546_missing_days_promotion_v01/expected_post_input_manifest.json",
-    )
-    for path in candidates:
-        if not path.is_file():
-            continue
-        obj = _read_json_object(path)
-        if obj is None:
-            continue
-        if "POST_INPUT_MANIFEST_HASH" in obj and "POST_INPUT_FILE_N" in obj:
-            return path, obj
-        if "INPUT_MANIFEST_HASH" in obj and "INPUT_FILE_N" in obj:
-            return path, obj
-    return None
+def _partition_date(relative: str) -> date:
+    parts = Path(relative).parts
+    if (len(parts) != 4 or parts[:2] != DAILY_RELATIVE_PATH.parts
+            or Path(relative).as_posix() != relative
+            or any(c in relative for c in "*?[]")
+            or not parts[-1].endswith(".parquet")):
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "invalid published daily path")
+    match = _PARTITION_RE.fullmatch(parts[2])
+    try:
+        if match:
+            return date.fromisoformat(match.group("trade_date"))
+    except ValueError:
+        pass
+    raise QueryError("INVALID_DAILY_PARTITION", "invalid daily partition date")
+
+
+def _published_manifest_reference(root: Path) -> tuple[Path, dict[str, Any]]:
+    directory = root / "staging/r3_proven_missing_4key_repair_v01/transaction"
+    receipt_path = directory / "promotion_receipt.json"
+    if not receipt_path.exists():
+        raise QueryError("PUBLISHED_AUTHORITY_NOT_FOUND", "published receipt is required")
+    authority_paths = (receipt_path, directory / "promotion_plan.json")
+    before = {p: _file_identity(root, p) for p in authority_paths}
+    receipt = _read_json_object(receipt_path)
+    plan = _read_json_object(directory / "promotion_plan.json")
+    if any(_file_identity(root, p) != identity for p, identity in before.items()):
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "publication evidence changed during read")
+    manifest = plan.get("EXPECTED_POST_INPUT_MANIFEST") if plan else None
+    if not receipt or receipt.get("STATE") != "COMMITTED" or not isinstance(manifest, dict):
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "committed receipt and full manifest required")
+    rows = manifest.get("FILES")
+    if not isinstance(rows, list) or not rows:
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "published FILES must be nonempty")
+    paths = []
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {"relative_path", "file_size", "sha256"}
+                or not isinstance(row["relative_path"], str)
+                or type(row["file_size"]) is not int or row["file_size"] < 0
+                or not isinstance(row["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])):
+            raise QueryError("PUBLISHED_MANIFEST_INVALID", "invalid published file record")
+        _partition_date(row["relative_path"])
+        paths.append(row["relative_path"])
+    expected_n, expected_hash = _manifest_reference_values(receipt)
+    if (paths != sorted(set(paths))
+            or manifest.get("CANONICAL_SERIALIZATION") != CANONICAL_SERIALIZATION
+            or manifest.get("INPUT_FILE_N") != len(rows) or expected_n != len(rows)
+            or manifest.get("INPUT_MANIFEST_HASH") != expected_hash
+            or _hash_bytes(manifest_byte_form(rows)) != expected_hash
+            or receipt.get("EXPECTED_POST_INPUT_FILE_N", expected_n) != expected_n
+            or receipt.get("EXPECTED_POST_INPUT_MANIFEST_HASH", expected_hash) != expected_hash):
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "manifest payload and receipt disagree")
+    quality = receipt.get("POST_VALIDATION", {}).get("QUALITY", {})
+    maximum = max(_partition_date(p) for p in paths).isoformat()
+    if quality.get("MAX_TRADE_DATE", maximum) != maximum:
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "receipt date disagrees with partitions")
+    return receipt_path, manifest
 
 
 def _manifest_reference_values(reference: dict[str, Any]) -> tuple[int, str]:
@@ -248,7 +294,7 @@ def _manifest_reference_values(reference: dict[str, Any]) -> tuple[int, str]:
     else:
         n = reference.get("INPUT_FILE_N")
         digest = reference.get("INPUT_MANIFEST_HASH")
-    if not isinstance(n, int) or not isinstance(digest, str):
+    if type(n) is not int or not isinstance(digest, str):
         raise QueryError(
             "PUBLISHED_MANIFEST_INVALID",
             "published manifest reference lacks file count/hash",
@@ -281,17 +327,34 @@ class LocalQuery:
             self.data_root / INSTRUMENTS_RELATIVE_PATH,
             label="instruments root",
         )
+        if (self.daily_root != self.data_root / DAILY_RELATIVE_PATH
+                or self.instruments_root != self.data_root / INSTRUMENTS_RELATIVE_PATH):
+            raise QueryError("DATA_ROOT_ESCAPE", "symlink in dataset root")
         if not any(self.daily_root.rglob("*.parquet")):
             raise QueryError("DATA_ROOT_INCOMPLETE", "no daily parquet files found")
         if not any(self.instruments_root.rglob("*.parquet")):
             raise QueryError("DATA_ROOT_INCOMPLETE", "no instrument parquet files found")
 
-        self._manifest_reference = _published_manifest_reference(self.data_root)
-        if require_published_manifest and self._manifest_reference is None:
+        if not require_published_manifest:
             raise QueryError(
-                "PUBLISHED_AUTHORITY_NOT_FOUND",
-                "current published daily manifest reference was not found",
+                "PUBLISHED_AUTHORITY_REQUIRED",
+                "public queries cannot disable publication verification",
             )
+        transaction = self.data_root / "staging/r3_proven_missing_4key_repair_v01/transaction"
+        self._authority_identities = {
+            p: _file_identity(self.data_root, p)
+            for p in (transaction / "promotion_receipt.json", transaction / "promotion_plan.json")
+            if p.exists()
+        }
+        self._manifest_reference = _published_manifest_reference(self.data_root)
+        self._published_files = self._manifest_reference[1]["FILES"]
+        self.latest_good_as_of = max(_partition_date(r["relative_path"]) for r in self._published_files)
+        self._verified_identities: dict[Path, tuple[int, ...]] = {}
+        self.verify_current_manifest()
+        self._instrument_files = sorted(self.instruments_root.rglob("*.parquet"))
+        self._instrument_identities = {
+            p: _file_identity(self.data_root, p) for p in self._instrument_files
+        }
 
         self._connection: Any | None = None
         self._backend = ""
@@ -316,51 +379,30 @@ class LocalQuery:
                 "DuckDB is not available in the active Python environment",
             )
 
-        catalog_path = self.data_root / DUCKDB_RELATIVE_PATH
-        if catalog_path.is_file():
-            try:
-                catalog = duckdb.connect(str(catalog_path), read_only=True)
-                views = catalog.execute(
-                    """
-                    select table_name, view_definition
-                    from information_schema.views
-                    where table_schema = 'main'
-                      and table_name in ('daily_bars', 'instruments')
-                    """
-                ).fetchall()
-                definitions = {name: definition for name, definition in views}
-                daily_definition = str(definitions.get("daily_bars", ""))
-                instrument_definition = str(definitions.get("instruments", ""))
-                if (
-                    str(self.daily_root) in daily_definition
-                    and str(self.instruments_root) in instrument_definition
-                ):
-                    self._connection = catalog
-                    self._backend = "duckdb_catalog"
-                    self._daily_relation = "daily_bars"
-                    self._instrument_relation = "instruments"
-                    return
-                catalog.close()
-            except Exception:
-                try:
-                    catalog.close()
-                except Exception:
-                    pass
-
         try:
             self._connection = duckdb.connect(":memory:")
         except Exception as exc:  # pragma: no cover - depends on environment
             raise QueryError("QUERY_BACKEND_UNAVAILABLE", str(exc)) from exc
-        daily_glob = str(self.daily_root / "**" / "*.parquet")
-        instruments_glob = str(self.instruments_root / "**" / "*.parquet")
         self._backend = "duckdb_parquet"
-        self._daily_relation = (
-            f"read_parquet({_sql_literal(daily_glob)}, "
-            "hive_partitioning=true, union_by_name=true)"
-        )
+        self._daily_relation = self._daily_allowlist()
         self._instrument_relation = (
-            f"read_parquet({_sql_literal(instruments_glob)}, union_by_name=true)"
+            "read_parquet([" + ",".join(_sql_literal(str(p)) for p in self._instrument_files)
+            + "], union_by_name=true)"
         )
+
+    def _daily_allowlist(self, start: date | None = None, end: date | None = None) -> str:
+        paths = [self.data_root / row["relative_path"] for row in self._published_files
+                 if (start is None or _partition_date(row["relative_path"]) >= start)
+                 and (end is None or _partition_date(row["relative_path"]) <= end)]
+        # Empty date windows are handled before constructing SQL.
+        return "read_parquet([" + ",".join(_sql_literal(str(p)) for p in paths) + \
+            "], hive_partitioning=true, union_by_name=true)"
+
+    def _check_query_files(self) -> None:
+        self.verify_current_manifest()
+        for path, identity in self._instrument_identities.items():
+            if _file_identity(self.data_root, path) != identity:
+                raise QueryError("IDENTITY_FILE_DRIFT", "instrument file changed during query session")
 
     def close(self) -> None:
         if self._connection is not None:
@@ -382,13 +424,16 @@ class LocalQuery:
     ) -> list[dict[str, Any]]:
         if self._connection is None:
             raise QueryError("QUERY_BACKEND_CLOSED", "query backend is closed")
+        self._check_query_files()
         try:
             cursor = self._connection.execute(sql, list(params))
             columns = [item[0] for item in cursor.description or ()]
-            return [
+            rows = [
                 {column: _as_json_value(value) for column, value in zip(columns, row)}
                 for row in cursor.fetchall()
             ]
+            self._check_query_files()
+            return rows
         except QueryError:
             raise
         except Exception as exc:
@@ -441,6 +486,11 @@ class LocalQuery:
         descending: bool = False,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
+        end = min(end or self.latest_good_as_of, self.latest_good_as_of)
+        if not any((start is None or _partition_date(r["relative_path"]) >= start)
+                   and _partition_date(r["relative_path"]) <= end for r in self._published_files):
+            self._check_query_files()
+            return []
         predicates = ["symbol = ?"]
         params: list[Any] = [symbol]
         if start is not None:
@@ -451,7 +501,7 @@ class LocalQuery:
             params.append(end)
         sql = (
             f"select {_format_columns(READY_BAR_COLUMNS)} "
-            f"from {self._daily_relation} "
+            f"from {self._daily_allowlist(start, end)} "
             "where "
             + " and ".join(predicates)
             + " order by trade_date "
@@ -461,6 +511,41 @@ class LocalQuery:
             sql += " limit ?"
             params.append(limit)
         return self._execute(sql, params)
+
+    def _as_of_metadata(self, requested: date | None = None) -> dict[str, Any]:
+        effective = min(requested or self.latest_good_as_of, self.latest_good_as_of)
+        return {
+            "REQUESTED_AS_OF": (requested or self.latest_good_as_of).isoformat(),
+            "EFFECTIVE_AS_OF": effective.isoformat(),
+            "AS_OF_STATUS": "CAPPED_TO_LATEST_GOOD" if requested and requested > effective else "OK",
+            "DAILY_PUBLISHED_AS_OF": self.latest_good_as_of.isoformat(),
+            "LATEST_PUBLISHED_TRADE_DATE": self.latest_good_as_of.isoformat(),
+            "PUBLICATION_SCOPE": "R3_DAILY_PROMOTION",
+            "R7_FIRST_PUBLISH_PASS": False,
+            "DAILY_MANIFEST_HASH": self._manifest_reference[1]["INPUT_MANIFEST_HASH"],
+            "DAILY_COVERAGE_STATUS": DAILY_COVERAGE_STATUS,
+            "PRECLOSE_COMPLETE": PRECLOSE_COMPLETE,
+            "FACTS_READY": FACTS_READY,
+            **self._physical_metadata(),
+        }
+
+    def _physical_metadata(self) -> dict[str, Any]:
+        physical = list(self.daily_root.rglob("*.parquet"))
+        published = {row["relative_path"] for row in self._published_files}
+        pending = [p for p in physical if str(p.relative_to(self.data_root)) not in published]
+        dates = []
+        for path in physical:
+            try:
+                dates.append(_partition_date(str(path.relative_to(self.data_root))))
+            except QueryError:
+                # Unpublished files have no authority, even with unparseable paths.
+                continue
+        return {
+            "LATEST_PHYSICAL_TRADE_DATE": max(dates).isoformat() if dates else None,
+            "PHYSICAL_DAILY_FILE_N": len(physical),
+            "PENDING_FILE_N": len(pending),
+            "PUBLICATION_STATUS": "PENDING_UNPUBLISHED_FILES" if pending else "PUBLISHED_BASELINE_VERIFIED",
+        }
 
     def bars(
         self,
@@ -479,21 +564,24 @@ class LocalQuery:
             "symbol": resolved,
             "start": start_date.isoformat(),
             "end": end_date.isoformat(),
+            **self._as_of_metadata(end_date),
             "row_n": len(rows),
             "rows": rows,
             "query_backend": self.query_backend,
             "read_only": True,
         }
 
-    def latest(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+    def latest(self, symbol: str, limit: int = 20, *, as_of: str | date | None = None) -> dict[str, Any]:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise QueryError("INVALID_LIMIT", "limit must be a positive integer")
         resolved = self.resolve_symbol(symbol)
-        rows = self._daily_rows(resolved, descending=True, limit=limit)
+        requested = parse_iso_date(as_of, field_name="as_of") if as_of is not None else None
+        rows = self._daily_rows(resolved, end=requested, descending=True, limit=limit)
         return {
             "command": "latest",
             "symbol": resolved,
             "limit": limit,
+            **self._as_of_metadata(requested),
             "row_n": len(rows),
             "rows": rows,
             "query_backend": self.query_backend,
@@ -505,8 +593,7 @@ class LocalQuery:
         rows = self._execute(
             f"select {_format_columns(IDENTITY_COLUMNS)} "
             f"from {self._instrument_relation} i "
-            "where upper(i.symbol) = ? "
-            f"and exists (select 1 from {self._daily_relation} d where d.symbol = i.symbol)",
+            "where upper(i.symbol) = ? ",
             [resolved],
         )
         if len(rows) != 1:
@@ -518,6 +605,8 @@ class LocalQuery:
         return {
             "command": "instrument",
             "instrument": rows[0],
+            "IDENTITY_SCOPE": "CURRENT_LOCAL_SNAPSHOT_WITH_PUBLISHED_DAILY_MEMBERSHIP",
+            "HISTORICAL_IDENTITY_AS_OF_CERTIFIED": False,
             "query_backend": self.query_backend,
             "read_only": True,
         }
@@ -543,36 +632,39 @@ class LocalQuery:
         if receipt is not None and isinstance(receipt.get("formal_identity_n"), int):
             return int(receipt["formal_identity_n"])
         rows = self._execute(
-            f"select count(distinct symbol) as n from {self._daily_relation}"
+            f"select count(distinct symbol) as n from {self._instrument_relation} "
+            "where exchange in ('SH', 'SZ') and regexp_matches(symbol, '^[0-9]{6}\\.(SH|SZ)$')"
         )
         return int(rows[0]["n"]) if rows else 0
 
     def verify_current_manifest(self) -> dict[str, Any]:
-        actual = build_daily_file_manifest(self.data_root)
-        if self._manifest_reference is not None:
-            path, reference = self._manifest_reference
-            expected_n, expected_hash = _manifest_reference_values(reference)
-            if (
-                actual["INPUT_FILE_N"] != expected_n
-                or actual["INPUT_MANIFEST_HASH"] != expected_hash
-            ):
+        for path, identity in self._authority_identities.items():
+            if _file_identity(self.data_root, path) != identity:
+                raise QueryError("PUBLISHED_MANIFEST_INVALID", "publication evidence changed during query session")
+        for row in self._published_files:
+            path = self.data_root / row["relative_path"]
+            before = _file_identity(self.data_root, path)
+            cached = self._verified_identities.get(path)
+            if cached is not None:
+                if before != cached:
+                    raise QueryError("DAILY_MANIFEST_DRIFT", "published file identity changed")
+                continue
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(chunk)
+            if (before != _file_identity(self.data_root, path)
+                    or before[2] != row["file_size"] or digest.hexdigest() != row["sha256"]):
                 raise QueryError(
                     "DAILY_MANIFEST_DRIFT",
-                    "current canonical daily files do not match published manifest",
-                    details={
-                        "manifest_reference": str(path),
-                        "expected_file_n": expected_n,
-                        "actual_file_n": actual["INPUT_FILE_N"],
-                        "expected_hash": expected_hash,
-                        "actual_hash": actual["INPUT_MANIFEST_HASH"],
-                    },
+                    "published file does not match verified manifest",
                 )
-            actual["PUBLISHED_MANIFEST_REFERENCE"] = str(path)
-        return actual
+            self._verified_identities[path] = before
+        return {**self._manifest_reference[1],
+                "PUBLISHED_MANIFEST_REFERENCE": str(self._manifest_reference[0])}
 
     def status(self) -> dict[str, Any]:
         manifest = self.verify_current_manifest()
-        latest = self._latest_partition_date()
         return {
             "DATA_ROOT": str(self.data_root),
             "DAILY_USABLE": DAILY_USABLE,
@@ -581,7 +673,12 @@ class LocalQuery:
             "DAILY_MANIFEST_FILE_N": manifest["INPUT_FILE_N"],
             "DAILY_MANIFEST_SOURCE": manifest.get("PUBLISHED_MANIFEST_REFERENCE"),
             "FORMAL_IDENTITY_N": self._formal_identity_n(),
-            "LATEST_AVAILABLE_TRADE_DATE": latest.isoformat() if latest else None,
+            "LATEST_AVAILABLE_TRADE_DATE": self.latest_good_as_of.isoformat(),
+            "LATEST_PUBLISHED_TRADE_DATE": self.latest_good_as_of.isoformat(),
+            "DAILY_PUBLISHED_AS_OF": self.latest_good_as_of.isoformat(),
+            "R7_FIRST_PUBLISH_PASS": False,
+            "PUBLICATION_SCOPE": "R3_DAILY_PROMOTION",
+            **self._physical_metadata(),
             "PRECLOSE_COMPLETE": PRECLOSE_COMPLETE,
             "FACTS_READY": FACTS_READY,
             "QUERY_BACKEND": self.query_backend,

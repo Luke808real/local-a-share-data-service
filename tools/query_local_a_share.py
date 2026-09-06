@@ -42,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     latest = subparsers.add_parser("latest", help="query the latest N daily bars")
     latest.add_argument("--symbol", required=True)
     latest.add_argument("--limit", type=int, default=20)
+    latest.add_argument("--as-of", help="requested daily cutoff (capped to published daily date)")
     latest.add_argument("--format", choices=("table", "json"), default="table")
 
     instrument = subparsers.add_parser("instrument", help="query formal instrument identity")
@@ -66,6 +67,13 @@ def _format_value(value: Any) -> str:
 
 def _print_table(value: dict[str, Any]) -> None:
     if value.get("command") in {"bars", "latest"}:
+        for key in (
+            "REQUESTED_AS_OF", "EFFECTIVE_AS_OF", "AS_OF_STATUS",
+            "DAILY_PUBLISHED_AS_OF", "LATEST_PHYSICAL_TRADE_DATE",
+            "PENDING_FILE_N", "PUBLICATION_STATUS", "PUBLICATION_SCOPE",
+            "R7_FIRST_PUBLISH_PASS",
+        ):
+            print(f"{key}  {_format_value(value.get(key))}")
         rows = value.get("rows", [])
         if not rows:
             print(f"{value.get('symbol')}: no rows")
@@ -110,7 +118,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             if args.command == "bars":
                 value = query.bars(args.symbol, args.start, args.end)
             elif args.command == "latest":
-                value = query.latest(args.symbol, args.limit)
+                value = query.latest(args.symbol, args.limit, as_of=args.as_of)
             elif args.command == "instrument":
                 value = query.instrument(args.symbol)
             else:
