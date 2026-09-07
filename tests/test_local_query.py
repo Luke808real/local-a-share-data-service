@@ -301,6 +301,31 @@ def test_publication_authority_is_validated(published_root: Path, mutation: str)
         LocalQuery(published_root)
 
 
+@pytest.mark.parametrize("mutation", ["malformed", "schema", "hash", "quality"])
+def test_new_authority_pointer_fails_closed(published_root: Path, mutation: str) -> None:
+    transaction = published_root / TRANSACTION
+    receipt_path = transaction / "promotion_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["QUALITY"] = {"STRUCTURAL_PASS": True, "COVERAGE_PASS": True,
+                          "PROVENANCE_PASS": True, "UNRESOLVED_KEY_N": 0,
+                          "SOURCE_ERROR_N": 0, "MAX_TRADE_DATE": "2026-01-02"}
+    receipt_path.write_text(json.dumps(receipt))
+    pointer = published_root / "meta/asl/r3/published-daily-authority.json"
+    pointer.parent.mkdir(parents=True)
+    if mutation == "malformed":
+        pointer.write_text("{")
+    else:
+        payload = {"schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01",
+                   "receipt": str((TRANSACTION / "promotion_receipt.json").as_posix()),
+                   "plan": str((TRANSACTION / "promotion_plan.json").as_posix()),
+                   "manifest_hash": receipt["POST_INPUT_MANIFEST_HASH"]}
+        if mutation == "schema": payload["schema"] = "wrong"
+        if mutation == "hash": payload["manifest_hash"] = "0" * 64
+        if mutation == "quality": receipt["QUALITY"]["COVERAGE_PASS"] = False; receipt_path.write_text(json.dumps(receipt))
+        pointer.write_text(json.dumps(payload))
+    with pytest.raises(QueryError): LocalQuery(published_root)
+
+
 def test_publication_flag_cannot_bypass_gate(published_root: Path) -> None:
     with pytest.raises(QueryError) as error:
         LocalQuery(published_root, require_published_manifest=False)

@@ -246,12 +246,14 @@ def _partition_date(relative: str) -> date:
 
 def _published_manifest_reference(root: Path) -> tuple[Path, dict[str, Any]]:
     pointer_path = root / "meta/asl/r3/published-daily-authority.json"
-    pointer = _read_json_object(pointer_path)
-    if pointer is None:
+    if not pointer_path.exists():
         # Historical immutable authority, retained for roots not yet advanced.
         directory = root / "staging/r3_proven_missing_4key_repair_v01/transaction"
         receipt_path, plan_path = directory / "promotion_receipt.json", directory / "promotion_plan.json"
     else:
+        pointer = _read_json_object(pointer_path)
+        if pointer is None or pointer.get("schema") != "R3_PUBLISHED_DAILY_AUTHORITY_V01":
+            raise QueryError("PUBLISHED_MANIFEST_INVALID", "invalid publication authority pointer")
         receipt_rel, plan_rel = pointer.get("receipt"), pointer.get("plan")
         if not all(isinstance(x, str) and x.startswith("staging/") and ".." not in Path(x).parts
                    for x in (receipt_rel, plan_rel)):
@@ -290,7 +292,13 @@ def _published_manifest_reference(root: Path) -> tuple[Path, dict[str, Any]]:
             or receipt.get("EXPECTED_POST_INPUT_FILE_N", expected_n) != expected_n
             or receipt.get("EXPECTED_POST_INPUT_MANIFEST_HASH", expected_hash) != expected_hash):
         raise QueryError("PUBLISHED_MANIFEST_INVALID", "manifest payload and receipt disagree")
+    if pointer_path.exists() and pointer.get("manifest_hash") != expected_hash:
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "publication authority pointer hash disagrees")
     quality = receipt.get("POST_VALIDATION", {}).get("QUALITY", receipt.get("QUALITY", {}))
+    if pointer_path.exists() and not all((quality.get("STRUCTURAL_PASS") is True, quality.get("COVERAGE_PASS") is True,
+                quality.get("PROVENANCE_PASS") is True, quality.get("UNRESOLVED_KEY_N") == 0,
+                quality.get("SOURCE_ERROR_N") == 0)):
+        raise QueryError("PUBLISHED_MANIFEST_INVALID", "published quality gate is not satisfied")
     maximum = max(_partition_date(p) for p in paths).isoformat()
     if quality.get("MAX_TRADE_DATE", maximum) != maximum:
         raise QueryError("PUBLISHED_MANIFEST_INVALID", "receipt date disagrees with partitions")

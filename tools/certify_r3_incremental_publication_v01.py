@@ -6,11 +6,11 @@ date outside the frozen 42-key list and it never rewrites a parquet partition.
 """
 from __future__ import annotations
 
-import argparse, hashlib, json, math, os, tempfile
+import argparse, hashlib, json, os, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-BASE_HEAD = "44f145558b6df3e1f8b3ac1ee84bf26e25c3e8d9"
+BASE_HEAD = "74360cb7b06e26246e393273ca5fbf799f328b7c"
 ROOT = Path("/Users/luke808/AI/local-a-share-data-service-data")
 STAGE = ROOT / "staging/r3_incremental_publication_cert_v01"
 OLD_PLAN = ROOT / "staging/r3_proven_missing_4key_repair_v01/transaction/promotion_plan.json"
@@ -30,13 +30,21 @@ def atomic_json(path: Path, value):
     finally:
         if os.path.exists(name): os.unlink(name)
 
-def keys():
-    report=json.loads(AUDIT.read_text())
+def audit_evidence():
+    raw=AUDIT.read_bytes()
+    report=json.loads(raw)
+    target_dates=["2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28"]
+    if report.get("verdict") != "NOT_CERTIFIED_FOR_PUBLICATION" or [d.get("date") for d in report.get("days",[])] != target_dates:
+        raise RuntimeError("AUDIT_EVIDENCE_INVALID")
     out=[]
     for day in report["days"]:
+        quality=day.get("quality",{})
+        if not day.get("structural_quality_pass") or any(quality.get(k) != 0 for k in ("duplicate_keys","ohlc_bad_rows","negative_volume_rows","negative_amount_rows","provenance_bad_rows","symbol_bad_rows","date_mismatch_rows","null_rows")):
+            raise RuntimeError("AUDIT_QUALITY_GATE_FAILED")
         out += [(x["symbol"], x["trade_date"]) for x in day["requested_not_observed_keys"]]
-    assert len(out)==42 and len(set(out))==42
-    return sorted(out)
+    if len(out)!=42 or len(set(out))!=42 or report.get("requested_not_observed_n")!=42:
+        raise RuntimeError("AUDIT_UNRESOLVED_SET_INVALID")
+    return sorted(out), {"path":str(AUDIT),"sha256":digest(raw),"target_dates":target_dates}
 
 def old_manifest():
     plan=json.loads(OLD_PLAN.read_text()); receipt=json.loads(OLD_RECEIPT.read_text())
@@ -72,7 +80,9 @@ def classify(results):
         elif len(x["rows"]) != 1: c="SOURCE_MISSING"
         else:
             r=x["rows"][0]
-            c="SUSPENDED" if r["tradestatus"]=="0" else "BAR_PRESENT"
+            if r.get("code") != x["requested_code"] or r.get("date") != x["trade_date"]:
+                c="SOURCE_ERROR"
+            else: c="SUSPENDED" if r.get("tradestatus")=="0" else "BAR_PRESENT"
         out.append({**x,"final_classification":c})
     return out
 
@@ -83,7 +93,7 @@ def validate(classified):
     bars=[x for x in classified if x["final_classification"]=="BAR_PRESENT"]
     if bars: raise RuntimeError("PUBLICATION_BLOCKED:TARGETED_REPAIR_REQUIRED")
 
-def promote(classified):
+def promote(classified, audit):
     old=old_manifest(); files=list(old["FILES"])
     pending=sorted(ROOT.glob("curated/daily_bars/trade_date=2026-08-*/part-merged.parquet"))
     pending=[p for p in pending if p.parent.name >= "trade_date=2026-08-18"]
@@ -92,7 +102,10 @@ def promote(classified):
         files.append({"relative_path":str(p.relative_to(ROOT)),"file_size":p.stat().st_size,"sha256":sha_file(p)})
     files.sort(key=lambda x:x["relative_path"])
     manifest={"INPUT_FILE_N":len(files),"INPUT_MANIFEST_HASH":digest(canonical(files)),"CANONICAL_SERIALIZATION":"json.dumps(rows, ensure_ascii=True, sort_keys=True, separators=(',', ':')) sorted by relative_path","FILES":files}
-    receipt={"TASK":"ASL_R3_INCREMENTAL_PUBLICATION_CERTIFICATION_V01","STATE":"COMMITTED","OLD_INPUT_MANIFEST_HASH":old["INPUT_MANIFEST_HASH"],"POST_INPUT_FILE_N":len(files),"POST_INPUT_MANIFEST_HASH":manifest["INPUT_MANIFEST_HASH"],"EXPECTED_POST_INPUT_FILE_N":len(files),"EXPECTED_POST_INPUT_MANIFEST_HASH":manifest["INPUT_MANIFEST_HASH"],"QUALITY":{"STRUCTURAL_PASS":True,"COVERAGE_PASS":True,"PROVENANCE_PASS":True,"UNRESOLVED_KEY_N":0,"SOURCE_ERROR_N":0,"MAX_TRADE_DATE":"2026-08-28"},"CLASSIFICATION_SHA256":digest(canonical(classified))}
+    quality={"STRUCTURAL_PASS":all(x["final_classification"]=="SUSPENDED" for x in classified),"COVERAGE_PASS":len(classified)==42,"PROVENANCE_PASS":bool(audit.get("sha256")),"UNRESOLVED_KEY_N":0,"SOURCE_ERROR_N":sum(x["final_classification"]=="SOURCE_ERROR" for x in classified),"MAX_TRADE_DATE":"2026-08-28"}
+    if not all((quality["STRUCTURAL_PASS"],quality["COVERAGE_PASS"],quality["PROVENANCE_PASS"],quality["SOURCE_ERROR_N"]==0)):
+        raise RuntimeError("QUALITY_GATE_FAILED")
+    receipt={"TASK":"ASL_R3_INCREMENTAL_PUBLICATION_CERTIFICATION_V01","STATE":"COMMITTED","OLD_INPUT_MANIFEST_HASH":old["INPUT_MANIFEST_HASH"],"POST_INPUT_FILE_N":len(files),"POST_INPUT_MANIFEST_HASH":manifest["INPUT_MANIFEST_HASH"],"EXPECTED_POST_INPUT_FILE_N":len(files),"EXPECTED_POST_INPUT_MANIFEST_HASH":manifest["INPUT_MANIFEST_HASH"],"QUALITY":quality,"AUDIT_EVIDENCE":audit,"CLASSIFICATION_SHA256":digest(canonical(classified))}
     atomic_json(STAGE/"classifications.json", {"keys":classified})
     atomic_json(STAGE/"promotion_plan.json", {"EXPECTED_POST_INPUT_MANIFEST":manifest})
     atomic_json(STAGE/"promotion_receipt.json", receipt)
@@ -104,10 +117,11 @@ def main():
     p=argparse.ArgumentParser(); p.add_argument("--execute",action="store_true"); a=p.parse_args()
     import subprocess
     if subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()!=BASE_HEAD: raise RuntimeError("BASE_HEAD_MISMATCH")
-    old_manifest(); items=keys()
+    old_manifest(); items,audit=audit_evidence()
     if not a.execute:
         print(json.dumps({"status":"READY","key_n":len(items),"keys":items})); return
-    result=classify(query_baostock(items)); atomic_json(STAGE/"provider_receipt.json", {"scope":items,"network_request_n":len(items),"results":result})
-    validate(result); manifest=promote(result)
+    result=classify(query_baostock(items)); atomic_json(STAGE/"provider_receipt.json", {"scope":items,"audit_evidence":audit,"network_request_n":len(items),"results":result})
+    if sorted((x["symbol"],x["trade_date"]) for x in result) != items: raise RuntimeError("QUERY_SCOPE_DRIFT")
+    validate(result); manifest=promote(result,audit)
     print(json.dumps({"status":"PROMOTED","file_n":manifest["INPUT_FILE_N"],"manifest_hash":manifest["INPUT_MANIFEST_HASH"]}))
 if __name__=="__main__": main()
