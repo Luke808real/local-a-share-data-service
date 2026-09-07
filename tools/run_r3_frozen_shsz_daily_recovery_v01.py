@@ -274,6 +274,27 @@ def _batch_plan(day: str, eligible: tuple[str, ...], successful: set[str], orpha
     return [orphan, *chunked(after_orphan)]
 
 
+def resume_preflight(run_id: str, day: str, frozen: set[str], eligible: tuple[str, ...]) -> tuple[set[str], tuple[str, ...], tuple[str, ...]]:
+    """Return terminal-success, failed, and never-started frozen scopes."""
+    matches = subprocess.run(["ps", "-ax", "-o", "command="], check=True, capture_output=True, text=True).stdout
+    require(run_id not in matches, "RESUME_RUN_PROCESS_STILL_OWNED")
+    batches = run_batches(run_id)
+    require(batches and all(row["window_start"] == day == row["window_end"] for row in batches), "RESUME_BATCH_DATE_MISMATCH")
+    successful = tuple(symbol for row in batches if row["status"] == "success" for symbol in row["symbols"])
+    failed = tuple(symbol for row in batches if row["status"] == "failed" for symbol in row["symbols"])
+    require(len(successful) == len(set(successful)) == 3050, "RESUME_SUCCESS_SCOPE_INVALID", len(successful))
+    require(len(failed) == len(set(failed)) == 50, "RESUME_FAILED_SCOPE_INVALID", len(failed))
+    require(set(successful).isdisjoint(failed), "RESUME_SCOPE_OVERLAP")
+    require(set(successful).union(failed).issubset(frozen), "RESUME_SCOPE_OUTSIDE_FROZEN")
+    require(set(successful).union(failed).issubset(set(eligible)), "RESUME_SCOPE_OUTSIDE_DATE_ELIGIBILITY")
+    staged = _read_staged(run_id)
+    staged_symbols = set(staged.get_column("symbol").to_list())
+    require(staged_symbols.issubset(set(successful)) and not staged_symbols.intersection(failed), "RESUME_STAGING_SCOPE_INVALID")
+    never_started = tuple(symbol for symbol in eligible if symbol not in set(successful).union(failed))
+    require(len(never_started) == 2108, "RESUME_NEVER_STARTED_SCOPE_INVALID", len(never_started))
+    return set(successful), failed, never_started
+
+
 def _file_rows(root: Path) -> list[dict[str, Any]]:
     return [
         {"relative_path": path.relative_to(root).as_posix(), "file_size": path.stat().st_size, "sha256": sha256_file(path)}
@@ -312,6 +333,70 @@ def _publish(day: str, frame: Any, quality_result: dict[str, Any], classificatio
     require(_file_rows(ROOT) == files, "POST_PROMOTION_MANIFEST_MISMATCH")
     atomic_json(ROOT / "meta/asl/r3/published-daily-authority.json", {"schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01", "manifest_hash": manifest_hash, "plan": plan_path.relative_to(ROOT).as_posix(), "receipt": receipt_path.relative_to(ROOT).as_posix()})
     return len(files), manifest_hash
+
+
+def resume_2026_09_02(
+    frozen_symbols: tuple[str, ...], records: dict[str, dict[str, Any]], *, execute: bool
+) -> dict[str, Any]:
+    """Resume only the failed 09-02 scope, then its never-started tail."""
+    from cnequity.orchestrator.manifest import Manifest
+
+    day = "2026-09-02"
+    run_id = "74a6abaf-2069-4694-a52a-f29d5538e5be"
+    eligible = eligible_symbols(day, records)
+    successful, failed, never_started = resume_preflight(run_id, day, set(frozen_symbols), eligible)
+    result = {
+        "date": day,
+        "run_id": run_id,
+        "successful_symbols_reused_n": len(successful),
+        "failed_batch_retried_n": 0,
+        "never_started_executed_n": 0,
+        "network_request_n": 0,
+    }
+    if not execute:
+        return result
+    manifest = Manifest(ROOT / "meta/manifest.db")
+    primary_batches: list[str] = []
+    try:
+        retry_id = f"{day}_recovery-retry-batch-61"
+        try:
+            from cnequity.adapters.tdx_protocol.client import reset_tdx_server_cache
+            reset_tdx_server_cache()
+            _fetch_batch(manifest, run_id, retry_id, day, failed, set(frozen_symbols))
+            primary_batches.append(retry_id)
+            result["failed_batch_retried_n"] = 1
+            result["network_request_n"] += 1
+        except Exception:
+            # A single failed full-scope retry may be a connection/batch issue.
+            # Retain its failed receipt and retry each disjoint 10-symbol scope.
+            result["network_request_n"] += 1
+            for index, symbols in enumerate(chunked(failed, 10)):
+                batch_id = f"{day}_recovery-split-batch-{index}"
+                reset_tdx_server_cache()
+                _fetch_batch(manifest, run_id, batch_id, day, symbols, set(frozen_symbols))
+                primary_batches.append(batch_id)
+                result["failed_batch_retried_n"] += 1
+                result["network_request_n"] += 1
+        manifest.supersede_batches(run_id, [f"{day}_frozen-batch-61", retry_id], superseded_by=primary_batches[0])
+        for index, symbols in enumerate(chunked(never_started)):
+            batch_id = f"{day}_recovery-new-batch-{index}"
+            _fetch_batch(manifest, run_id, batch_id, day, symbols, set(frozen_symbols))
+            result["never_started_executed_n"] += len(symbols)
+            result["network_request_n"] += 1
+        frame = _read_staged(run_id)
+        quality_result = quality(frame.to_dicts(), day, set(eligible))
+        require(all(quality_result[name] == 0 for name in ("duplicate", "ohlc_invalid", "negative_volume", "negative_amount", "provenance_failure")), "STRUCTURAL_QUALITY_FAILED", quality_result)
+        classifications = classify_secondary(quality_result["requested_not_observed"], day)
+        bad = [item for item in classifications if item["final_classification"] != "SUSPENDED"]
+        require(not bad, "UNRESOLVED_CLASSIFICATION_BLOCK", bad)
+        result["network_request_n"] += len(classifications)
+        quality_result["requested_not_observed"] = []
+        file_n, manifest_hash = _publish(day, frame, quality_result, classifications)
+        manifest.finish_run(run_id, "success", rows_read=frame.height, rows_written=frame.height)
+        return {**result, "requested_n": len(eligible), "observed_n": frame.get_column("symbol").n_unique(), "classifications": classifications, "quality": quality_result, "manifest_file_n": file_n, "manifest_hash": manifest_hash}
+    except Exception as exc:
+        manifest.finish_run(run_id, "failed", error_message=f"{type(exc).__name__}:{exc}")
+        raise
 
 
 def run_incremental_for_frozen_shsz_date(
@@ -371,8 +456,16 @@ def run_incremental_for_frozen_shsz_date(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--resume-0902", action="store_true")
     args = parser.parse_args()
     frozen, records = frozen_authority()
+    if args.resume_0902:
+        summary = {"resume": resume_2026_09_02(frozen, records, execute=args.execute), "dates": []}
+        if args.execute:
+            for day in ("2026-09-03", "2026-09-04", "2026-09-07"):
+                summary["dates"].append(run_incremental_for_frozen_shsz_date(day, frozen, records, execute=True))
+        print(json.dumps(summary, sort_keys=True))
+        return
     successful, orphan = orphan_preflight(ORPHAN_RUN_ID, set(frozen))
     summary = {"orphan_run_id": ORPHAN_RUN_ID, "frozen_membership_n": len(frozen), "successful_requested_n": len(successful), "orphan_requested_n": len(orphan), "dates": []}
     for index, day in enumerate(TARGET_DATES):
