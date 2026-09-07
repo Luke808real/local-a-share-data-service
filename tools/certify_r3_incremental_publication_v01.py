@@ -10,13 +10,14 @@ import argparse, hashlib, json, os, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-BASE_HEAD = "74360cb7b06e26246e393273ca5fbf799f328b7c"
+BASE_HEAD = "6c12694b35d2a0efa0365fff38ca7de85c2e3397"
 ROOT = Path("/Users/luke808/AI/local-a-share-data-service-data")
 STAGE = ROOT / "staging/r3_incremental_publication_cert_v01"
 OLD_PLAN = ROOT / "staging/r3_proven_missing_4key_repair_v01/transaction/promotion_plan.json"
 OLD_RECEIPT = ROOT / "staging/r3_proven_missing_4key_repair_v01/transaction/promotion_receipt.json"
 AUDIT = Path(__file__).resolve().parents[1] / "reports/implementation/QUERY_INCREMENTAL_PUBLICATION_AUDIT_V01.json"
 EXPECTED_HASH = "dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045"
+EXPECTED_AUDIT_SHA256 = "9e7abb573d857e28ed51b71781cfe63e6ba7a8e925a884e97ecc549dec82b3d1"
 
 def canonical(v): return json.dumps(v, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
 def digest(b): return hashlib.sha256(b).hexdigest()
@@ -32,6 +33,9 @@ def atomic_json(path: Path, value):
 
 def audit_evidence():
     raw=AUDIT.read_bytes()
+    actual_sha256=digest(raw)
+    if actual_sha256 != EXPECTED_AUDIT_SHA256:
+        raise RuntimeError("AUDIT_EVIDENCE_HASH_MISMATCH")
     report=json.loads(raw)
     target_dates=["2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28"]
     if report.get("verdict") != "NOT_CERTIFIED_FOR_PUBLICATION" or [d.get("date") for d in report.get("days",[])] != target_dates:
@@ -44,7 +48,7 @@ def audit_evidence():
         out += [(x["symbol"], x["trade_date"]) for x in day["requested_not_observed_keys"]]
     if len(out)!=42 or len(set(out))!=42 or report.get("requested_not_observed_n")!=42:
         raise RuntimeError("AUDIT_UNRESOLVED_SET_INVALID")
-    return sorted(out), {"path":str(AUDIT),"sha256":digest(raw),"target_dates":target_dates}
+    return sorted(out), {"path":str(AUDIT),"sha256":actual_sha256,"target_dates":target_dates}
 
 def old_manifest():
     plan=json.loads(OLD_PLAN.read_text()); receipt=json.loads(OLD_RECEIPT.read_text())

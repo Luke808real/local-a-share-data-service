@@ -19,3 +19,10 @@ def test_provider_results_never_become_suspension_without_exact_evidence(value):
 def test_exact_suspension_is_accepted():
     classified = cert.classify([row()])
     cert.validate(classified)
+
+def test_modified_audit_evidence_is_blocked(tmp_path, monkeypatch):
+    tampered = tmp_path / "audit.json"
+    tampered.write_text('{"tampered":true}')
+    monkeypatch.setattr(cert, "AUDIT", tampered)
+    with pytest.raises(RuntimeError, match="AUDIT_EVIDENCE_HASH_MISMATCH"):
+        cert.audit_evidence()
