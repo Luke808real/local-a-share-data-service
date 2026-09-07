@@ -191,9 +191,67 @@ def test_real_frozen_plan_identity_is_pinned() -> None:
     if not path.is_file():
         pytest.skip("local plan-bound checkpoint unavailable")
     loaded = plan.load_persisted_plan(path)
+    assert loaded.execution_symbol_n == 3310
+    assert len(loaded.ordered_execution_symbols) == 3310
     assert loaded.start_unvisited_set_hash == plan.EXPECTED_START_UNVISITED_SET_HASH
     assert loaded.execution_symbol_hash == plan.EXPECTED_EXECUTION_SYMBOL_HASH
     assert loaded.plan_hash == plan.EXPECTED_FULL_CONTINUATION_PLAN_HASH
+
+
+def _write_daily_partition(root: Path, trade_date: str, name: str, payload: bytes) -> Path:
+    path = root / "curated" / "daily_bars" / f"trade_date={trade_date}" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def test_real_asof_daily_manifest_matches_frozen_authority() -> None:
+    daily_root = plan.DATA_ROOT_DEFAULT / "curated" / "daily_bars"
+    if not daily_root.is_dir():
+        pytest.skip("local canonical daily root unavailable")
+    manifest = plan.build_daily_input_manifest(plan.DATA_ROOT_DEFAULT)
+    assert plan.R4A9_AS_OF.isoformat() == "2026-08-17"
+    assert manifest["INPUT_FILE_N"] == 2580
+    assert manifest["INPUT_MANIFEST_HASH"] == plan.EXPECTED_DAILY_INPUT_MANIFEST_HASH
+
+
+def test_post_asof_partition_does_not_change_manifest_identity(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_daily_partition(root, "2026-08-17", "part.parquet", b"frozen")
+    before = plan.build_daily_input_manifest(root)
+    _write_daily_partition(root, "2026-08-18", "part.parquet", b"post-asof")
+    assert plan.build_daily_input_manifest(root) == before
+
+
+def test_multiple_post_asof_partitions_do_not_change_manifest_identity(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_daily_partition(root, "2026-08-17", "part.parquet", b"frozen")
+    before = plan.build_daily_input_manifest(root)
+    for trade_date in ("2026-08-18", "2026-08-19", "2026-08-28"):
+        _write_daily_partition(root, trade_date, "part.parquet", trade_date.encode())
+    assert plan.build_daily_input_manifest(root) == before
+
+
+@pytest.mark.parametrize("change", ("mutate", "delete"))
+def test_asof_daily_file_change_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    root = tmp_path / "data"
+    path = _write_daily_partition(root, "2026-08-17", "part.parquet", b"frozen")
+    _write_daily_partition(root, "2026-08-17", "other.parquet", b"also-frozen")
+    frozen = plan.build_daily_input_manifest(root)
+    monkeypatch.setattr(plan, "EXPECTED_DAILY_INPUT_MANIFEST_HASH", frozen["INPUT_MANIFEST_HASH"])
+    plan.require_expected_daily_input_manifest(frozen)
+    if change == "mutate":
+        path.write_bytes(b"mutated")
+    else:
+        path.unlink()
+    changed = plan.build_daily_input_manifest(root)
+    assert changed["INPUT_MANIFEST_HASH"] != frozen["INPUT_MANIFEST_HASH"]
+    with pytest.raises(plan.FullContinuationPlanError, match="DAILY_INPUT_MANIFEST_DRIFT"):
+        plan.require_expected_daily_input_manifest(changed)
 
 
 def test_resume_authority_drift_is_not_complete() -> None:

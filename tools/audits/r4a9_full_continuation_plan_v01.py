@@ -16,7 +16,9 @@ import hashlib
 import json
 from pathlib import Path
 import os
+import re
 import subprocess
+from datetime import date
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
@@ -44,6 +46,7 @@ EXPECTED_TOTAL_N = 5_456
 EXPECTED_DAILY_INPUT_MANIFEST_HASH = (
     "dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045"
 )
+R4A9_AS_OF = date(2026, 8, 17)
 EXPECTED_ADAPTER_AUTHORITY_SHA = "5748318662c0433baf72dec7c368754baf4b27f0"
 EXPECTED_OVERLAY_KEYSET_HASH = (
     "49fd7d316e2a09bbb18f0b840d4a5034f3efb2dbba57e9f60255c7a8910b2663"
@@ -525,17 +528,88 @@ def guarded_provider_request(
     return provider_callback(*args, **kwargs)
 
 
+_DAILY_PARTITION_RE = re.compile(r"^trade_date=(\d{4}-\d{2}-\d{2})$")
+
+
+def _daily_partition_date(path: Path, daily_root: Path) -> date:
+    """Read the formal daily partition date from one canonical parquet path."""
+
+    try:
+        relative = path.relative_to(daily_root)
+    except ValueError as exc:
+        raise FullContinuationPlanError(f"DAILY_PARTITION_PATH_INVALID:{path}") from exc
+    require(len(relative.parts) == 2, "DAILY_PARTITION_PATH_INVALID", str(relative))
+    match = _DAILY_PARTITION_RE.fullmatch(relative.parts[0])
+    require(match is not None, "DAILY_PARTITION_PATH_INVALID", str(relative))
+    try:
+        return date.fromisoformat(match.group(1))
+    except ValueError as exc:
+        raise FullContinuationPlanError(f"DAILY_PARTITION_DATE_INVALID:{relative}") from exc
+
+
+def _resolve_data_root(data_root: Path) -> Path:
+    candidate = Path(data_root).expanduser()
+    require(candidate.is_absolute(), "DATA_ROOT_INVALID", str(candidate))
+    require(candidate.is_dir() and not candidate.is_symlink(), "DATA_ROOT_INVALID", str(candidate))
+    try:
+        return candidate.resolve(strict=True)
+    except OSError as exc:
+        raise FullContinuationPlanError(f"DATA_ROOT_INVALID:{candidate}") from exc
+
+
+def _stable_daily_file_sha256(path: Path) -> str:
+    try:
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = path.stat()
+    except OSError as exc:
+        raise FullContinuationPlanError(f"LOCAL_FILE_READ_FAILED:{path}") from exc
+    require(
+        (before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev)
+        == (after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev),
+        "LOCAL_FILE_MUTATED_DURING_READ",
+        str(path),
+    )
+    return digest.hexdigest()
+
+
 def build_daily_input_manifest(data_root: Path) -> dict[str, Any]:
-    """Recompute the local canonical daily manifest without provider access."""
+    """Recompute the R4A9 AS_OF-bounded local daily manifest without network access."""
 
-    import sys
+    root = _resolve_data_root(Path(data_root))
+    daily_root = root / "curated" / "daily_bars"
+    require(daily_root.is_dir() and not daily_root.is_symlink(), "DAILY_ROOT_INVALID", str(daily_root))
+    rows: list[dict[str, Any]] = []
+    for path in sorted(daily_root.rglob("*.parquet")):
+        require(path.is_file() and not path.is_symlink(), "DAILY_FILE_INVALID", str(path))
+        if _daily_partition_date(path, daily_root) > R4A9_AS_OF:
+            continue
+        rows.append(
+            {
+                "relative_path": str(path.relative_to(root)),
+                "file_size": path.stat().st_size,
+                "sha256": _stable_daily_file_sha256(path),
+            }
+        )
+    require(rows, "DAILY_FILES_MISSING")
+    rows.sort(key=lambda item: item["relative_path"])
+    return {
+        "INPUT_FILE_N": len(rows),
+        "INPUT_MANIFEST_HASH": sha256_bytes(canonical_json_bytes(rows)),
+        "FILES": rows,
+    }
 
-    tools_dir = Path(__file__).resolve().parents[1]
-    if str(tools_dir) not in sys.path:
-        sys.path.insert(0, str(tools_dir))
-    from rebase_r4a9_checkpoint_lineage_v01 import build_input_file_manifest
 
-    return build_input_file_manifest(Path(data_root))
+def require_expected_daily_input_manifest(daily_manifest: Mapping[str, Any]) -> None:
+    actual_daily_hash = daily_manifest.get("INPUT_MANIFEST_HASH")
+    require(
+        actual_daily_hash == EXPECTED_DAILY_INPUT_MANIFEST_HASH,
+        "DAILY_INPUT_MANIFEST_DRIFT",
+        actual_daily_hash,
+    )
 
 
 def build_plan_bound_checkpoint(
@@ -644,12 +718,7 @@ def run_plan(
         start_checkpoint_hash=current_sha,
     )
     daily_manifest = dict(daily_manifest_builder(root))
-    actual_daily_hash = daily_manifest.get("INPUT_MANIFEST_HASH")
-    require(
-        actual_daily_hash == EXPECTED_DAILY_INPUT_MANIFEST_HASH,
-        "DAILY_INPUT_MANIFEST_DRIFT",
-        actual_daily_hash,
-    )
+    require_expected_daily_input_manifest(daily_manifest)
     require(len(symbols) == EXPECTED_UNVISITED_N, "START_UNVISITED_N_MISMATCH", len(symbols))
 
     plan = freeze_full_continuation_plan(
