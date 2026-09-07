@@ -1,6 +1,6 @@
 # PROJECT_STATE
 
-## Current operational snapshot — 2026-09-06
+## Current operational snapshot — 2026-09-07
 
 This section supersedes the historical 2026-08-18 snapshot below. It records
 local observations, not a new independent audit PASS. Original R2 history is
@@ -12,20 +12,23 @@ preserved below.
 - DATA_ROOT: `/Users/luke808/AI/local-a-share-data-service-data`.
 - FOUNDATION: CNEquity; Parquet is the existing store, DuckDB is the read engine.
   The query runtime does not replace or update the ingestion runtime.
-- DAILY_PHYSICAL_FILE_N: 2589; DAILY_PHYSICAL_ROW_N: 10756825
+- DAILY_PHYSICAL_FILE_N: 2591; DAILY_PHYSICAL_ROW_N: 10767228
   (Parquet metadata, not a new historical quality scan).
-- DAILY_PHYSICAL_LATEST: 2026-08-28.
+- DAILY_PHYSICAL_LATEST: 2026-09-01.
 - DAILY_PHYSICAL_MANIFEST_HASH:
-  `6da4140ba0d0a3b4f70e4a1fcb0de2d41abc775695d5de36fa18363e92622731`.
-- R3_PROMOTED_DAILY_FILE_N: 2589; R3_PROMOTED_DAILY_AS_OF: 2026-08-28.
+  `849a85e7f5d0ea11762f5feb7146e2fa9814fc80b98e59cd26d372eb4d6f8dea`.
+- R3_PROMOTED_DAILY_FILE_N: 2591; R3_PROMOTED_DAILY_AS_OF: 2026-09-01.
 - R3_PROMOTED_DAILY_MANIFEST_HASH:
-  `6da4140ba0d0a3b4f70e4a1fcb0de2d41abc775695d5de36fa18363e92622731`.
+  `849a85e7f5d0ea11762f5feb7146e2fa9814fc80b98e59cd26d372eb4d6f8dea`.
 - DAILY_COVERAGE_STATUS: PARTIAL; FULL_HISTORY_CERTIFIED: false.
 - KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: 15047 (prior authority, not re-audited).
 - FORMAL_IDENTITY_N: 5456 (SH/SZ formal R3 scope; not all instrument rows).
 - Nine 2026-08-18 through 2026-08-28 partitions were certification-promoted
   after 42 bounded BaoStock `tradestatus=0` suspension classifications. The
   authority pointer and receipt bind the exact 2,589-file physical manifest.
+- The frozen 5,456-symbol 2026-08-31 orphan recovery and 2026-09-01 run were
+  published after their daily gates; a 2026-09-02 TDX empty response remains a
+  failed checkpoint, so no later date was promoted.
 - QUERY_BASELINE: use the exact promoted file universe only after verification.
 - R4A9: prior summary COMPLETE=2146, UNVISITED=3310. The original checkpoint
   hash was rechecked unchanged:
