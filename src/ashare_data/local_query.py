@@ -245,14 +245,24 @@ def _partition_date(relative: str) -> date:
 
 
 def _published_manifest_reference(root: Path) -> tuple[Path, dict[str, Any]]:
-    directory = root / "staging/r3_proven_missing_4key_repair_v01/transaction"
-    receipt_path = directory / "promotion_receipt.json"
+    pointer_path = root / "meta/asl/r3/published-daily-authority.json"
+    pointer = _read_json_object(pointer_path)
+    if pointer is None:
+        # Historical immutable authority, retained for roots not yet advanced.
+        directory = root / "staging/r3_proven_missing_4key_repair_v01/transaction"
+        receipt_path, plan_path = directory / "promotion_receipt.json", directory / "promotion_plan.json"
+    else:
+        receipt_rel, plan_rel = pointer.get("receipt"), pointer.get("plan")
+        if not all(isinstance(x, str) and x.startswith("staging/") and ".." not in Path(x).parts
+                   for x in (receipt_rel, plan_rel)):
+            raise QueryError("PUBLISHED_MANIFEST_INVALID", "invalid publication authority pointer")
+        receipt_path, plan_path = root / receipt_rel, root / plan_rel
     if not receipt_path.exists():
         raise QueryError("PUBLISHED_AUTHORITY_NOT_FOUND", "published receipt is required")
-    authority_paths = (receipt_path, directory / "promotion_plan.json")
+    authority_paths = (receipt_path, plan_path)
     before = {p: _file_identity(root, p) for p in authority_paths}
     receipt = _read_json_object(receipt_path)
-    plan = _read_json_object(directory / "promotion_plan.json")
+    plan = _read_json_object(plan_path)
     if any(_file_identity(root, p) != identity for p, identity in before.items()):
         raise QueryError("PUBLISHED_MANIFEST_INVALID", "publication evidence changed during read")
     manifest = plan.get("EXPECTED_POST_INPUT_MANIFEST") if plan else None
@@ -280,7 +290,7 @@ def _published_manifest_reference(root: Path) -> tuple[Path, dict[str, Any]]:
             or receipt.get("EXPECTED_POST_INPUT_FILE_N", expected_n) != expected_n
             or receipt.get("EXPECTED_POST_INPUT_MANIFEST_HASH", expected_hash) != expected_hash):
         raise QueryError("PUBLISHED_MANIFEST_INVALID", "manifest payload and receipt disagree")
-    quality = receipt.get("POST_VALIDATION", {}).get("QUALITY", {})
+    quality = receipt.get("POST_VALIDATION", {}).get("QUALITY", receipt.get("QUALITY", {}))
     maximum = max(_partition_date(p) for p in paths).isoformat()
     if quality.get("MAX_TRADE_DATE", maximum) != maximum:
         raise QueryError("PUBLISHED_MANIFEST_INVALID", "receipt date disagrees with partitions")
@@ -340,13 +350,12 @@ class LocalQuery:
                 "PUBLISHED_AUTHORITY_REQUIRED",
                 "public queries cannot disable publication verification",
             )
-        transaction = self.data_root / "staging/r3_proven_missing_4key_repair_v01/transaction"
-        self._authority_identities = {
-            p: _file_identity(self.data_root, p)
-            for p in (transaction / "promotion_receipt.json", transaction / "promotion_plan.json")
-            if p.exists()
-        }
         self._manifest_reference = _published_manifest_reference(self.data_root)
+        pointer = self.data_root / "meta/asl/r3/published-daily-authority.json"
+        evidence = [self._manifest_reference[0], self._manifest_reference[0].parent / "promotion_plan.json"]
+        if pointer.exists():
+            evidence.append(pointer)
+        self._authority_identities = {p: _file_identity(self.data_root, p) for p in evidence}
         self._published_files = self._manifest_reference[1]["FILES"]
         self.latest_good_as_of = max(_partition_date(r["relative_path"]) for r in self._published_files)
         self._verified_identities: dict[Path, tuple[int, ...]] = {}

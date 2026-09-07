@@ -17,17 +17,16 @@ preserved below.
 - DAILY_PHYSICAL_LATEST: 2026-08-28.
 - DAILY_PHYSICAL_MANIFEST_HASH:
   `6da4140ba0d0a3b4f70e4a1fcb0de2d41abc775695d5de36fa18363e92622731`.
-- R3_PROMOTED_DAILY_FILE_N: 2580; R3_PROMOTED_DAILY_AS_OF: 2026-08-17.
+- R3_PROMOTED_DAILY_FILE_N: 2589; R3_PROMOTED_DAILY_AS_OF: 2026-08-28.
 - R3_PROMOTED_DAILY_MANIFEST_HASH:
-  `dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045`.
+  `6da4140ba0d0a3b4f70e4a1fcb0de2d41abc775695d5de36fa18363e92622731`.
 - DAILY_COVERAGE_STATUS: PARTIAL; FULL_HISTORY_CERTIFIED: false.
 - KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: 15047 (prior authority, not re-audited).
 - FORMAL_IDENTITY_N: 5456 (SH/SZ formal R3 scope; not all instrument rows).
-- NINE_INCREMENTAL_DATES: 2026-08-18 through 2026-08-28. Physical files exist;
-  coverage/publication closure is not established. Do not promote by replacing
-  the old manifest hash with the current physical hash.
-- QUERY_BASELINE: use the exact promoted file universe only after verification;
-  do not include the nine extra files. Display both physical and queryable dates.
+- Nine 2026-08-18 through 2026-08-28 partitions were certification-promoted
+  after 42 bounded BaoStock `tradestatus=0` suspension classifications. The
+  authority pointer and receipt bind the exact 2,589-file physical manifest.
+- QUERY_BASELINE: use the exact promoted file universe only after verification.
 - R4A9: prior summary COMPLETE=2146, UNVISITED=3310. The original checkpoint
   hash was rechecked unchanged:
   `d013e171734d9c688e8c370163a617f35ce45c55c134ca6cee655b2a2c1e8f7b`.
