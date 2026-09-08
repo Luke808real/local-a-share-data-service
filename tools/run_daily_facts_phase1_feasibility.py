@@ -27,7 +27,7 @@ def run(root,days,max_requests=0):
  # state is deliberately not success and is safe to retry under a new receipt.
  con.execute("update requests set status='PENDING',error_code='INTERRUPTED_RECOVERABLE' where status='RUNNING'")
  for s in symbols: con.execute('insert or ignore into requests(symbol,start,end,status,schema) values(?,?,?,?,?)',(s,start,end,'PENDING',SCHEMA))
- con.commit(); rows=con.execute("select symbol,retry_n from requests where status!='SUCCESS' order by symbol" + (' limit ?' if max_requests else ''),(() if not max_requests else (max_requests,))).fetchall()
+ con.commit(); rows=con.execute("select symbol,retry_n from requests where status='PENDING' order by symbol" + (' limit ?' if max_requests else ''),(() if not max_requests else (max_requests,))).fetchall()
  raw=root/'raw'/'baostock'/'daily_facts'/RUN; raw.mkdir(parents=True,exist_ok=True)
  with BaoStockDailyFactsAdapter() as provider:
   for symbol,retry_n in rows:

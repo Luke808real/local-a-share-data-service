@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>com.asl.daily-facts-feasibility</string><key>ProgramArguments</key><array><string>/Users/luke808/ASL/tools/run_daily_facts_feasibility_local.sh</string></array><key>WorkingDirectory</key><string>/Users/luke808/ASL</string><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>/Users/luke808/AI/local-a-share-data-service-data/staging/daily_facts_phase1_feasibility_v01/launchd.stdout.log</string><key>StandardErrorPath</key><string>/Users/luke808/AI/local-a-share-data-service-data/staging/daily_facts_phase1_feasibility_v01/launchd.stderr.log</string></dict></plist>
