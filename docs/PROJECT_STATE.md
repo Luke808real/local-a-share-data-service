@@ -1,6 +1,6 @@
 # PROJECT_STATE
 
-## Current operational snapshot — 2026-09-06
+## Current operational snapshot — 2026-09-08
 
 This section supersedes the historical 2026-08-18 snapshot below. It records
 local observations, not a new independent audit PASS. Original R2 history is
@@ -12,22 +12,21 @@ preserved below.
 - DATA_ROOT: `/Users/luke808/AI/local-a-share-data-service-data`.
 - FOUNDATION: CNEquity; Parquet is the existing store, DuckDB is the read engine.
   The query runtime does not replace or update the ingestion runtime.
-- DAILY_PHYSICAL_FILE_N: 2589; DAILY_PHYSICAL_ROW_N: 10756825
+- DAILY_PHYSICAL_FILE_N: 2595; DAILY_PHYSICAL_ROW_N: 10788039
   (Parquet metadata, not a new historical quality scan).
-- DAILY_PHYSICAL_LATEST: 2026-08-28.
+- DAILY_PHYSICAL_LATEST: 2026-09-07.
 - DAILY_PHYSICAL_MANIFEST_HASH:
-  `6da4140ba0d0a3b4f70e4a1fcb0de2d41abc775695d5de36fa18363e92622731`.
-- R3_PROMOTED_DAILY_FILE_N: 2580; R3_PROMOTED_DAILY_AS_OF: 2026-08-17.
+  `97aa4d16c82abfa144ab6c2d8fd2d9cde6dadb1e82e78889136fa5d950e56c7f`.
+- R3_PROMOTED_DAILY_FILE_N: 2595; R3_PROMOTED_DAILY_AS_OF: 2026-09-07.
 - R3_PROMOTED_DAILY_MANIFEST_HASH:
-  `dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045`.
+  `97aa4d16c82abfa144ab6c2d8fd2d9cde6dadb1e82e78889136fa5d950e56c7f`.
 - DAILY_COVERAGE_STATUS: PARTIAL; FULL_HISTORY_CERTIFIED: false.
 - KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: 15047 (prior authority, not re-audited).
 - FORMAL_IDENTITY_N: 5456 (SH/SZ formal R3 scope; not all instrument rows).
-- NINE_INCREMENTAL_DATES: 2026-08-18 through 2026-08-28. Physical files exist;
-  coverage/publication closure is not established. Do not promote by replacing
-  the old manifest hash with the current physical hash.
-- QUERY_BASELINE: use the exact promoted file universe only after verification;
-  do not include the nine extra files. Display both physical and queryable dates.
+- Incremental dates 2026-08-18 through 2026-09-07 have committed quality,
+  provenance, and coverage receipts. The authority pointer binds the complete
+  2,595-file manifest; the query runtime verifies it before use.
+- QUERY_BASELINE: use the exact pointer-bound promoted file universe only.
 - R4A9: prior summary COMPLETE=2146, UNVISITED=3310. The original checkpoint
   hash was rechecked unchanged:
   `d013e171734d9c688e8c370163a617f35ce45c55c134ca6cee655b2a2c1e8f7b`.

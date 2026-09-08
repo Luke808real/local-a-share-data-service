@@ -116,14 +116,16 @@ def test_status_reports_current_readiness_truthfully() -> None:
     value = query_status()
     assert value["DAILY_USABLE"] is True
     assert value["DAILY_COVERAGE_STATUS"] == "PARTIAL"
-    assert value["DAILY_MANIFEST_FILE_N"] == 2580
-    assert value["DAILY_MANIFEST_HASH"] == "dfc9229ef79bdb37f8e7ba3e7e59b6f44e857cb85c00295c1fdc7893e6f0f045"
+    assert value["DAILY_MANIFEST_FILE_N"] == 2595
+    assert value["DAILY_MANIFEST_HASH"] == "97aa4d16c82abfa144ab6c2d8fd2d9cde6dadb1e82e78889136fa5d950e56c7f"
+    assert value["LATEST_PUBLISHED_TRADE_DATE"] == "2026-09-07"
+    assert value["PENDING_FILE_N"] == 0
     assert value["FORMAL_IDENTITY_N"] == 5456
-    assert value["LATEST_AVAILABLE_TRADE_DATE"] == "2026-08-17"
-    assert value["DAILY_PUBLISHED_AS_OF"] == "2026-08-17"
+    assert value["LATEST_AVAILABLE_TRADE_DATE"] == "2026-09-07"
+    assert value["DAILY_PUBLISHED_AS_OF"] == "2026-09-07"
     assert value["R7_FIRST_PUBLISH_PASS"] is False
     assert value["PHYSICAL_DAILY_FILE_N"] >= 2580
-    assert value["PENDING_FILE_N"] == value["PHYSICAL_DAILY_FILE_N"] - 2580
+    assert value["PENDING_FILE_N"] == value["PHYSICAL_DAILY_FILE_N"] - 2595
     assert value["PRECLOSE_COMPLETE"] is False
     assert value["FACTS_READY"] is False
 
@@ -295,6 +297,36 @@ def test_publication_authority_is_validated(published_root: Path, mutation: str)
         manifest["FILES"].append(manifest["FILES"][0])
     receipt_path.write_text(json.dumps(receipt))
     plan_path.write_text(json.dumps(plan))
+    with pytest.raises(QueryError):
+        LocalQuery(published_root)
+
+
+@pytest.mark.parametrize("mutation", ["malformed", "schema", "hash", "quality"])
+def test_new_authority_pointer_fails_closed(published_root: Path, mutation: str) -> None:
+    transaction = published_root / TRANSACTION
+    receipt_path = transaction / "promotion_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["QUALITY"] = {"STRUCTURAL_PASS": True, "COVERAGE_PASS": True,
+                          "PROVENANCE_PASS": True, "UNRESOLVED_KEY_N": 0,
+                          "SOURCE_ERROR_N": 0, "MAX_TRADE_DATE": "2026-01-02"}
+    receipt_path.write_text(json.dumps(receipt))
+    pointer = published_root / "meta/asl/r3/published-daily-authority.json"
+    pointer.parent.mkdir(parents=True)
+    if mutation == "malformed":
+        pointer.write_text("{")
+    else:
+        payload = {"schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01",
+                   "receipt": str((TRANSACTION / "promotion_receipt.json").as_posix()),
+                   "plan": str((TRANSACTION / "promotion_plan.json").as_posix()),
+                   "manifest_hash": receipt["POST_INPUT_MANIFEST_HASH"]}
+        if mutation == "schema":
+            payload["schema"] = "wrong"
+        if mutation == "hash":
+            payload["manifest_hash"] = "0" * 64
+        if mutation == "quality":
+            receipt["QUALITY"]["COVERAGE_PASS"] = False
+            receipt_path.write_text(json.dumps(receipt))
+        pointer.write_text(json.dumps(payload))
     with pytest.raises(QueryError):
         LocalQuery(published_root)
 
