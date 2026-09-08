@@ -5,7 +5,8 @@ import argparse, json, os, sqlite3, sys, time, uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]; sys.path.insert(0,str(ROOT/'src'))
-from ashare_data.daily_facts_phase1 import BaoStockDailyFactsAdapter, DailyFactsError, normalize
+from ashare_data.daily_facts_phase1 import DailyFactsError, normalize
+from ashare_data.cnequity_bridge import CNEquityBaoStockDailyFactsBridge
 from ashare_data.local_query import DEFAULT_DATA_ROOT
 
 RUN='daily_facts_phase1_feasibility_v01'; SCHEMA='ASL_DAILY_FACTS_FEASIBILITY_V01'
@@ -29,7 +30,7 @@ def run(root,days,max_requests=0):
  for s in symbols: con.execute('insert or ignore into requests(symbol,start,end,status,schema) values(?,?,?,?,?)',(s,start,end,'PENDING',SCHEMA))
  con.commit(); rows=con.execute("select symbol,retry_n from requests where status='PENDING' order by symbol" + (' limit ?' if max_requests else ''),(() if not max_requests else (max_requests,))).fetchall()
  raw=root/'raw'/'baostock'/'daily_facts'/RUN; raw.mkdir(parents=True,exist_ok=True)
- with BaoStockDailyFactsAdapter() as provider:
+ with CNEquityBaoStockDailyFactsBridge() as provider:
   for symbol,retry_n in rows:
    request_id=str(uuid.uuid4()); begun=utc(); con.execute("update requests set status='RUNNING',request_id=?,started_at=? where symbol=?",(request_id,begun,symbol));con.commit()
    try:

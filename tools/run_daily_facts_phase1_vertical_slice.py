@@ -15,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ashare_data.daily_facts_phase1 import (  # noqa: E402
-    BaoStockDailyFactsAdapter, DailyFactsError, quality_receipt, normalize, reconcile,
+    DailyFactsError, quality_receipt, normalize, reconcile,
 )
+from ashare_data.cnequity_bridge import CNEquityBaoStockDailyFactsBridge  # noqa: E402
 from ashare_data.local_query import DEFAULT_DATA_ROOT, LocalQuery  # noqa: E402
 
 RUN = "daily_facts_phase1_vertical_slice_v01"
@@ -89,7 +90,7 @@ def _auto_samples(root: Path) -> dict[str, str]:
         st_candidates=formal(st_candidates)
         suspended=formal(suspended)
         corporate=formal(corporate)
-    with BaoStockDailyFactsAdapter() as adapter:
+    with CNEquityBaoStockDailyFactsBridge() as adapter:
         st=next((s for s in st_candidates if any(r["is_st"] == "TRUE" for r in normalize(adapter.fetch(s, END, END)))), None)
         suspension=next((
             s for s in suspended
@@ -109,7 +110,7 @@ def execute(root: Path) -> dict:
     samples=_auto_samples(root)
     symbols=list(dict.fromkeys([*CORE,*samples.values()]))
     raw_rows=[]; facts=[]; bars=[]
-    with BaoStockDailyFactsAdapter() as adapter, LocalQuery(root) as query:
+    with CNEquityBaoStockDailyFactsBridge() as adapter, LocalQuery(root) as query:
         for symbol in symbols:
             raw=adapter.fetch(symbol,START,END); raw_rows += raw; facts += normalize(raw)
             bars += query.bars(symbol,"2026-08-06",END.isoformat())["rows"]

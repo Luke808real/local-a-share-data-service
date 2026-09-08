@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Current-contract, RAW-preserving Daily Facts Phase 1 full-market runner.
+"""Historical-bootstrap migration runner; not the future daily updater.
 
 The runner deliberately has no publication operation.  It acquires immutable
 BaoStock evidence into a separate staging run, then normalizes only from that
@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ashare_data.daily_facts_phase1 import (  # noqa: E402
-    BaoStockDailyFactsAdapter,
     DailyFactsError,
     FROZEN_BAOSTOCK_RUNTIME_VERSION,
     PROVIDER,
@@ -34,6 +33,7 @@ from ashare_data.daily_facts_phase1 import (  # noqa: E402
     ProviderRawRow,
     normalize,
 )
+from ashare_data.cnequity_bridge import CNEquityBaoStockDailyFactsBridge  # noqa: E402
 from ashare_data.local_query import DEFAULT_DATA_ROOT, LocalQuery  # noqa: E402
 
 
@@ -312,7 +312,7 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
             start: date = date(2016, 1, 1), max_symbols: int = 0,
             retry_quality_fail: bool = False, retry_provider_fail: bool = False,
             acquire_only: bool = False, postprocess_only: bool = False,
-            provider_factory: Callable[[], Any] = BaoStockDailyFactsAdapter) -> dict[str, Any]:
+            provider_factory: Callable[[], Any] = CNEquityBaoStockDailyFactsBridge) -> dict[str, Any]:
     if acquire_only and postprocess_only:
         raise DailyFactsError("INVALID_MODE", "acquire-only and postprocess-only are exclusive")
     root = root.resolve()

@@ -39,11 +39,11 @@ adjust_types = ["hfq"]
 default = "all_a"
 
 [minute_bars]
-enabled = false
+enabled = true
 scope = "all"
 symbols = []
 frequencies = ["5m"]
-fetch_workers = 1
+fetch_workers = 4
 
 [trade_ticks]
 enabled = false

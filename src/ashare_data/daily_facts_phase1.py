@@ -8,13 +8,12 @@ daily files or their publication authority.
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Iterable, Protocol
+from typing import Any, Iterable
 
 
 SCHEMA = "ASL_DAILY_FACTS_PHASE1_V01"
@@ -73,10 +72,6 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-class BaoStockSession(Protocol):
-    def query_history_k_data_plus(self, code: str, fields: str, *, start_date: str, end_date: str, frequency: str, adjustflag: str) -> Any: ...
-
-
 @dataclass(frozen=True)
 class ProviderRawRow:
     symbol: str
@@ -84,77 +79,6 @@ class ProviderRawRow:
     raw: dict[str, str]
     fetched_at: str
     provider_version: str
-
-
-class BaoStockDailyFactsAdapter:
-    """Small lazy BaoStock adapter; network imports never enter LocalQuery."""
-
-    def __init__(self, session: BaoStockSession | None = None, *, provider_version: str = "baostock") -> None:
-        self.session = session
-        self.provider_version = provider_version
-        self._module: Any | None = None
-
-    def __enter__(self) -> "BaoStockDailyFactsAdapter":
-        if self.session is not None:
-            return self
-        try:
-            import baostock as bs  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise DailyFactsError("SOURCE_ERROR", "baostock runtime is unavailable") from exc
-        try:
-            installed_version = importlib.metadata.version("baostock")
-        except importlib.metadata.PackageNotFoundError as exc:
-            raise DailyFactsError("SOURCE_ERROR", "baostock distribution metadata is unavailable") from exc
-        if installed_version != FROZEN_BAOSTOCK_RUNTIME_VERSION:
-            raise DailyFactsError(
-                "PROVIDER_VERSION_MISMATCH",
-                f"expected baostock {FROZEN_BAOSTOCK_RUNTIME_VERSION}, got {installed_version}",
-            )
-        result = bs.login()
-        if str(getattr(result, "error_code", "")) != "0":
-            raise DailyFactsError("SOURCE_ERROR", "baostock login failed")
-        self._module, self.session = bs, bs
-        # ``baostock.__version__`` is currently formatted as ``00.9.30``;
-        # record the package version pinned by the frozen provider contract.
-        self.provider_version = f"baostock-{installed_version}"
-        return self
-
-    def __exit__(self, *_args: Any) -> None:
-        if self._module is not None:
-            result = self._module.logout()
-            if str(getattr(result, "error_code", "")) != "0":
-                raise DailyFactsError("SOURCE_ERROR", "baostock logout failed")
-
-    def fetch(self, symbol: str, start: date, end: date) -> list[ProviderRawRow]:
-        if self.session is None:
-            raise DailyFactsError("SOURCE_ERROR", "baostock session is not open")
-        expected_code = baostock_code(symbol)
-        try:
-            result = self.session.query_history_k_data_plus(
-                expected_code, ",".join(PROVIDER_FIELDS), start_date=start.isoformat(),
-                end_date=end.isoformat(), frequency="d", adjustflag="3",
-            )
-        except Exception as exc:
-            raise DailyFactsError("SOURCE_ERROR", "baostock request failed") from exc
-        if str(getattr(result, "error_code", "")) != "0":
-            raise DailyFactsError("SOURCE_ERROR", "baostock response error")
-        fields = tuple(str(item) for item in getattr(result, "fields", ()))
-        if fields != PROVIDER_FIELDS:
-            raise DailyFactsError("PROVIDER_SCHEMA_MISMATCH", "unexpected BaoStock field contract")
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        rows: list[ProviderRawRow] = []
-        while result.next():
-            values = result.get_row_data()
-            if not isinstance(values, (list, tuple)) or len(values) != len(PROVIDER_FIELDS):
-                raise DailyFactsError("PROVIDER_SCHEMA_MISMATCH", "unexpected BaoStock row")
-            raw = {name: str(value) for name, value in zip(PROVIDER_FIELDS, values)}
-            row_date = _date(raw["date"])
-            if raw["code"].strip().lower() != expected_code or not start <= row_date <= end:
-                raise DailyFactsError("PROVIDER_IDENTITY_MISMATCH", "BaoStock code/date escaped query scope")
-            rows.append(ProviderRawRow(symbol, row_date, raw, fetched_at, self.provider_version))
-        if len({(r.symbol, r.trade_date) for r in rows}) != len(rows):
-            raise DailyFactsError("DUPLICATE_PROVIDER_ROW", "duplicate BaoStock primary key")
-        return rows
 
 
 def normalize(raw_rows: Iterable[ProviderRawRow]) -> list[dict[str, Any]]:
