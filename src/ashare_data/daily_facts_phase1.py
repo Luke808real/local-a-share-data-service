@@ -8,6 +8,7 @@ daily files or their publication authority.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import math
 from dataclasses import dataclass
@@ -17,7 +18,11 @@ from typing import Any, Iterable, Protocol
 
 
 SCHEMA = "ASL_DAILY_FACTS_PHASE1_V01"
-PROVIDER = "BAOSTOCK_HISTORY_K_DAILY_FACTS"
+# The R4A frozen contract makes BaoStock's unadjusted historical ``preclose``
+# the canonical preclose evidence.  Other Phase 1 fields share the same row,
+# but must not obscure the preclose source identity in provenance.
+PROVIDER = "BAOSTOCK_HISTORY_K_PRECLOSE"
+FROZEN_BAOSTOCK_RUNTIME_VERSION = "0.9.3"
 PROVIDER_FIELDS = ("date", "code", "preclose", "pctChg", "turn", "tradestatus", "isST")
 CANONICAL_FACT_FIELDS = ("preclose", "pct_chg", "turnover_rate", "trade_status", "is_st")
 
@@ -96,11 +101,22 @@ class BaoStockDailyFactsAdapter:
             import baostock as bs  # type: ignore[import-not-found]
         except ImportError as exc:
             raise DailyFactsError("SOURCE_ERROR", "baostock runtime is unavailable") from exc
+        try:
+            installed_version = importlib.metadata.version("baostock")
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise DailyFactsError("SOURCE_ERROR", "baostock distribution metadata is unavailable") from exc
+        if installed_version != FROZEN_BAOSTOCK_RUNTIME_VERSION:
+            raise DailyFactsError(
+                "PROVIDER_VERSION_MISMATCH",
+                f"expected baostock {FROZEN_BAOSTOCK_RUNTIME_VERSION}, got {installed_version}",
+            )
         result = bs.login()
         if str(getattr(result, "error_code", "")) != "0":
             raise DailyFactsError("SOURCE_ERROR", "baostock login failed")
         self._module, self.session = bs, bs
-        self.provider_version = getattr(bs, "__version__", self.provider_version)
+        # ``baostock.__version__`` is currently formatted as ``00.9.30``;
+        # record the package version pinned by the frozen provider contract.
+        self.provider_version = f"baostock-{installed_version}"
         return self
 
     def __exit__(self, *_args: Any) -> None:
