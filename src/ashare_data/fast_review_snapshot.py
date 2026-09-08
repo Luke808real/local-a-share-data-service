@@ -18,6 +18,7 @@ from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist
 
 
 SCHEMA = "ASL_FAST_REVIEW_SNAPSHOT_V01"
+CALIBRATION_SCHEMA = "ASL_FAST_REVIEW_FIELD_CONTRACT_V01"
 FIELDS = "f12,f13,f2,f3,f5,f6,f7,f8,f15,f16,f17,f18,f20,f21"
 REVIEW_SCOPE = "REVIEW_EVIDENCE_ONLY_NOT_PUBLICATION"
 
@@ -49,14 +50,13 @@ class FastReviewSnapshotV01:
         rows = tuple({"symbol": symbol, "provider_row": row} for symbol, row in symbols)
         return cls(rows=rows, acquired_at=datetime.now(timezone.utc).isoformat())
 
-    def validate_semantics(
-        self, daily_bar: Callable[[str], dict[str, Any] | None], *, pct_tolerance: float = 0.02,
+    def calibrate_fields(
+        self, daily_bar: Callable[[str], dict[str, Any] | None], *, units: dict[str, str], pct_tolerance: float = 0.02,
     ) -> dict[str, Any]:
-        """Fail closed unless price and percentage semantics match local bars.
-
-        Volume, amount and turnover are retained as uncalibrated review fields
-        until an authorized source-specific unit calibration exists.
-        """
+        """Produce an explicit, versioned source calibration from completed bars."""
+        required_units = {"f5", "f6", "f8"}
+        if set(units) != required_units or any(not value.strip() for value in units.values()):
+            raise FastReviewError("FAST_REVIEW_UNIT_CALIBRATION_REQUIRED")
         checked = 0
         for item in self.rows:
             row = item["provider_row"]
@@ -79,21 +79,51 @@ class FastReviewSnapshotV01:
                 except (KeyError, TypeError, ValueError) as exc:
                     raise FastReviewError("FAST_REVIEW_OHLC_SEMANTIC_ERROR") from exc
         if checked == 0:
-            raise FastReviewError("FAST_REVIEW_NOT_COMPARABLE")
+            raise FastReviewError("FAST_REVIEW_CALIBRATION_NOT_COMPARABLE")
         return {
-            "schema": SCHEMA,
+            "schema": CALIBRATION_SCHEMA,
             "overall": "PASS",
             "ohlc_checked_n": checked,
             "preclose_pct_checked_n": len(self.rows),
-            "volume_unit": "UNVERIFIED",
-            "amount_unit": "UNVERIFIED",
-            "turnover_unit": "UNVERIFIED",
+            "f5_volume_unit": units["f5"],
+            "f6_amount_unit": units["f6"],
+            "f8_turnover_unit": units["f8"],
         }
 
-    def persist_review_cache(self, path: Path, semantic_receipt: dict[str, Any]) -> None:
+    def assess_daily_rows(self, calibration: dict[str, Any], *, pct_tolerance: float = 0.02) -> dict[str, Any]:
+        """Classify a complete snapshot without waiting for same-day canonical bars."""
+        if calibration.get("schema") != CALIBRATION_SCHEMA or calibration.get("overall") != "PASS":
+            raise FastReviewError("FAST_REVIEW_CALIBRATION_NOT_PASS")
+        classified: list[dict[str, Any]] = []
+        for item in self.rows:
+            row = item["provider_row"]
+            status = "REVIEW_ROW_READY"
+            try:
+                close = float(row["f2"])
+                preclose = float(row["f18"])
+                pct = float(row["f3"])
+            except (KeyError, TypeError, ValueError):
+                status = "REVIEW_ROW_NON_COMPARABLE"
+            else:
+                if close <= 0 or preclose <= 0:
+                    status = "REVIEW_ROW_NON_COMPARABLE"
+                elif abs(((close / preclose) - 1.0) * 100.0 - pct) > pct_tolerance:
+                    status = "REVIEW_ROW_INVALID"
+            classified.append({"symbol": item["symbol"], "status": status, "provider_row": row})
+        return {
+            "schema": SCHEMA,
+            "snapshot_status": "REVIEW_SNAPSHOT_READY",
+            "row_n": len(classified),
+            "ready_row_n": sum(row["status"] == "REVIEW_ROW_READY" for row in classified),
+            "noncomparable_row_n": sum(row["status"] == "REVIEW_ROW_NON_COMPARABLE" for row in classified),
+            "invalid_row_n": sum(row["status"] == "REVIEW_ROW_INVALID" for row in classified),
+            "rows": classified,
+        }
+
+    def persist_review_cache(self, path: Path, review_receipt: dict[str, Any]) -> None:
         """Persist review evidence only after semantic validation; never publish it."""
-        if semantic_receipt.get("overall") != "PASS":
-            raise FastReviewError("FAST_REVIEW_SEMANTICS_NOT_PASS")
+        if review_receipt.get("snapshot_status") != "REVIEW_SNAPSHOT_READY":
+            raise FastReviewError("FAST_REVIEW_SNAPSHOT_NOT_READY")
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": self.schema,
@@ -101,7 +131,7 @@ class FastReviewSnapshotV01:
             "publication_authority": False,
             "provider": self.provider,
             "acquired_at": self.acquired_at,
-            "semantic_receipt": semantic_receipt,
+            "review_receipt": review_receipt,
             "row_n": len(self.rows),
             "rows": list(self.rows),
         }

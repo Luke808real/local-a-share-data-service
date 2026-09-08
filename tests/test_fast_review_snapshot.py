@@ -35,18 +35,29 @@ def test_partial_cnequity_pagination_fails_closed_without_cache(tmp_path: Path) 
     assert list(tmp_path.iterdir()) == []
 
 
-def test_review_cache_requires_semantics_and_cannot_be_authority(tmp_path: Path) -> None:
+def test_calibration_is_separate_from_review_cache_and_cannot_be_authority(tmp_path: Path) -> None:
     snapshot = FastReviewSnapshotV01(rows=({"symbol": "002580.SZ", "provider_row": _row()},), acquired_at="x")
     target = tmp_path / "review.json"
-    with pytest.raises(FastReviewError, match="SEMANTICS_NOT_PASS"):
+    with pytest.raises(FastReviewError, match="SNAPSHOT_NOT_READY"):
         snapshot.persist_review_cache(target, {"overall": "FAIL"})
-    receipt = snapshot.validate_semantics(lambda _symbol: {"close": 21.05, "high": 21.05, "low": 19.05, "open": 19.09})
+    calibration = snapshot.calibrate_fields(
+        lambda _symbol: {"close": 21.05, "high": 21.05, "low": 19.05, "open": 19.09},
+        units={"f5": "shares", "f6": "CNY", "f8": "percentage_points"},
+    )
+    receipt = snapshot.assess_daily_rows(calibration)
     snapshot.persist_review_cache(target, receipt)
     assert '"publication_authority":false' in target.read_text()
 
 
-def test_price_field_semantic_mismatch_fails_closed() -> None:
+def test_noncomparable_and_invalid_rows_never_become_candidates_or_zero_defaults() -> None:
     bad = _row(); bad["f3"] = 0
-    snapshot = FastReviewSnapshotV01(rows=({"symbol": "002580.SZ", "provider_row": bad},), acquired_at="x")
-    with pytest.raises(FastReviewError, match="PRICE_SEMANTIC_ERROR"):
-        snapshot.validate_semantics(lambda _symbol: {"close": 21.05, "high": 21.05, "low": 19.05, "open": 19.09})
+    missing = _row(); missing["f2"] = ""
+    snapshot = FastReviewSnapshotV01(rows=(
+        {"symbol": "002580.SZ", "provider_row": bad},
+        {"symbol": "000001.SZ", "provider_row": missing},
+    ), acquired_at="x")
+    calibration = {"schema": module.CALIBRATION_SCHEMA, "overall": "PASS"}
+    receipt = snapshot.assess_daily_rows(calibration)
+    assert receipt["ready_row_n"] == 0
+    assert receipt["invalid_row_n"] == 1
+    assert receipt["noncomparable_row_n"] == 1

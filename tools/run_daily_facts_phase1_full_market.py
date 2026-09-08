@@ -15,9 +15,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-import time
 import uuid
-from contextlib import nullcontext
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -33,7 +31,7 @@ from ashare_data.daily_facts_phase1 import (  # noqa: E402
     ProviderRawRow,
     normalize,
 )
-from ashare_data.cnequity_bridge import CNEquityBaoStockDailyFactsBridge  # noqa: E402
+from ashare_data.cnequity_bridge import CNEquityBaoStockDailyFactsBridge, DailyFactsRequest  # noqa: E402
 from ashare_data.local_query import DEFAULT_DATA_ROOT, LocalQuery  # noqa: E402
 
 
@@ -41,8 +39,6 @@ RUN = "daily_facts_phase1_full_market_v01"
 SCHEMA = "ASL_DAILY_FACTS_FULL_MARKET_RUNNER_V01"
 RAW_SCHEMA = "ASL_BAOSTOCK_DAILY_FACTS_RAW_V02"
 TERMINAL = {"QUALITY_PASS", "PROVIDER_FAIL", "QUALITY_FAIL"}
-MAX_PROVIDER_ATTEMPTS = 3
-RETRY_BACKOFF_SECONDS = 0.25
 
 
 def _utc() -> str:
@@ -289,30 +285,65 @@ def _recover_interrupted(con: sqlite3.Connection, *, root: Path, raw_root: Path)
     con.commit()
 
 
-def _fetch_with_retry(con: sqlite3.Connection, provider: Any, *, symbol: str, start: date, end: date) -> list[ProviderRawRow]:
-    """Bounded retry only for typed transient provider errors."""
-    last: DailyFactsError | None = None
-    for index in range(1, MAX_PROVIDER_ATTEMPTS + 1):
-        con.execute("update units set state='FETCHING',request_id=?,attempts=attempts+1,started_at=? where symbol=?", (str(uuid.uuid4()), _utc(), symbol))
-        con.commit()
-        try:
-            return provider.fetch(symbol, start, end)
-        except DailyFactsError as exc:
-            last = exc
-            _record_error(con, symbol, exc.code)
-            con.commit()
-            if exc.code != "SOURCE_ERROR" or index == MAX_PROVIDER_ATTEMPTS:
-                raise
-            time.sleep(RETRY_BACKOFF_SECONDS * index)
-    assert last is not None
-    raise last
+def _production_provider() -> CNEquityBaoStockDailyFactsBridge:
+    """The only production provider entry point: a pinned, paced CNEquity session."""
+    from cnequity.config import load_config
+
+    return CNEquityBaoStockDailyFactsBridge(config=load_config(ROOT / "config/cnequity.toml"))
+
+
+def _acquire_batch(con: sqlite3.Connection, *, root: Path, raw_root: Path, provider: Any,
+                   requests: list[DailyFactsRequest]) -> int:
+    """One explicit ASL checkpoint batch maps to one CNEquity session sweep.
+
+    CNEquity alone retries individual provider requests.  ASL records only the
+    terminal outcome of that sweep; an operator must explicitly open any later
+    retry cycle.
+    """
+    for request in requests:
+        con.execute(
+            "update units set state='FETCHING',request_id=?,attempts=attempts+1,started_at=? where symbol=?",
+            (str(uuid.uuid4()), _utc(), request.symbol),
+        )
+    con.commit()
+    try:
+        grouped, failed = provider.fetch_batch(requests)
+    except DailyFactsError as exc:
+        grouped, failed = {}, tuple(request.symbol for request in requests)
+        error_code = exc.code
+    else:
+        error_code = "SOURCE_ERROR"
+    failed_set = set(failed)
+    fetched = 0
+    for request in requests:
+        if request.symbol in failed_set:
+            con.execute("update units set state='PROVIDER_FAIL',completed_at=?,error_code=? where symbol=?",
+                        (_utc(), error_code, request.symbol))
+            continue
+        raw = grouped.get(request.symbol)
+        if raw is None:
+            con.execute("update units set state='PROVIDER_FAIL',completed_at=?,error_code='SOURCE_ERROR' where symbol=?",
+                        (_utc(), request.symbol))
+            continue
+        raw_path = raw_root / f"{request.symbol}.json"
+        if raw_path.exists():
+            con.execute("update units set state='QUALITY_FAIL',completed_at=?,error_code='RAW_DUPLICATE' where symbol=?",
+                        (_utc(), request.symbol))
+            continue
+        request_id = con.execute("select request_id from units where symbol=?", (request.symbol,)).fetchone()[0]
+        _atomic_json(raw_path, _raw_payload(request.symbol, request.required_start, request.required_end, request_id, raw))
+        con.execute("update units set state='RAW_PERSISTED',raw_path=?,row_n=?,error_code=null where symbol=?",
+                    (str(raw_path.relative_to(root)), len(raw), request.symbol))
+        fetched += 1
+    con.commit()
+    return fetched
 
 
 def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None,
             start: date = date(2016, 1, 1), max_symbols: int = 0,
             retry_quality_fail: bool = False, retry_provider_fail: bool = False,
             acquire_only: bool = False, postprocess_only: bool = False,
-            provider_factory: Callable[[], Any] = CNEquityBaoStockDailyFactsBridge) -> dict[str, Any]:
+            provider_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
     if acquire_only and postprocess_only:
         raise DailyFactsError("INVALID_MODE", "acquire-only and postprocess-only are exclusive")
     root = root.resolve()
@@ -358,57 +389,59 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
         states = "('RAW_PERSISTED')" if postprocess_only else "('NOT_STARTED','RAW_PERSISTED')"
         eligible = con.execute("select symbol,state,required_n,raw_path,required_start,required_end from units where state in " + states + " order by symbol" + (" limit ?" if max_symbols else ""), (() if not max_symbols else (max_symbols,))).fetchall()
         fetched = 0
-        import duckdb
-        needs_provider = not postprocess_only and any(state == "NOT_STARTED" for _, state, _, _, _, _ in eligible)
-        provider_context = provider_factory() if needs_provider else nullcontext(None)
-        with duckdb.connect(":memory:") as daily_con, provider_context as provider:
-            for symbol, state, required_n, raw_rel, required_start_text, required_end_text in eligible:
+        selected_eligible = {row[0] for row in eligible}
+        pending: list[DailyFactsRequest] = []
+        if not postprocess_only:
+            for symbol, state, _required_n, raw_rel, required_start_text, required_end_text in eligible:
                 required_start, required_end = date.fromisoformat(required_start_text), date.fromisoformat(required_end_text)
-                raw_path = root / raw_rel if raw_rel else raw_root / f"{symbol}.json"
-                try:
-                    if state == "NOT_STARTED":
-                        # A stale NOT_STARTED checkpoint can coexist with a
-                        # durable RAW file after a process crash.  Adopt first.
-                        if _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
-                                                 raw_rel=raw_rel, required_start=required_start, required_end=required_end):
-                            con.commit()
-                            state = "RAW_PERSISTED"
-                            raw_path = raw_root / f"{symbol}.json"
-                            if con.execute("select state from units where symbol=?", (symbol,)).fetchone()[0] == "QUALITY_FAIL":
-                                continue
-                        else:
-                            if provider is None:
-                                raise DailyFactsError("SOURCE_ERROR", "provider was not opened")
-                            raw = _fetch_with_retry(con, provider, symbol=symbol, start=required_start, end=required_end)
-                            request_id = con.execute("select request_id from units where symbol=?", (symbol,)).fetchone()[0]
-                            payload = _raw_payload(symbol, required_start, required_end, request_id, raw)
-                            if raw_path.exists():
-                                raise DailyFactsError("RAW_DUPLICATE", "raw evidence already exists for incomplete unit")
-                            _atomic_json(raw_path, payload)
-                            con.execute("update units set state='RAW_PERSISTED',raw_path=?,row_n=? where symbol=?", (str(raw_path.relative_to(root)), len(raw), symbol)); con.commit()
-                            fetched += 1
-                    if acquire_only:
-                        continue
-                    raw = _valid_raw_for_unit(raw_path, symbol=symbol, required_start=required_start, required_end=required_end)
-                    # BaoStock can return dates outside this formal R3 scope
-                    # (for example a pre-membership history).  Retain them in
-                    # RAW, but only normalize the current published key set.
-                    expected_dates = {str(row[0]) for row in daily_con.execute(
-                        "select cast(trade_date as varchar) from " + daily_relation + " where symbol=?", [symbol]
-                    ).fetchall()}
-                    facts = [row for row in normalize(raw) if row["trade_date"] in expected_dates]
-                    _validate(symbol, facts, expected_dates)
-                    parity, _counts = _parity(root, facts)
-                    if parity == "UNEXPLAINED_DIFFERENCE":
-                        raise DailyFactsError("UNEXPLAINED_R4A9_PARITY_DIFFERENCE", "historical regression parity mismatch")
-                    normalized = staging / "normalized" / f"{symbol}.parquet"
-                    if not normalized.exists():
-                        _write_parquet(normalized, facts)
-                    con.execute("update units set state='NORMALIZED',normalized_path=?,parity_status=? where symbol=?", (str(normalized.relative_to(root)), parity, symbol)); con.commit()
-                    con.execute("update units set state='QUALITY_PASS',completed_at=?,error_code=null where symbol=?", (_utc(), symbol)); con.commit()
-                except DailyFactsError as exc:
-                    state = "PROVIDER_FAIL" if exc.code in {"SOURCE_ERROR", "PROVIDER_SCHEMA_MISMATCH", "PROVIDER_IDENTITY_MISMATCH", "PROVIDER_VERSION_MISMATCH"} else "QUALITY_FAIL"
-                    con.execute("update units set state=?,completed_at=?,error_code=? where symbol=?", (state, _utc(), exc.code, symbol)); con.commit()
+                if state == "NOT_STARTED" and not _adopt_raw_if_present(
+                    con, root=root, raw_root=raw_root, symbol=symbol, raw_rel=raw_rel,
+                    required_start=required_start, required_end=required_end,
+                ):
+                    pending.append(DailyFactsRequest(symbol, required_start, required_end))
+            con.commit()
+            if pending:
+                factory = provider_factory or _production_provider
+                with factory() as provider:
+                    batch_size = int(getattr(provider.config, "baostock_batch_size", 0))
+                    if batch_size <= 0:
+                        raise DailyFactsError("INVALID_CNEQUITY_CONFIG", "BaoStock batch size must be positive")
+                    for index in range(0, len(pending), batch_size):
+                        fetched += _acquire_batch(
+                            con, root=root, raw_root=raw_root, provider=provider,
+                            requests=pending[index:index + batch_size],
+                        )
+        if not acquire_only:
+            import duckdb
+            with duckdb.connect(":memory:") as daily_con:
+                current = con.execute(
+                    "select symbol,raw_path,required_start,required_end from units "
+                    "where state='RAW_PERSISTED' and symbol in (" + ",".join("?" for _ in selected_eligible) + ") order by symbol",
+                    tuple(sorted(selected_eligible)),
+                ).fetchall() if selected_eligible else []
+                for symbol, raw_rel, required_start_text, required_end_text in current:
+                    required_start, required_end = date.fromisoformat(required_start_text), date.fromisoformat(required_end_text)
+                    raw_path = root / raw_rel
+                    try:
+                        raw = _valid_raw_for_unit(raw_path, symbol=symbol, required_start=required_start, required_end=required_end)
+                        # BaoStock can return dates outside this formal R3 scope
+                        # (for example a pre-membership history).  Retain them in
+                        # RAW, but only normalize the current published key set.
+                        expected_dates = {str(row[0]) for row in daily_con.execute(
+                            "select cast(trade_date as varchar) from " + daily_relation + " where symbol=?", [symbol]
+                        ).fetchall()}
+                        facts = [row for row in normalize(raw) if row["trade_date"] in expected_dates]
+                        _validate(symbol, facts, expected_dates)
+                        parity, _counts = _parity(root, facts)
+                        if parity == "UNEXPLAINED_DIFFERENCE":
+                            raise DailyFactsError("UNEXPLAINED_R4A9_PARITY_DIFFERENCE", "historical regression parity mismatch")
+                        normalized = staging / "normalized" / f"{symbol}.parquet"
+                        if not normalized.exists():
+                            _write_parquet(normalized, facts)
+                        con.execute("update units set state='NORMALIZED',normalized_path=?,parity_status=? where symbol=?", (str(normalized.relative_to(root)), parity, symbol)); con.commit()
+                        con.execute("update units set state='QUALITY_PASS',completed_at=?,error_code=null where symbol=?", (_utc(), symbol)); con.commit()
+                    except DailyFactsError as exc:
+                        con.execute("update units set state='QUALITY_FAIL',completed_at=?,error_code=? where symbol=?", (_utc(), exc.code, symbol)); con.commit()
         states = dict(con.execute("select state,count(*) from units group by state").fetchall())
         return {"run": run_name, "checkpoint_path": str(database), "raw_storage_path": str(raw_root),
                 "as_of": as_of.isoformat(), "selected_symbol_n": len(selected), "network_fetched_symbol_n": fetched,

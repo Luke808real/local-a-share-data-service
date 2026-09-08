@@ -5,6 +5,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,26 +73,19 @@ def test_recovery_fails_closed_on_bad_raw_and_resets_only_when_absent(tmp_path):
     assert json.loads((raw_root / "000001.SZ.json").read_text()) == {"schema": "bad"}
 
 
-def test_bounded_source_error_retry_and_non_retryable_error(tmp_path):
-    _, _, database = runner.run_paths(tmp_path, "retry")
+def test_cnequity_failure_is_one_terminal_cycle_not_outer_retry(tmp_path):
+    _, raw_root, database = runner.run_paths(tmp_path, "retry")
     con = runner._db(database); _unit(con, state="NOT_STARTED")
-    class Flaky:
+    class Provider:
         calls = 0
-        def fetch(self, *_args):
+        def fetch_batch(self, requests):
             self.calls += 1
-            if self.calls < 3: raise runner.DailyFactsError("SOURCE_ERROR", "temporary")
-            return _raw("000001.SZ")
-    provider = Flaky()
-    assert runner._fetch_with_retry(con, provider, symbol="000001.SZ", start=date(2016, 1, 1), end=date(2026, 9, 7))
-    assert provider.calls == 3 and con.execute("select attempts from units").fetchone()[0] == 3
-    class BadVersion:
-        calls = 0
-        def fetch(self, *_args):
-            self.calls += 1; raise runner.DailyFactsError("PROVIDER_VERSION_MISMATCH", "no")
-    bad = BadVersion()
-    with pytest.raises(runner.DailyFactsError):
-        runner._fetch_with_retry(con, bad, symbol="000001.SZ", start=date(2016, 1, 1), end=date(2026, 9, 7))
-    assert bad.calls == 1
+            return {}, (requests[0].symbol,)
+    provider = Provider()
+    request = runner.DailyFactsRequest("000001.SZ", date(2016, 1, 1), date(2026, 9, 7))
+    assert runner._acquire_batch(con, root=tmp_path, raw_root=raw_root, provider=provider, requests=[request]) == 0
+    assert provider.calls == 1
+    assert con.execute("select state,attempts from units").fetchone() == ("PROVIDER_FAIL", 1)
 
 
 def test_parity_exact_and_difference(monkeypatch, tmp_path):
@@ -121,15 +115,47 @@ def test_acquire_only_then_postprocess_uses_one_provider_call(monkeypatch, tmp_p
     monkeypatch.setattr(runner, "published_scope", lambda _root: (["000001.SZ"], {"000001.SZ": 1}, date(2026, 9, 7), "test", relation))
     class Provider:
         calls = 0
+        config = SimpleNamespace(baostock_batch_size=20)
         def __enter__(self): return self
         def __exit__(self, *_args): pass
-        def fetch(self, *_args): self.calls += 1; return _raw("000001.SZ")
+        def fetch_batch(self, requests):
+            self.calls += 1
+            return {request.symbol: _raw(request.symbol) for request in requests}, ()
     provider = Provider()
     result = runner.execute(tmp_path, run_name="mode", acquire_only=True, provider_factory=lambda: provider)
     assert result["states"] == {"RAW_PERSISTED": 1} and provider.calls == 1
     assert not (tmp_path / "staging/mode/normalized/000001.SZ.parquet").exists()
     result = runner.execute(tmp_path, run_name="mode", postprocess_only=True, provider_factory=lambda: (_ for _ in ()).throw(AssertionError("no provider")))
     assert result["states"] == {"QUALITY_PASS": 1} and provider.calls == 1
+
+
+def test_persisted_raw_and_quality_pass_require_zero_new_provider_calls(monkeypatch, tmp_path):
+    import duckdb
+    daily = tmp_path / "daily.parquet"
+    with duckdb.connect(":memory:") as con:
+        con.execute("create table d(symbol varchar,trade_date date)")
+        con.execute("insert into d values ('000001.SZ',date '2026-09-07')")
+        con.execute("copy d to ? (format parquet)", [str(daily)])
+    relation = "read_parquet('" + str(daily) + "')"
+    monkeypatch.setattr(runner, "published_scope", lambda _root: (["000001.SZ"], {"000001.SZ": 1}, date(2026, 9, 7), "test", relation))
+    class Provider:
+        config = SimpleNamespace(baostock_batch_size=20)
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def fetch_batch(self, requests): return {request.symbol: _raw(request.symbol) for request in requests}, ()
+    runner.execute(tmp_path, run_name="reuse", acquire_only=True, provider_factory=Provider)
+    no_provider = lambda: (_ for _ in ()).throw(AssertionError("existing evidence must not fetch"))
+    assert runner.execute(tmp_path, run_name="reuse", acquire_only=True, provider_factory=no_provider)["network_fetched_symbol_n"] == 0
+    runner.execute(tmp_path, run_name="reuse", postprocess_only=True, provider_factory=no_provider)
+    assert runner.execute(tmp_path, run_name="reuse", acquire_only=True, provider_factory=no_provider)["network_fetched_symbol_n"] == 0
+
+
+def test_production_provider_loads_the_real_cnequity_config():
+    provider = runner._production_provider()
+    assert provider.config.source_intervals["baostock"] == 1.0
+    assert provider.config.baostock_batch_size == 20
+    assert provider.config.baostock_batch_rest_seconds == 120.0
+    assert provider.deadline == 300.0
 
 
 def test_full_market_launchagent_is_one_shot_and_cannot_publish():

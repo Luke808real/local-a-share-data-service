@@ -5,6 +5,7 @@ description = "Local A-share market facts service runtime"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "cnequity @ git+https://github.com/rootSunc/CNEquity.git@a18ee0484dfb0801650175471724def3228b8a17",
+    "socksio>=1.0.0",
 ]
 
 [dependency-groups]

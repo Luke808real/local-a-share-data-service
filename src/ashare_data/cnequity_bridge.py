@@ -7,6 +7,7 @@ CNEquity BaoStock session implementation.
 from __future__ import annotations
 
 import importlib.metadata
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -22,11 +23,23 @@ def _year_windows(start: date, end: date) -> list[tuple[date, date]]:
             for year in range(start.year, end.year + 1)]
 
 
+@dataclass(frozen=True)
+class DailyFactsRequest:
+    symbol: str
+    required_start: date
+    required_end: date
+
+
 class CNEquityBaoStockDailyFactsBridge:
     """Current-contract fields through CNEquity's owned BaoStock session."""
 
-    def __init__(self, *, config: Any | None = None) -> None:
+    def __init__(self, *, config: Any, deadline: float = 300.0) -> None:
+        if config is None:
+            raise DailyFactsError("INVALID_CNEQUITY_CONFIG", "CNEquity config is required for provider pacing")
+        if deadline < 300.0:
+            raise DailyFactsError("INVALID_PROVIDER_DEADLINE", "annual history requires a >=300 second CNEquity deadline")
         self.config = config
+        self.deadline = deadline
         self.provider_version = f"baostock-{FROZEN_BAOSTOCK_RUNTIME_VERSION}"
 
     def __enter__(self) -> "CNEquityBaoStockDailyFactsBridge":
@@ -43,11 +56,29 @@ class CNEquityBaoStockDailyFactsBridge:
         return None
 
     def fetch(self, symbol: str, start: date, end: date) -> list[ProviderRawRow]:
-        expected_code = to_baostock_symbol(symbol)
+        result, failed = self.fetch_batch([DailyFactsRequest(symbol, start, end)])
+        if failed:
+            raise DailyFactsError("SOURCE_ERROR", f"CNEquity BaoStock failed: {symbol}")
+        return result[symbol]
 
-        def fetch_one(bs: Any, _symbol: str, window_start: date, window_end: date) -> list[dict[str, Any]] | None:
+    def fetch_batch(self, requests: list[DailyFactsRequest]) -> tuple[dict[str, list[ProviderRawRow]], tuple[str, ...]]:
+        """Fetch a checkpoint batch in one CNEquity-managed BaoStock session."""
+        if not requests:
+            return {}, ()
+        by_symbol = {request.symbol: request for request in requests}
+        if len(by_symbol) != len(requests):
+            raise DailyFactsError("DUPLICATE_PROVIDER_REQUEST", "duplicate Daily Facts symbol in CNEquity batch")
+        if any(request.required_start > request.required_end for request in requests):
+            raise DailyFactsError("INVALID_PROVIDER_SCOPE", "Daily Facts request start is after end")
+        symbols = [request.symbol for request in requests]
+        batch_start = min(request.required_start for request in requests)
+        batch_end = max(request.required_end for request in requests)
+
+        def fetch_one(bs: Any, symbol: str, _window_start: date, _window_end: date) -> list[dict[str, Any]] | None:
+            request = by_symbol[symbol]
+            expected_code = to_baostock_symbol(symbol)
             output: list[dict[str, Any]] = []
-            for bounded_start, bounded_end in _year_windows(window_start, window_end):
+            for bounded_start, bounded_end in _year_windows(request.required_start, request.required_end):
                 try:
                     result = bs.query_history_k_data_plus(
                         expected_code, ",".join(PROVIDER_FIELDS), start_date=bounded_start.isoformat(),
@@ -68,14 +99,23 @@ class CNEquityBaoStockDailyFactsBridge:
                         return None
                     if raw["code"].strip().lower() != expected_code or not bounded_start <= trade_date <= bounded_end:
                         return None
-                    output.append({"trade_date": trade_date, "raw": raw})
+                    output.append({"symbol": symbol, "trade_date": trade_date, "raw": raw})
             return output
 
-        rows, failed = fetch_per_symbol([symbol], start, end, fetch_one, config=self.config, label="ASL daily facts")
-        if failed:
-            raise DailyFactsError("SOURCE_ERROR", f"CNEquity BaoStock failed: {symbol}")
+        try:
+            rows, failed = fetch_per_symbol(
+                symbols, batch_start, batch_end, fetch_one, config=self.config,
+                label="ASL daily facts", deadline=self.deadline, rest_after_batch=True,
+            )
+        except Exception as exc:
+            raise DailyFactsError("SOURCE_ERROR", "CNEquity BaoStock batch failed") from exc
         fetched_at = datetime.now(timezone.utc).isoformat()
-        raw_rows = [ProviderRawRow(symbol, row["trade_date"], row["raw"], fetched_at, self.provider_version) for row in rows]
+        raw_rows = [ProviderRawRow(row["symbol"], row["trade_date"], row["raw"], fetched_at, self.provider_version) for row in rows]
+        if any(row.symbol not in by_symbol for row in raw_rows):
+            raise DailyFactsError("PROVIDER_IDENTITY_MISMATCH", "BaoStock returned an out-of-batch symbol")
         if len({(row.symbol, row.trade_date) for row in raw_rows}) != len(raw_rows):
             raise DailyFactsError("DUPLICATE_PROVIDER_ROW", "duplicate BaoStock primary key")
-        return raw_rows
+        result = {symbol: [] for symbol in symbols}
+        for row in raw_rows:
+            result[row.symbol].append(row)
+        return result, tuple(failed)

@@ -48,10 +48,26 @@ The fast review cache is never a publication authority and cannot set
 `PRECLOSE_COMPLETE` or `FACTS_READY`.
 
 `FastReviewSnapshotV01` is the ASL-side evidence boundary.  Its current live
-probe is blocked fail-closed: the configured SOCKS path lacks `socksio` in the
-CNEquity virtual environment, and a direct EastMoney probe returned no valid
-`data` object from every CNEquity clist host.  No cache was persisted, no
-field-unit calibration was claimed, and no publication state changed.
+probe remains blocked fail-closed: `socksio` is now reproducibly installed for
+the configured SOCKS route, but direct, HTTP-proxy, and SOCKS-proxy CNEquity
+clist probes all returned no valid `data` object from every clist host. No
+cache was persisted, no field-unit calibration was claimed, and no publication
+state changed. A calibration receipt is separate from daily review rows; a
+complete snapshot can contain explicit non-comparable rows, but those rows are
+not review candidates.
+
+## Current execution blockers
+
+- CNEquity `daily_bars` physical partitions are complete through 2026-09-07,
+  while its persisted state watermark is 2026-08-28. Pinned v0.7.2 exposes no
+  safe CLI/API operation that derives and advances this state from existing
+  curated session-dense coverage; `cne verify` only proposes a provider
+  backfill. State files must not be edited manually.
+- No full-market FastReview snapshot can pass its complete-pagination source
+  gate until the current EastMoney route returns a valid first page.
+
+The Wave 0 native bootstrap remains gated on both blockers. No existing daily
+partition is to be refetched merely to advance state.
 
 ## Exact supported commands for the next authorized bootstrap
 
