@@ -15,7 +15,9 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import uuid
+from contextlib import nullcontext
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -39,6 +41,8 @@ RUN = "daily_facts_phase1_full_market_v01"
 SCHEMA = "ASL_DAILY_FACTS_FULL_MARKET_RUNNER_V01"
 RAW_SCHEMA = "ASL_BAOSTOCK_DAILY_FACTS_RAW_V02"
 TERMINAL = {"QUALITY_PASS", "PROVIDER_FAIL", "QUALITY_FAIL"}
+MAX_PROVIDER_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 0.25
 
 
 def _utc() -> str:
@@ -101,6 +105,10 @@ def _db(path: Path) -> sqlite3.Connection:
         completed_at text, raw_path text, normalized_path text, row_n integer,
         error_code text, parity_status text, schema text not null)""")
     con.execute("create table if not exists metadata (key text primary key, value text not null)")
+    columns = {row[1] for row in con.execute("pragma table_info(units)")}
+    for name in ("last_error_code", "last_error_at"):
+        if name not in columns:
+            con.execute(f"alter table units add column {name} text")
     return con
 
 
@@ -169,6 +177,24 @@ def _load_raw(path: Path) -> list[ProviderRawRow]:
     return rows
 
 
+def _valid_raw_for_unit(path: Path, *, symbol: str, start: date, end: date) -> list[ProviderRawRow]:
+    """Validate an immutable RAW file before it can change checkpoint state."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW is unreadable") from exc
+    if (payload.get("symbol") != symbol or payload.get("requested_start") != start.isoformat()
+            or payload.get("requested_end") != end.isoformat()):
+        raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW has wrong request scope")
+    try:
+        rows = _load_raw(path)
+    except DailyFactsError as exc:
+        raise DailyFactsError("RAW_CONTRACT_FAILURE", str(exc)) from exc
+    if any(row.symbol != symbol or not start <= row.trade_date <= end for row in rows):
+        raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW escaped symbol/date scope")
+    return rows
+
+
 def _historical_preclose(root: Path, symbol: str) -> dict[tuple[str, str], tuple[float, str]]:
     """Old R4A9 is a diagnostic oracle, never an authority input."""
     path = root / "staging" / "r4a9-preclose-real-full-extraction-v01" / "units" / f"{symbol}.parquet"
@@ -191,7 +217,8 @@ def _parity(root: Path, rows: list[dict[str, Any]]) -> tuple[str, dict[str, int]
         if abs(float(row["preclose"]) - candidate[0]) <= 0.000001 and str(row["provider_tradestatus"]) == candidate[1]:
             exact += 1
     differences = overlap - exact
-    return ("EXACT" if differences == 0 else "UNEXPLAINED_DIFFERENCE",
+    state = "NOT_COMPARABLE_NO_OVERLAP" if overlap == 0 else "EXACT" if differences == 0 else "UNEXPLAINED_DIFFERENCE"
+    return (state,
             {"OVERLAP_ROW_N": overlap, "EXACT_PARITY_N": exact,
              "EXPECTED_DIFFERENCE_N": 0, "UNEXPLAINED_DIFFERENCE_N": differences})
 
@@ -214,14 +241,60 @@ def _validate(symbol: str, rows: list[dict[str, Any]], required_dates: set[str])
             raise DailyFactsError("UNKNOWN_FACT", "unknown tri-state fact cannot pass full quality")
 
 
-def _recover_interrupted(con: sqlite3.Connection) -> None:
-    con.execute("update units set state='RAW_PERSISTED',error_code='INTERRUPTED_AFTER_RAW' where state='FETCHING' and raw_path is not null")
-    con.execute("update units set state='NOT_STARTED',error_code='INTERRUPTED_BEFORE_RAW' where state='FETCHING' and raw_path is null")
+def _record_error(con: sqlite3.Connection, symbol: str, code: str) -> None:
+    con.execute("update units set error_code=?,last_error_code=?,last_error_at=? where symbol=?", (code, code, _utc(), symbol))
+
+
+def _adopt_raw_if_present(con: sqlite3.Connection, *, root: Path, raw_root: Path, symbol: str,
+                          raw_rel: str | None, start: date, end: date) -> bool:
+    """Adopt valid immutable evidence, fail closed on malformed evidence."""
+    raw_path = root / raw_rel if raw_rel else raw_root / f"{symbol}.json"
+    if not raw_path.exists():
+        return False
+    try:
+        rows = _valid_raw_for_unit(raw_path, symbol=symbol, start=start, end=end)
+    except DailyFactsError:
+        con.execute("update units set state='QUALITY_FAIL',completed_at=? where symbol=?", (_utc(), symbol))
+        _record_error(con, symbol, "RAW_CONTRACT_FAILURE")
+        return True
+    con.execute("update units set state='RAW_PERSISTED',raw_path=?,row_n=?,error_code=null where symbol=?",
+                (str(raw_path.relative_to(root)), len(rows), symbol))
+    return True
+
+
+def _recover_interrupted(con: sqlite3.Connection, *, root: Path, raw_root: Path, start: date, end: date) -> None:
+    """Recover every crash state based on immutable deterministic RAW paths."""
+    for symbol, state, raw_rel in con.execute("select symbol,state,raw_path from units where state in ('FETCHING','NOT_STARTED')"):
+        adopted = _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
+                                        raw_rel=raw_rel, start=start, end=end)
+        if not adopted and state == "FETCHING":
+            con.execute("update units set state='NOT_STARTED' where symbol=?", (symbol,))
+            _record_error(con, symbol, "INTERRUPTED_BEFORE_RAW")
+    con.commit()
+
+
+def _fetch_with_retry(con: sqlite3.Connection, provider: Any, *, symbol: str, start: date, end: date) -> list[ProviderRawRow]:
+    """Bounded retry only for typed transient provider errors."""
+    last: DailyFactsError | None = None
+    for index in range(1, MAX_PROVIDER_ATTEMPTS + 1):
+        con.execute("update units set state='FETCHING',request_id=?,attempts=attempts+1,started_at=? where symbol=?", (str(uuid.uuid4()), _utc(), symbol))
+        con.commit()
+        try:
+            return provider.fetch(symbol, start, end)
+        except DailyFactsError as exc:
+            last = exc
+            _record_error(con, symbol, exc.code)
+            con.commit()
+            if exc.code != "SOURCE_ERROR" or index == MAX_PROVIDER_ATTEMPTS:
+                raise
+            time.sleep(RETRY_BACKOFF_SECONDS * index)
+    assert last is not None
+    raise last
 
 
 def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None,
             start: date = date(2016, 1, 1), max_symbols: int = 0,
-            retry_quality_fail: bool = False,
+            retry_quality_fail: bool = False, retry_provider_fail: bool = False,
             provider_factory: Callable[[], Any] = BaoStockDailyFactsAdapter) -> dict[str, Any]:
     root = root.resolve()
     formal_symbols, required, as_of, manifest_hash, daily_relation = published_scope(root)
@@ -237,11 +310,18 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
         if existing is not None and existing != plan:
             raise DailyFactsError("RUN_PLAN_DRIFT", "existing run plan differs from current formal scope")
         _set_metadata(con, "plan", plan)
-        _recover_interrupted(con)
+        _recover_interrupted(con, root=root, raw_root=raw_root, start=start, end=as_of)
         if retry_quality_fail:
             # Recovery after a runner/certification repair never permits a
             # provider refetch: persisted evidence is the sole input.
             con.execute("update units set state='RAW_PERSISTED',error_code='QUALITY_RETRY_FROM_PERSISTED_RAW' where state='QUALITY_FAIL' and raw_path is not null")
+        if retry_provider_fail:
+            # An operator explicitly opens a new bounded retry cycle.  Prior
+            # attempts/error timestamps remain in the ledger; valid RAW wins.
+            for symbol, raw_rel in con.execute("select symbol,raw_path from units where state='PROVIDER_FAIL'"):
+                if not _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
+                                             raw_rel=raw_rel, start=start, end=as_of):
+                    con.execute("update units set state='NOT_STARTED',completed_at=null,error_code='EXPLICIT_PROVIDER_RETRY' where symbol=?", (symbol,))
         for symbol in selected:
             con.execute("insert or ignore into units(symbol,required_n,state,schema) values(?,?,?,?)",
                         (symbol, required[symbol], "NOT_STARTED", SCHEMA))
@@ -249,21 +329,34 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
         eligible = con.execute("select symbol,state,required_n,raw_path from units where state in ('NOT_STARTED','RAW_PERSISTED') order by symbol" + (" limit ?" if max_symbols else ""), (() if not max_symbols else (max_symbols,))).fetchall()
         fetched = 0
         import duckdb
-        with duckdb.connect(":memory:") as daily_con, provider_factory() as provider:
+        needs_provider = any(state == "NOT_STARTED" for _, state, _, _ in eligible)
+        provider_context = provider_factory() if needs_provider else nullcontext(None)
+        with duckdb.connect(":memory:") as daily_con, provider_context as provider:
             for symbol, state, required_n, raw_rel in eligible:
                 raw_path = root / raw_rel if raw_rel else raw_root / f"{symbol}.json"
                 try:
                     if state == "NOT_STARTED":
-                        request_id = str(uuid.uuid4())
-                        con.execute("update units set state='FETCHING',request_id=?,attempts=attempts+1,started_at=?,error_code=null where symbol=?", (request_id, _utc(), symbol)); con.commit()
-                        raw = provider.fetch(symbol, start, as_of)
-                        payload = _raw_payload(symbol, start, as_of, request_id, raw)
-                        if raw_path.exists():
-                            raise DailyFactsError("RAW_DUPLICATE", "raw evidence already exists for incomplete unit")
-                        _atomic_json(raw_path, payload)
-                        con.execute("update units set state='RAW_PERSISTED',raw_path=?,row_n=? where symbol=?", (str(raw_path.relative_to(root)), len(raw), symbol)); con.commit()
-                        fetched += 1
-                    raw = _load_raw(raw_path)
+                        # A stale NOT_STARTED checkpoint can coexist with a
+                        # durable RAW file after a process crash.  Adopt first.
+                        if _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
+                                                 raw_rel=raw_rel, start=start, end=as_of):
+                            con.commit()
+                            state = "RAW_PERSISTED"
+                            raw_path = raw_root / f"{symbol}.json"
+                            if con.execute("select state from units where symbol=?", (symbol,)).fetchone()[0] == "QUALITY_FAIL":
+                                continue
+                        else:
+                            if provider is None:
+                                raise DailyFactsError("SOURCE_ERROR", "provider was not opened")
+                            raw = _fetch_with_retry(con, provider, symbol=symbol, start=start, end=as_of)
+                            request_id = con.execute("select request_id from units where symbol=?", (symbol,)).fetchone()[0]
+                            payload = _raw_payload(symbol, start, as_of, request_id, raw)
+                            if raw_path.exists():
+                                raise DailyFactsError("RAW_DUPLICATE", "raw evidence already exists for incomplete unit")
+                            _atomic_json(raw_path, payload)
+                            con.execute("update units set state='RAW_PERSISTED',raw_path=?,row_n=? where symbol=?", (str(raw_path.relative_to(root)), len(raw), symbol)); con.commit()
+                            fetched += 1
+                    raw = _valid_raw_for_unit(raw_path, symbol=symbol, start=start, end=as_of)
                     # BaoStock can return dates outside this formal R3 scope
                     # (for example a pre-membership history).  Retain them in
                     # RAW, but only normalize the current published key set.
@@ -273,7 +366,7 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
                     facts = [row for row in normalize(raw) if row["trade_date"] in expected_dates]
                     _validate(symbol, facts, expected_dates)
                     parity, _counts = _parity(root, facts)
-                    if parity != "EXACT":
+                    if parity == "UNEXPLAINED_DIFFERENCE":
                         raise DailyFactsError("UNEXPLAINED_R4A9_PARITY_DIFFERENCE", "historical regression parity mismatch")
                     normalized = staging / "normalized" / f"{symbol}.parquet"
                     if not normalized.exists():
@@ -317,9 +410,10 @@ if __name__ == "__main__":
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--max-symbols", type=int, default=0)
     parser.add_argument("--retry-quality-fail", action="store_true")
+    parser.add_argument("--retry-provider-fail", action="store_true")
     parser.add_argument("--discover", action="store_true")
     args = parser.parse_args()
     if args.discover:
         print(json.dumps(discover(args.data_root), ensure_ascii=False, sort_keys=True))
     else:
-        print(json.dumps(execute(args.data_root, run_name=args.run_name, symbols=args.symbols, max_symbols=args.max_symbols, retry_quality_fail=args.retry_quality_fail), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(execute(args.data_root, run_name=args.run_name, symbols=args.symbols, max_symbols=args.max_symbols, retry_quality_fail=args.retry_quality_fail, retry_provider_fail=args.retry_provider_fail), ensure_ascii=False, sort_keys=True))
