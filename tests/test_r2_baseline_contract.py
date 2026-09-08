@@ -115,7 +115,7 @@ def test_project_metadata_pins_only_the_frozen_cnequity_runtime():
     project = _read_toml(ROOT / "pyproject.toml")
 
     assert project["project"]["requires-python"] == ">=3.12,<3.13"
-    assert project["project"]["dependencies"] == [PINNED_REQUIREMENT]
+    assert project["project"]["dependencies"] == [PINNED_REQUIREMENT, "socksio>=1.0.0"]
     assert project["dependency-groups"]["dev"] == ["pytest==8.4.2"]
 
     direct_dependencies = [
@@ -234,11 +234,11 @@ def test_config_freezes_only_the_bounded_r2_runtime_surface():
     assert config["adj_factors"] == {"source": "sina", "adjust_types": ["hfq"]}
     assert config["universe"] == {"default": "all_a"}
     assert config["minute_bars"] == {
-        "enabled": False,
+        "enabled": True,
         "scope": "all",
         "symbols": [],
         "frequencies": ["5m"],
-        "fetch_workers": 1,
+        "fetch_workers": 4,
     }
     assert config["trade_ticks"] == {
         "enabled": False,
