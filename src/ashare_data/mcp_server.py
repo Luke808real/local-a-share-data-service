@@ -18,7 +18,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
-from ashare_data.local_query import IDENTITY_COLUMNS, READY_BAR_COLUMNS, LocalQuery, QueryError
+from ashare_data.local_query import DAILY_FACT_FIELDS, IDENTITY_COLUMNS, READY_BAR_COLUMNS, LocalQuery, QueryError
 
 Symbol = Annotated[str, Field(strict=True, min_length=1, max_length=16)]
 ISODate = Annotated[str, Field(strict=True, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")]
@@ -90,7 +90,7 @@ def _error(code: str) -> CallToolResult:
 def _invoke(command: str, fields: list[str] | None = None, **arguments: Any) -> CallToolResult:
     try:
         if fields:
-            ready = IDENTITY_COLUMNS if command == "instrument" else READY_BAR_COLUMNS
+            ready = IDENTITY_COLUMNS if command == "instrument" else (*READY_BAR_COLUMNS, *DAILY_FACT_FIELDS)
             if any(field not in ready for field in fields):
                 return _error("FACT_NOT_READY")
         if command == "bars":
@@ -103,6 +103,8 @@ def _invoke(command: str, fields: list[str] | None = None, **arguments: Any) -> 
             if (end - start).days + 1 > 1096:
                 return _error("DATE_SPAN_EXCEEDED")
         with LocalQuery() as query:
+            if fields and command in {"bars", "latest"}:
+                arguments["fact_fields"] = fields
             value = getattr(query, command)(**arguments)
         # fields validates availability; always retain the complete ready record
         # and provenance envelope, rather than stripping authority metadata.

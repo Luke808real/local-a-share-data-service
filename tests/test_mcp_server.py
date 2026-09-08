@@ -175,16 +175,22 @@ def test_inclusive_date_span_boundary(server):
     assert len(FakeQuery.instances) == 1
 
 
-@pytest.mark.parametrize("name,arguments", [
-    ("latest", {"symbol": "600519.SH", "fields": ["preclose"]}),
-    ("bars", {"symbol": "600519.SH", "start": "2026-01-01", "end": "2026-01-01", "fields": ["turnover_rate"]}),
-    ("instrument", {"symbol": "600519.SH", "fields": ["trading_status"]}),
-])
-def test_fact_not_ready(server, name, arguments):
+def test_instrument_fact_not_ready(server):
+    name, arguments = "instrument", {"symbol": "600519.SH", "fields": ["trading_status"]}
     result = call(server, name, arguments)
     assert result.isError
     assert result.structuredContent["error"]["code"] == "FACT_NOT_READY"
     assert not FakeQuery.instances
+
+
+@pytest.mark.parametrize("name,arguments", [
+    ("latest", {"symbol": "600519.SH", "fields": ["preclose"]}),
+    ("bars", {"symbol": "600519.SH", "start": "2026-01-01", "end": "2026-01-01", "fields": ["turnover_rate"]}),
+])
+def test_daily_facts_fields_delegate_to_local_query(server, name, arguments):
+    result = call(server, name, arguments)
+    assert not result.isError
+    assert FakeQuery.instances[0].calls[0][1]["fact_fields"] == arguments["fields"]
 
 
 def test_ready_fields_preserve_provenance_and_new_query_per_call(server):

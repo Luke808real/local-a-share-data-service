@@ -28,6 +28,7 @@ DAILY_USABLE = True
 DAILY_COVERAGE_STATUS = "PARTIAL"
 PRECLOSE_COMPLETE = False
 FACTS_READY = False
+DAILY_FACT_FIELDS = ("preclose", "pct_chg", "turnover_rate", "trade_status", "is_st")
 
 READY_BAR_COLUMNS = (
     "symbol",
@@ -326,6 +327,42 @@ def _manifest_reference_values(reference: dict[str, Any]) -> tuple[int, str]:
     return n, digest
 
 
+def _daily_facts_authority(root: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Read the separate facts authority; absent means facts are not ready."""
+    pointer_path = root / "meta/asl/daily_facts/published-daily-facts-authority.json"
+    if not pointer_path.exists():
+        return None
+    pointer = _read_json_object(pointer_path)
+    if not pointer or pointer.get("schema") != "ASL_PUBLISHED_DAILY_FACTS_AUTHORITY_V01":
+        raise QueryError("DAILY_FACTS_AUTHORITY_INVALID", "invalid daily facts pointer")
+    paths=[]
+    for key in ("plan", "receipt"):
+        relative=pointer.get(key)
+        if not isinstance(relative,str) or not relative.startswith("staging/") or ".." in Path(relative).parts:
+            raise QueryError("DAILY_FACTS_AUTHORITY_INVALID", "invalid daily facts evidence path")
+        paths.append(root / relative)
+    plan, receipt = (_read_json_object(path) for path in paths)
+    if not plan or not receipt or receipt.get("STATE") != "COMMITTED":
+        raise QueryError("DAILY_FACTS_AUTHORITY_INVALID", "uncommitted daily facts authority")
+    manifest=plan.get("manifest")
+    quality=receipt.get("quality")
+    if (not isinstance(manifest,dict) or not isinstance(quality,dict)
+            or pointer.get("manifest_hash") != manifest.get("manifest_hash")
+            or receipt.get("manifest_hash") != manifest.get("manifest_hash")
+            or quality.get("PASS") is not True):
+        raise QueryError("DAILY_FACTS_AUTHORITY_INVALID", "daily facts evidence disagrees")
+    files=manifest.get("files")
+    if not isinstance(files,list) or not files:
+        raise QueryError("DAILY_FACTS_AUTHORITY_INVALID", "missing daily facts manifest")
+    for item in files:
+        if not isinstance(item,dict) or not isinstance(item.get("relative_path"),str) or not item["relative_path"].startswith("curated/daily_facts/trade_date="):
+            raise QueryError("DAILY_FACTS_AUTHORITY_INVALID", "invalid daily facts manifest path")
+        path=root/item["relative_path"]
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item.get("sha256"):
+            raise QueryError("DAILY_FACTS_MANIFEST_DRIFT", "daily facts file drift")
+    return manifest, receipt
+
+
 def _format_columns(columns: Iterable[str]) -> str:
     return ", ".join(f'"{column}"' for column in columns)
 
@@ -371,6 +408,7 @@ class LocalQuery:
             evidence.append(pointer)
         self._authority_identities = {path: _file_identity(self.data_root, path) for path in evidence}
         self._published_files = self._manifest_reference[1]["FILES"]
+        self._facts_authority = _daily_facts_authority(self.data_root)
         self.latest_good_as_of = max(_partition_date(r["relative_path"]) for r in self._published_files)
         self._verified_identities: dict[Path, tuple[int, ...]] = {}
         self.verify_current_manifest()
@@ -412,6 +450,22 @@ class LocalQuery:
             "read_parquet([" + ",".join(_sql_literal(str(p)) for p in self._instrument_files)
             + "], union_by_name=true)"
         )
+
+    def _facts_for_rows(self, rows: list[dict[str, Any]], fields: Sequence[str] | None) -> list[dict[str, Any]]:
+        requested=tuple(field for field in (fields or ()) if field in DAILY_FACT_FIELDS)
+        if not requested: return rows
+        if self._facts_authority is None:
+            raise QueryError("FACT_NOT_READY", "daily facts are not published")
+        manifest, _receipt=self._facts_authority
+        paths=[self.data_root / item["relative_path"] for item in manifest["files"]]
+        relation="read_parquet(["+",".join(_sql_literal(str(p)) for p in paths)+"], union_by_name=true)"
+        keys=[(row["symbol"],row["trade_date"]) for row in rows]
+        if not keys: return rows
+        facts=self._execute("select symbol, trade_date, "+_format_columns(requested)+" from "+relation+" where (symbol, cast(trade_date as varchar)) in ("+",".join("(?,?)" for _ in keys)+")", [part for key in keys for part in key])
+        indexed={(item["symbol"],item["trade_date"]):item for item in facts}
+        if len(indexed) != len(keys): raise QueryError("FACT_NOT_READY", "requested rows are outside facts scope")
+        for row in rows: row.update({field:indexed[(row["symbol"],row["trade_date"])][field] for field in requested})
+        return rows
 
     def _daily_allowlist(self, start: date | None = None, end: date | None = None) -> str:
         paths = [self.data_root / row["relative_path"] for row in self._published_files
@@ -575,13 +629,13 @@ class LocalQuery:
         symbol: str,
         start: str | date,
         end: str | date,
-    ) -> dict[str, Any]:
+        *, fact_fields: Sequence[str] | None = None) -> dict[str, Any]:
         start_date = parse_iso_date(start, field_name="start")
         end_date = parse_iso_date(end, field_name="end")
         if start_date > end_date:
             raise QueryError("INVALID_DATE_RANGE", "start must be on or before end")
         resolved = self.resolve_symbol(symbol)
-        rows = self._daily_rows(resolved, start=start_date, end=end_date)
+        rows = self._facts_for_rows(self._daily_rows(resolved, start=start_date, end=end_date), fact_fields)
         return {
             "command": "bars",
             "symbol": resolved,
@@ -594,12 +648,12 @@ class LocalQuery:
             "read_only": True,
         }
 
-    def latest(self, symbol: str, limit: int = 20, *, as_of: str | date | None = None) -> dict[str, Any]:
+    def latest(self, symbol: str, limit: int = 20, *, as_of: str | date | None = None, fact_fields: Sequence[str] | None = None) -> dict[str, Any]:
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise QueryError("INVALID_LIMIT", "limit must be a positive integer")
         resolved = self.resolve_symbol(symbol)
         requested = parse_iso_date(as_of, field_name="as_of") if as_of is not None else None
-        rows = self._daily_rows(resolved, end=requested, descending=True, limit=limit)
+        rows = self._facts_for_rows(self._daily_rows(resolved, end=requested, descending=True, limit=limit), fact_fields)
         return {
             "command": "latest",
             "symbol": resolved,
@@ -704,6 +758,9 @@ class LocalQuery:
             **self._physical_metadata(),
             "PRECLOSE_COMPLETE": PRECLOSE_COMPLETE,
             "FACTS_READY": FACTS_READY,
+            "DAILY_FACTS_PHASE1_STATUS": "VERTICAL_SLICE_PUBLISHED" if self._facts_authority else "NOT_PUBLISHED",
+            "DAILY_FACTS_PHASE1_SCOPE": "VERTICAL_SLICE" if self._facts_authority else None,
+            "DAILY_FACTS_MANIFEST_HASH": self._facts_authority[0]["manifest_hash"] if self._facts_authority else None,
             "QUERY_BACKEND": self.query_backend,
             "READ_ONLY": True,
             "NETWORK_PROVIDER_DATA_FETCH": "NO",
