@@ -103,10 +103,11 @@ def _db(path: Path) -> sqlite3.Connection:
         symbol text primary key, required_n integer not null, state text not null,
         request_id text, attempts integer not null default 0, started_at text,
         completed_at text, raw_path text, normalized_path text, row_n integer,
-        error_code text, parity_status text, schema text not null)""")
+        error_code text, parity_status text, schema text not null,
+        required_start text, required_end text)""")
     con.execute("create table if not exists metadata (key text primary key, value text not null)")
     columns = {row[1] for row in con.execute("pragma table_info(units)")}
-    for name in ("last_error_code", "last_error_at"):
+    for name in ("last_error_code", "last_error_at", "required_start", "required_end"):
         if name not in columns:
             con.execute(f"alter table units add column {name} text")
     return con
@@ -138,6 +139,16 @@ def published_scope(root: Path) -> tuple[list[str], dict[str, int], date, str, s
     if not symbols:
         raise DailyFactsError("REQUIRED_SCOPE_EMPTY", "published R3 contains no formal SH/SZ symbols")
     return symbols, required, date.fromisoformat(status["DAILY_PUBLISHED_AS_OF"]), str(status["DAILY_MANIFEST_HASH"]), daily_relation
+
+
+def published_ranges(daily_relation: str) -> dict[str, tuple[date, date]]:
+    """Read exact per-symbol R3 dates once, outside the provider critical path."""
+    import duckdb
+    with duckdb.connect(":memory:") as con:
+        rows = con.execute(
+            "select symbol,min(trade_date),max(trade_date) from " + daily_relation + " group by symbol"
+        ).fetchall()
+    return {str(symbol): (start, end) for symbol, start, end in rows}
 
 
 def _raw_payload(symbol: str, start: date, end: date, request_id: str, raw: Iterable[ProviderRawRow]) -> dict[str, Any]:
@@ -177,20 +188,25 @@ def _load_raw(path: Path) -> list[ProviderRawRow]:
     return rows
 
 
-def _valid_raw_for_unit(path: Path, *, symbol: str, start: date, end: date) -> list[ProviderRawRow]:
+def _valid_raw_for_unit(path: Path, *, symbol: str, required_start: date, required_end: date) -> list[ProviderRawRow]:
     """Validate an immutable RAW file before it can change checkpoint state."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW is unreadable") from exc
-    if (payload.get("symbol") != symbol or payload.get("requested_start") != start.isoformat()
-            or payload.get("requested_end") != end.isoformat()):
+    try:
+        fetched_start = date.fromisoformat(str(payload.get("requested_start")))
+        fetched_end = date.fromisoformat(str(payload.get("requested_end")))
+    except ValueError as exc:
+        raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW has invalid request range") from exc
+    if (payload.get("symbol") != symbol or fetched_start > required_start
+            or fetched_end < required_end):
         raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW has wrong request scope")
     try:
         rows = _load_raw(path)
     except DailyFactsError as exc:
         raise DailyFactsError("RAW_CONTRACT_FAILURE", str(exc)) from exc
-    if any(row.symbol != symbol or not start <= row.trade_date <= end for row in rows):
+    if any(row.symbol != symbol or not fetched_start <= row.trade_date <= fetched_end for row in rows):
         raise DailyFactsError("RAW_CONTRACT_FAILURE", "persisted RAW escaped symbol/date scope")
     return rows
 
@@ -246,13 +262,13 @@ def _record_error(con: sqlite3.Connection, symbol: str, code: str) -> None:
 
 
 def _adopt_raw_if_present(con: sqlite3.Connection, *, root: Path, raw_root: Path, symbol: str,
-                          raw_rel: str | None, start: date, end: date) -> bool:
+                          raw_rel: str | None, required_start: date, required_end: date) -> bool:
     """Adopt valid immutable evidence, fail closed on malformed evidence."""
     raw_path = root / raw_rel if raw_rel else raw_root / f"{symbol}.json"
     if not raw_path.exists():
         return False
     try:
-        rows = _valid_raw_for_unit(raw_path, symbol=symbol, start=start, end=end)
+        rows = _valid_raw_for_unit(raw_path, symbol=symbol, required_start=required_start, required_end=required_end)
     except DailyFactsError:
         con.execute("update units set state='QUALITY_FAIL',completed_at=? where symbol=?", (_utc(), symbol))
         _record_error(con, symbol, "RAW_CONTRACT_FAILURE")
@@ -262,11 +278,11 @@ def _adopt_raw_if_present(con: sqlite3.Connection, *, root: Path, raw_root: Path
     return True
 
 
-def _recover_interrupted(con: sqlite3.Connection, *, root: Path, raw_root: Path, start: date, end: date) -> None:
+def _recover_interrupted(con: sqlite3.Connection, *, root: Path, raw_root: Path) -> None:
     """Recover every crash state based on immutable deterministic RAW paths."""
-    for symbol, state, raw_rel in con.execute("select symbol,state,raw_path from units where state in ('FETCHING','NOT_STARTED')"):
+    for symbol, state, raw_rel, required_start, required_end in con.execute("select symbol,state,raw_path,required_start,required_end from units where state in ('FETCHING','NOT_STARTED')"):
         adopted = _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
-                                        raw_rel=raw_rel, start=start, end=end)
+                                        raw_rel=raw_rel, required_start=date.fromisoformat(required_start), required_end=date.fromisoformat(required_end))
         if not adopted and state == "FETCHING":
             con.execute("update units set state='NOT_STARTED' where symbol=?", (symbol,))
             _record_error(con, symbol, "INTERRUPTED_BEFORE_RAW")
@@ -295,9 +311,13 @@ def _fetch_with_retry(con: sqlite3.Connection, provider: Any, *, symbol: str, st
 def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None,
             start: date = date(2016, 1, 1), max_symbols: int = 0,
             retry_quality_fail: bool = False, retry_provider_fail: bool = False,
+            acquire_only: bool = False, postprocess_only: bool = False,
             provider_factory: Callable[[], Any] = BaoStockDailyFactsAdapter) -> dict[str, Any]:
+    if acquire_only and postprocess_only:
+        raise DailyFactsError("INVALID_MODE", "acquire-only and postprocess-only are exclusive")
     root = root.resolve()
     formal_symbols, required, as_of, manifest_hash, daily_relation = published_scope(root)
+    ranges = published_ranges(daily_relation)
     selected = sorted(set(symbols or formal_symbols))
     if not set(selected).issubset(formal_symbols):
         raise DailyFactsError("OUTSIDE_FORMAL_SCOPE", "runner scope includes non-published-R3 symbol")
@@ -310,7 +330,18 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
         if existing is not None and existing != plan:
             raise DailyFactsError("RUN_PLAN_DRIFT", "existing run plan differs from current formal scope")
         _set_metadata(con, "plan", plan)
-        _recover_interrupted(con, root=root, raw_root=raw_root, start=start, end=as_of)
+        # First store deterministic published-R3 request boundaries.  Existing
+        # broad RAW remains valid because validation accepts a containing range.
+        for symbol in selected:
+            if symbol not in ranges:
+                raise DailyFactsError("REQUIRED_SCOPE_EMPTY", f"missing R3 range for {symbol}")
+            required_start, required_end = ranges[symbol]
+            con.execute("insert or ignore into units(symbol,required_n,state,schema,required_start,required_end) values(?,?,?,?,?,?)",
+                        (symbol, required[symbol], "NOT_STARTED", SCHEMA, required_start.isoformat(), required_end.isoformat()))
+            con.execute("update units set required_start=coalesce(required_start,?),required_end=coalesce(required_end,?) where symbol=?",
+                        (required_start.isoformat(), required_end.isoformat(), symbol))
+        con.commit()
+        _recover_interrupted(con, root=root, raw_root=raw_root)
         if retry_quality_fail:
             # Recovery after a runner/certification repair never permits a
             # provider refetch: persisted evidence is the sole input.
@@ -319,27 +350,27 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
             # An operator explicitly opens a new bounded retry cycle.  Prior
             # attempts/error timestamps remain in the ledger; valid RAW wins.
             for symbol, raw_rel in con.execute("select symbol,raw_path from units where state='PROVIDER_FAIL'"):
+                required_start, required_end = ranges[symbol]
                 if not _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
-                                             raw_rel=raw_rel, start=start, end=as_of):
+                                             raw_rel=raw_rel, required_start=required_start, required_end=required_end):
                     con.execute("update units set state='NOT_STARTED',completed_at=null,error_code='EXPLICIT_PROVIDER_RETRY' where symbol=?", (symbol,))
-        for symbol in selected:
-            con.execute("insert or ignore into units(symbol,required_n,state,schema) values(?,?,?,?)",
-                        (symbol, required[symbol], "NOT_STARTED", SCHEMA))
         con.commit()
-        eligible = con.execute("select symbol,state,required_n,raw_path from units where state in ('NOT_STARTED','RAW_PERSISTED') order by symbol" + (" limit ?" if max_symbols else ""), (() if not max_symbols else (max_symbols,))).fetchall()
+        states = "('RAW_PERSISTED')" if postprocess_only else "('NOT_STARTED','RAW_PERSISTED')"
+        eligible = con.execute("select symbol,state,required_n,raw_path,required_start,required_end from units where state in " + states + " order by symbol" + (" limit ?" if max_symbols else ""), (() if not max_symbols else (max_symbols,))).fetchall()
         fetched = 0
         import duckdb
-        needs_provider = any(state == "NOT_STARTED" for _, state, _, _ in eligible)
+        needs_provider = not postprocess_only and any(state == "NOT_STARTED" for _, state, _, _, _, _ in eligible)
         provider_context = provider_factory() if needs_provider else nullcontext(None)
         with duckdb.connect(":memory:") as daily_con, provider_context as provider:
-            for symbol, state, required_n, raw_rel in eligible:
+            for symbol, state, required_n, raw_rel, required_start_text, required_end_text in eligible:
+                required_start, required_end = date.fromisoformat(required_start_text), date.fromisoformat(required_end_text)
                 raw_path = root / raw_rel if raw_rel else raw_root / f"{symbol}.json"
                 try:
                     if state == "NOT_STARTED":
                         # A stale NOT_STARTED checkpoint can coexist with a
                         # durable RAW file after a process crash.  Adopt first.
                         if _adopt_raw_if_present(con, root=root, raw_root=raw_root, symbol=symbol,
-                                                 raw_rel=raw_rel, start=start, end=as_of):
+                                                 raw_rel=raw_rel, required_start=required_start, required_end=required_end):
                             con.commit()
                             state = "RAW_PERSISTED"
                             raw_path = raw_root / f"{symbol}.json"
@@ -348,15 +379,17 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
                         else:
                             if provider is None:
                                 raise DailyFactsError("SOURCE_ERROR", "provider was not opened")
-                            raw = _fetch_with_retry(con, provider, symbol=symbol, start=start, end=as_of)
+                            raw = _fetch_with_retry(con, provider, symbol=symbol, start=required_start, end=required_end)
                             request_id = con.execute("select request_id from units where symbol=?", (symbol,)).fetchone()[0]
-                            payload = _raw_payload(symbol, start, as_of, request_id, raw)
+                            payload = _raw_payload(symbol, required_start, required_end, request_id, raw)
                             if raw_path.exists():
                                 raise DailyFactsError("RAW_DUPLICATE", "raw evidence already exists for incomplete unit")
                             _atomic_json(raw_path, payload)
                             con.execute("update units set state='RAW_PERSISTED',raw_path=?,row_n=? where symbol=?", (str(raw_path.relative_to(root)), len(raw), symbol)); con.commit()
                             fetched += 1
-                    raw = _valid_raw_for_unit(raw_path, symbol=symbol, start=start, end=as_of)
+                    if acquire_only:
+                        continue
+                    raw = _valid_raw_for_unit(raw_path, symbol=symbol, required_start=required_start, required_end=required_end)
                     # BaoStock can return dates outside this formal R3 scope
                     # (for example a pre-membership history).  Retain them in
                     # RAW, but only normalize the current published key set.
@@ -379,7 +412,7 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
         states = dict(con.execute("select state,count(*) from units group by state").fetchall())
         return {"run": run_name, "checkpoint_path": str(database), "raw_storage_path": str(raw_root),
                 "as_of": as_of.isoformat(), "selected_symbol_n": len(selected), "network_fetched_symbol_n": fetched,
-                "states": states, "publication": "STAGING_ONLY_NOT_PUBLISHED"}
+                "states": states, "mode": "ACQUIRE_ONLY" if acquire_only else "POSTPROCESS_ONLY" if postprocess_only else "FULL_PIPELINE", "publication": "STAGING_ONLY_NOT_PUBLISHED"}
     finally:
         con.close()
 
@@ -411,9 +444,11 @@ if __name__ == "__main__":
     parser.add_argument("--max-symbols", type=int, default=0)
     parser.add_argument("--retry-quality-fail", action="store_true")
     parser.add_argument("--retry-provider-fail", action="store_true")
+    parser.add_argument("--acquire-only", action="store_true")
+    parser.add_argument("--postprocess-only", action="store_true")
     parser.add_argument("--discover", action="store_true")
     args = parser.parse_args()
     if args.discover:
         print(json.dumps(discover(args.data_root), ensure_ascii=False, sort_keys=True))
     else:
-        print(json.dumps(execute(args.data_root, run_name=args.run_name, symbols=args.symbols, max_symbols=args.max_symbols, retry_quality_fail=args.retry_quality_fail, retry_provider_fail=args.retry_provider_fail), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(execute(args.data_root, run_name=args.run_name, symbols=args.symbols, max_symbols=args.max_symbols, retry_quality_fail=args.retry_quality_fail, retry_provider_fail=args.retry_provider_fail, acquire_only=args.acquire_only, postprocess_only=args.postprocess_only), ensure_ascii=False, sort_keys=True))
