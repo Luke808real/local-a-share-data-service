@@ -32,10 +32,30 @@ preserved below.
   `d013e171734d9c688e8c370163a617f35ce45c55c134ca6cee655b2a2c1e8f7b`.
 - PRECLOSE_COMPLETE: false; FACTS_READY: false.
 - FULL_R4A9_CONTINUATION_AUTHORIZED: false; R7_FIRST_PUBLISH_PASS: false.
-- MCP_STATUS: local implementation validated; 88 targeted tests PASS and all
-  four tools passed real loopback HTTP/MCP calls. ChatGPT-side acceptance is
-  NOT_VERIFIED; local success is not independent audit or remote acceptance.
-- NEXT_GATE: independent review and authenticated ChatGPT connection setup.
+- MCP_STATUS: `status`, `instrument`, `bars`, and `latest` are read-only
+  published-R3 tools. Local validation and a user-observed ChatGPT/MCP query
+  both succeeded for the 2026-09-07 authority; this is operational evidence,
+  not an independent audit PASS.
+- CURRENT_READY:
+  - R3 Daily RAW: READY (published through 2026-09-07; coverage remains
+    PARTIAL).
+  - Identity: READY (5456 formal SH/SZ instruments).
+  - Publication Authority: READY (pointer-bound 2,595-file manifest).
+  - LocalQuery: READY (published-manifest allowlist only).
+  - MCP: READY (read-only `status`/`instrument`/`bars`/`latest`).
+- CURRENT_NOT_READY:
+  - Formal Preclose: NOT READY.
+  - Daily Facts: NOT READY.
+  - Price Limit Facts: NOT READY.
+  - Turnover Facts: NOT READY.
+  - ST / Trade Status Facts: NOT READY.
+  - Share Capital Facts: NOT READY.
+  - 5m Publication: NOT READY.
+  - Limit Event Facts: NOT READY.
+- NEXT_GATE: Daily Facts Phase 1 vertical slice under
+  `docs/plans/ASL_MARKET_FACTS_NEXT_PHASE_V01.md`; no R3 authority rewrite,
+  no facts exposure, and no readiness flag change before its own quality and
+  publication authority are verified.
 - ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
   read-only MCP at `http://127.0.0.1:8766/mcp`; no public tunnel configured.
 - NETWORK_PROVIDER_JOB: none authorized or running.
