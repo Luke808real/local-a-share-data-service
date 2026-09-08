@@ -47,12 +47,18 @@ audit → ASL fact certification/publication (separate authorization)
 The fast review cache is never a publication authority and cannot set
 `PRECLOSE_COMPLETE` or `FACTS_READY`.
 
+`FastReviewSnapshotV01` is the ASL-side evidence boundary.  Its current live
+probe is blocked fail-closed: the configured SOCKS path lacks `socksio` in the
+CNEquity virtual environment, and a direct EastMoney probe returned no valid
+`data` object from every CNEquity clist host.  No cache was persisted, no
+field-unit calibration was claimed, and no publication state changed.
+
 ## Exact supported commands for the next authorized bootstrap
 
 ```text
 .venv/bin/cne config validate --config config/cnequity.toml
 .venv/bin/cne backfill trading_status --config config/cnequity.toml
-.venv/bin/cne backfill minute_bars --config config/cnequity.toml --start YYYY-MM-DD
+.venv/bin/cne backfill minute_bars_5m --config config/cnequity.toml --start YYYY-MM-DD
 .venv/bin/cne backfill margin_trading --config config/cnequity.toml --start YYYY-MM-DD --end YYYY-MM-DD
 .venv/bin/cne run daily --config config/cnequity.toml --group <supported-group>
 ```
@@ -61,3 +67,18 @@ Each command requires a dataset-specific coverage target, source-health check,
 and a separate execution authorization.  Do not run `cne init` over the
 existing daily lake; do not use an ASL full-history BaoStock loop as a daily
 updater.
+
+## Bootstrap sequence after separate authorization
+
+| Dataset | Gap / scope | Native request model | Resumable | Order-of-magnitude | Command |
+| --- | --- | --- | --- | --- | --- |
+| trading_status | historical coverage absent; define exact symbol/date scope first | BaoStock per-symbol session | yes, scoped checkpoint | hours to days by scope | `cne backfill trading_status --config config/cnequity.toml --symbols <approved-symbols>` |
+| valuation_metrics | snapshot-with-backfill absent; define date window | EastMoney/BaoStock native adapter | dataset state | hours | `cne backfill valuation_metrics --config config/cnequity.toml` |
+| minute_bars_5m | source horizon only (491 days) | native minute-bar workers, four fetch workers | dataset state | hours to days | `cne backfill minute_bars_5m --config config/cnequity.toml --start <within-source-horizon>` |
+| share_structure | absent; define formal symbols | native exchange/EastMoney adapter | dataset state | hours | `cne backfill share_structure --config config/cnequity.toml` |
+| industry_members | absent SW snapshot | native industry adapter | dataset state | minutes to hours | `cne backfill industry_members --config config/cnequity.toml` |
+| index context | index bars and constituents absent | native index adapters | dataset state | hours | `cne backfill index_bars --config config/cnequity.toml` then `cne backfill index_constituents --config config/cnequity.toml` |
+
+These are CLI-supported command shapes, not permission to execute them.  The
+exact coverage target, provider health, and dataset availability must be
+verified immediately before each run.
