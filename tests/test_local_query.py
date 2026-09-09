@@ -116,16 +116,16 @@ def test_status_reports_current_readiness_truthfully() -> None:
     value = query_status()
     assert value["DAILY_USABLE"] is True
     assert value["DAILY_COVERAGE_STATUS"] == "PARTIAL"
-    assert value["DAILY_MANIFEST_FILE_N"] == 2595
-    assert value["DAILY_MANIFEST_HASH"] == "97aa4d16c82abfa144ab6c2d8fd2d9cde6dadb1e82e78889136fa5d950e56c7f"
-    assert value["LATEST_PUBLISHED_TRADE_DATE"] == "2026-09-07"
+    assert value["DAILY_MANIFEST_FILE_N"] == 2597
+    assert value["DAILY_MANIFEST_HASH"] == "91848857b69115679bcabf730265a1de1b2f1d8f466a8bd80b5da7dd01e3188e"
+    assert value["LATEST_PUBLISHED_TRADE_DATE"] == "2026-09-09"
     assert value["PENDING_FILE_N"] == 0
     assert value["FORMAL_IDENTITY_N"] == 5456
-    assert value["LATEST_AVAILABLE_TRADE_DATE"] == "2026-09-07"
-    assert value["DAILY_PUBLISHED_AS_OF"] == "2026-09-07"
+    assert value["LATEST_AVAILABLE_TRADE_DATE"] == "2026-09-09"
+    assert value["DAILY_PUBLISHED_AS_OF"] == "2026-09-09"
     assert value["R7_FIRST_PUBLISH_PASS"] is False
     assert value["PHYSICAL_DAILY_FILE_N"] >= 2580
-    assert value["PENDING_FILE_N"] == value["PHYSICAL_DAILY_FILE_N"] - 2595
+    assert value["PENDING_FILE_N"] == value["PHYSICAL_DAILY_FILE_N"] - 2597
     assert value["PRECLOSE_COMPLETE"] is False
     assert value["FACTS_READY"] is False
 

@@ -1,31 +1,34 @@
 # PROJECT_STATE
 
-## Current operational snapshot — 2026-09-08
+## Current operational snapshot — 2026-09-09
 
 This section supersedes the historical 2026-08-18 snapshot below. It records
 local observations, not a new independent audit PASS. Original R2 history is
 preserved below.
 
-- CURRENT_WORK: read-only daily publication boundary and market-data MCP.
+- CURRENT_WORK: R3 daily incremental maintenance and read-only market-data MCP.
 - BASE_CODE_COMMIT: `25f4f5434b7b99a1461cf56343552c9f50100695`
   (`feat: add local A-share read query MVP`).
 - DATA_ROOT: `/Users/luke808/AI/local-a-share-data-service-data`.
 - FOUNDATION: CNEquity; Parquet is the existing store, DuckDB is the read engine.
   The query runtime does not replace or update the ingestion runtime.
-- DAILY_PHYSICAL_FILE_N: 2595; DAILY_PHYSICAL_ROW_N: 10788039
+- DAILY_PHYSICAL_FILE_N: 2597; DAILY_PHYSICAL_ROW_N: 10798446
   (Parquet metadata, not a new historical quality scan).
-- DAILY_PHYSICAL_LATEST: 2026-09-07.
+- DAILY_PHYSICAL_LATEST: 2026-09-09.
 - DAILY_PHYSICAL_MANIFEST_HASH:
-  `97aa4d16c82abfa144ab6c2d8fd2d9cde6dadb1e82e78889136fa5d950e56c7f`.
-- R3_PROMOTED_DAILY_FILE_N: 2595; R3_PROMOTED_DAILY_AS_OF: 2026-09-07.
+  `91848857b69115679bcabf730265a1de1b2f1d8f466a8bd80b5da7dd01e3188e`.
+- R3_PROMOTED_DAILY_FILE_N: 2597; R3_PROMOTED_DAILY_AS_OF: 2026-09-09.
 - R3_PROMOTED_DAILY_MANIFEST_HASH:
-  `97aa4d16c82abfa144ab6c2d8fd2d9cde6dadb1e82e78889136fa5d950e56c7f`.
+  `91848857b69115679bcabf730265a1de1b2f1d8f466a8bd80b5da7dd01e3188e`.
 - DAILY_COVERAGE_STATUS: PARTIAL; FULL_HISTORY_CERTIFIED: false.
 - KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: 15047 (prior authority, not re-audited).
 - FORMAL_IDENTITY_N: 5456 (SH/SZ formal R3 scope; not all instrument rows).
-- Incremental dates 2026-08-18 through 2026-09-07 have committed quality,
-  provenance, and coverage receipts. The authority pointer binds the complete
-  2,595-file manifest; the query runtime verifies it before use.
+- Incremental dates 2026-08-18 through 2026-09-09 have committed quality,
+  provenance, and coverage receipts. The 2026-09-08 run classified nine
+  requested-but-unobserved primary keys as same-date BaoStock suspensions; the
+  2026-09-09 run observed every one of its 5,208 eligible frozen symbols. The
+  authority pointer binds the complete 2,597-file manifest; the query runtime
+  verifies it before use.
 - QUERY_BASELINE: use the exact pointer-bound promoted file universe only.
 - R4A9: prior summary COMPLETE=2146, UNVISITED=3310. The original checkpoint
   hash was rechecked unchanged:
@@ -33,11 +36,10 @@ preserved below.
 - PRECLOSE_COMPLETE: false; FACTS_READY: false.
 - FULL_R4A9_CONTINUATION_AUTHORIZED: false; R7_FIRST_PUBLISH_PASS: false.
 - MCP_STATUS: `status`, `instrument`, `bars`, and `latest` are read-only
-  published-R3 tools. Local validation and a user-observed ChatGPT/MCP query
-  both succeeded for the 2026-09-07 authority; this is operational evidence,
-  not an independent audit PASS.
+  published-R3 tools. Local JSON-RPC validation succeeded for the 2026-09-09
+  authority; this is operational evidence, not an independent audit PASS.
 - CURRENT_READY:
-  - R3 Daily RAW: READY (published through 2026-09-07; coverage remains
+  - R3 Daily RAW: READY (published through 2026-09-09; coverage remains
     PARTIAL).
   - Identity: READY (5456 formal SH/SZ instruments).
   - Publication Authority: READY (pointer-bound 2,595-file manifest).
@@ -57,10 +59,13 @@ preserved below.
   no facts exposure, and no readiness flag change before its own quality and
   publication authority are verified.
 - ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
-  read-only MCP at `http://127.0.0.1:8766/mcp`; no public tunnel configured.
-- NETWORK_PROVIDER_JOB: none authorized or running.
-- DATA_CLEANUP_OR_REPAIR: not authorized; preserve all physical incremental
-  partitions and their audit evidence.
+  read-only MCP at `http://127.0.0.1:8766/mcp`. The private Secure MCP Tunnel
+  runtime targets this loopback endpoint; its connectivity is operationally
+  separate from R3 publication.
+- NETWORK_PROVIDER_JOB: none running after the bounded 2026-09-08/09 update.
+- DATA_CLEANUP_OR_REPAIR: preserve all physical incremental partitions and
+  their audit evidence; do not treat physical files as authority without the
+  corresponding committed receipt and pointer switch.
 
 No provider catch-up or canonical/checkpoint mutation is authorized by this
 read-access task. The incomplete incremental execution requires a separate
