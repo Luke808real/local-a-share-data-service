@@ -328,6 +328,8 @@ def recover_promotion(day: str) -> dict[str, Any]:
     if not (plan_path.exists() and receipt_path.exists()):
         if destination.exists():
             raise IncrementalError("ORPHAN_CONFLICT:CURATED_WITHOUT_COMMITTED_EVIDENCE")
+        if candidate.exists():
+            raise IncrementalError("ORPHAN_CONFLICT:CANDIDATE_WITHOUT_COMMITTED_EVIDENCE")
         return {"state": "READY_TO_RETRY"}
     try:
         plan, receipt = json.loads(plan_path.read_text()), json.loads(receipt_path.read_text())

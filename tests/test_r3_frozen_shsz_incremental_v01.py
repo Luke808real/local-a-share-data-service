@@ -128,6 +128,14 @@ def test_recovery_rejects_unknown_curated_orphan(monkeypatch, tmp_path):
         runner.recover_promotion("2026-09-10")
 
 
+def test_recovery_rejects_uncommitted_candidate_without_overwrite(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "ROOT", tmp_path); monkeypatch.setattr(runner, "STAGE", tmp_path / "staging/r3")
+    candidate = runner.STAGE / "trade_date=2026-09-10/part-merged.parquet"
+    candidate.parent.mkdir(parents=True); candidate.write_bytes(b"unbound")
+    with pytest.raises(runner.IncrementalError, match="CANDIDATE_WITHOUT_COMMITTED_EVIDENCE"):
+        runner.recover_promotion("2026-09-10")
+
+
 def _record(root: Path, path: Path) -> dict:
     return {"relative_path": path.relative_to(root).as_posix(), "file_size": path.stat().st_size,
             "sha256": runner.sha256_file(path)}
