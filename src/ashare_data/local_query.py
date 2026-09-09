@@ -665,6 +665,23 @@ class LocalQuery:
             "read_only": True,
         }
 
+    def facts(self, symbol: str, trade_date: str | date) -> dict[str, Any]:
+        """Read one independently published Daily Facts key, never staging."""
+        requested = parse_iso_date(trade_date, field_name="trade_date")
+        resolved = self.resolve_symbol(symbol)
+        if self._facts_authority is None:
+            raise QueryError("FACT_NOT_READY", "daily facts are not published")
+        manifest, receipt = self._facts_authority
+        paths = [self.data_root / item["relative_path"] for item in manifest["files"]]
+        relation = "read_parquet([" + ",".join(_sql_literal(str(path)) for path in paths) + "], union_by_name=true)"
+        rows = self._execute("select * from " + relation + " where symbol=? and trade_date=?", [resolved, requested])
+        if len(rows) != 1:
+            raise QueryError("OUTSIDE_PUBLISHED_FACT_SCOPE", "fact key is not in the published facts manifest")
+        plan_scope = receipt.get("scope")
+        return {"command": "facts", "symbol": resolved, "trade_date": requested.isoformat(), "facts": rows[0],
+                "DAILY_FACTS_MANIFEST_HASH": manifest["manifest_hash"], "DAILY_FACTS_SCOPE": plan_scope,
+                "read_only": True, "query_backend": self.query_backend}
+
     def instrument(self, symbol: str) -> dict[str, Any]:
         resolved = self.resolve_symbol(symbol)
         rows = self._execute(
@@ -758,8 +775,9 @@ class LocalQuery:
             **self._physical_metadata(),
             "PRECLOSE_COMPLETE": PRECLOSE_COMPLETE,
             "FACTS_READY": FACTS_READY,
-            "DAILY_FACTS_PHASE1_STATUS": "VERTICAL_SLICE_PUBLISHED" if self._facts_authority else "NOT_PUBLISHED",
-            "DAILY_FACTS_PHASE1_SCOPE": "VERTICAL_SLICE" if self._facts_authority else None,
+            "DAILY_FACTS_PHASE1_STATUS": (self._facts_authority[1].get("status", "VERTICAL_SLICE_PUBLISHED")
+                                          if self._facts_authority else "NOT_PUBLISHED"),
+            "DAILY_FACTS_PHASE1_SCOPE": self._facts_authority[1].get("scope") if self._facts_authority else None,
             "DAILY_FACTS_MANIFEST_HASH": self._facts_authority[0]["manifest_hash"] if self._facts_authority else None,
             "QUERY_BACKEND": self.query_backend,
             "READ_ONLY": True,

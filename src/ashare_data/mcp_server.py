@@ -30,6 +30,7 @@ _PARAMETERS = {
     "latest": {"symbol", "limit", "fields"},
     "instrument": {"symbol", "fields"},
     "status": set(),
+    "facts": {"symbol", "trade_date"},
 }
 _ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, openWorldHint=False, idempotentHint=True
@@ -213,5 +214,18 @@ def create_server(*, port: int = 8766) -> LocalMarketMCP:
         flags are preserved. No fields parameter or filesystem paths returned.
         """
         return _invoke("status")
+
+    @server.tool(annotations=_ANNOTATIONS)
+    def facts(symbol: Symbol, trade_date: ISODate) -> CallToolResult:
+        """Read one formally published Daily Facts key with provider provenance.
+
+        This endpoint never calculates or fetches facts. A date outside the
+        independently published facts scope returns OUTSIDE_PUBLISHED_FACT_SCOPE.
+        """
+        try:
+            date.fromisoformat(trade_date)
+        except ValueError:
+            return _error("INVALID_DATE")
+        return _invoke("facts", symbol=symbol, trade_date=trade_date)
 
     return server

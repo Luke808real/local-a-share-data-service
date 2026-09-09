@@ -140,6 +140,14 @@ def test_r4_fact_is_not_silently_derived() -> None:
 
 
 @pytest.mark.skipif(not _runtime_available(), reason="local data root or DuckDB unavailable")
+def test_facts_outside_independent_published_scope_fail_closed() -> None:
+    with LocalQuery() as query:
+        with pytest.raises(QueryError) as exc_info:
+            query.facts("002580.SZ", "2026-09-09")
+    assert exc_info.value.code == "OUTSIDE_PUBLISHED_FACT_SCOPE"
+
+
+@pytest.mark.skipif(not _runtime_available(), reason="local data root or DuckDB unavailable")
 def test_query_does_not_open_network_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     def forbidden_socket(*_args, **_kwargs):
         raise AssertionError("network socket opened")

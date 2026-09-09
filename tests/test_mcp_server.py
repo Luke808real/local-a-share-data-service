@@ -74,6 +74,9 @@ class FakeQuery:
     def status(self):
         return self._value("status")
 
+    def facts(self, **kwargs):
+        return self._value("facts", **kwargs)
+
 
 @pytest.fixture
 def server(monkeypatch):
@@ -92,7 +95,7 @@ def call(server, name, arguments):
 
 def test_tool_surface_schemas_annotations(server):
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-    assert set(tools) == {"bars", "latest", "instrument", "status"}
+    assert set(tools) == {"bars", "latest", "instrument", "status", "facts"}
     for tool in tools.values():
         assert tool.annotations.readOnlyHint is True
         assert tool.annotations.destructiveHint is False
@@ -116,6 +119,7 @@ def test_tool_surface_schemas_annotations(server):
     ("latest", {"symbol": "600519.SH", "limit": 250}, {"symbol": "600519.SH", "limit": 250}),
     ("instrument", {"symbol": "600519.SH"}, {"symbol": "600519.SH"}),
     ("status", {}, {}),
+    ("facts", {"symbol": "600519.SH", "trade_date": "2026-09-09"}, {"symbol": "600519.SH", "trade_date": "2026-09-09"}),
 ])
 def test_delegation_and_sanitized_provenance(server, name, arguments, expected):
     result = call(server, name, arguments)
@@ -256,7 +260,7 @@ def test_streamable_http_protocol_and_transport_protection(server):
         assert "mcp-session-id" not in response.headers
         assert "serverInfo" in response.json()["result"]
         listed = rpc(client, "tools/list").json()["result"]["tools"]
-        assert {tool["name"] for tool in listed} == {"bars", "latest", "instrument", "status"}
+        assert {tool["name"] for tool in listed} == {"bars", "latest", "instrument", "status", "facts"}
         for name, args in [("status", {}), ("latest", {"symbol": "600519.SH"}),
                            ("instrument", {"symbol": "600519.SH"}),
                            ("bars", {"symbol": "600519.SH", "start": "2026-01-01", "end": "2026-01-02"})]:
