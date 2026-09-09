@@ -7,6 +7,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import duckdb
+
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "tools"))
@@ -37,3 +39,12 @@ def test_incomplete_ledger_fails_closed_without_provider_or_publication(monkeypa
     assert result["provider_network_request_n"] == 0
     assert (staging / "certification_receipt.json").is_file()
     assert not (tmp_path / "meta/asl/daily_facts/published-daily-facts-authority.json").exists()
+
+
+def test_parquet_date_is_canonicalized_before_reconciliation(tmp_path):
+    path = tmp_path / "facts.parquet"
+    with duckdb.connect(":memory:") as con:
+        con.execute("create table x(symbol varchar, trade_date date)")
+        con.execute("insert into x values ('000001.SZ', date '2026-09-09')")
+        con.execute("copy x to ? (format parquet)", [str(path)])
+    assert cert._rows([path])[0]["trade_date"] == "2026-09-09"

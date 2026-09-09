@@ -18,6 +18,7 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "tools"))
 
 from ashare_data.daily_facts_phase1 import DailyFactsError, reconcile  # noqa: E402
 from ashare_data.local_query import DEFAULT_DATA_ROOT, LocalQuery  # noqa: E402
@@ -38,7 +39,14 @@ def _rows(paths: list[Path]) -> list[dict[str, Any]]:
         return []
     with duckdb.connect(":memory:") as con:
         values = con.execute("select * from read_parquet(?, union_by_name=true) order by symbol, trade_date", [[str(p) for p in paths]]).fetchdf()
-    return [dict(row) for row in values.to_dict("records")]
+    output = [dict(row) for row in values.to_dict("records")]
+    for row in output:
+        value = row.get("trade_date")
+        if hasattr(value, "date"):
+            row["trade_date"] = value.date().isoformat()
+        else:
+            row["trade_date"] = str(value)
+    return output
 
 
 def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool) -> dict[str, Any]:
