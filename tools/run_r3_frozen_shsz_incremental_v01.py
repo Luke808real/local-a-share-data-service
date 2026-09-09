@@ -11,6 +11,8 @@ atomically switched.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -26,6 +28,7 @@ ROOT = Path("/Users/luke808/AI/local-a-share-data-service-data")
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config/cnequity.toml"
 AUTHORITY = ROOT / "staging/r3_full_session_completeness_authority_v01/full_request_manifest.json"
+ACTIVE_AUTHORITY_POINTER = ROOT / "meta/asl/r3/active-shsz-authority.json"
 STAGE = ROOT / "staging/r3_frozen_shsz_daily_incremental_v01"
 FORMAL_IDENTITY_N = 5456
 FORMAL_IDENTITY_HASH = "2b1e720232936dcdbbea978e7d4ec26a6b0b22d96ee960af7460c5642717be2f"
@@ -76,6 +79,34 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+@contextlib.contextmanager
+def writer_lock() -> Iterable[None]:
+    """One local writer is enough: publication state is a single-host asset."""
+    path = ROOT / "meta/asl/r3/incremental-publication.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise IncrementalError("R3_INCREMENTAL_WRITER_LOCKED") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def calendar_state(day: str) -> str:
+    """Use the persisted CNEquity calendar; never query a second calendar source."""
+    import polars as pl
+
+    target = date.fromisoformat(day)
+    path = ROOT / "curated/trading_calendar" / f"trade_date={target.year}" / "part-merged.parquet"
+    require(path.is_file(), "TRADING_CALENDAR_AUTHORITY_MISSING", target.year)
+    rows = pl.read_parquet(path).filter(pl.col("trade_date") == target)
+    require(rows.height == 1, "TRADING_CALENDAR_DATE_MISSING", day)
+    return "TRADING_DAY" if rows.item(0, "is_trading") is True else "NON_TRADING_DAY"
+
+
 def frozen_authority() -> tuple[tuple[str, ...], dict[str, dict[str, Any]]]:
     raw = json.loads(AUTHORITY.read_text(encoding="utf-8"))
     require(raw.get("FORMAL_SYMBOL_N") == FORMAL_IDENTITY_N, "FROZEN_AUTHORITY_N_MISMATCH")
@@ -97,6 +128,29 @@ def frozen_authority() -> tuple[tuple[str, ...], dict[str, dict[str, Any]]]:
     symbols = tuple(sorted(records))
     require(len(symbols) == FORMAL_IDENTITY_N, "FROZEN_AUTHORITY_SYMBOL_N_MISMATCH")
     require(sha256_bytes(canonical(list(symbols))) == FORMAL_IDENTITY_HASH, "FROZEN_AUTHORITY_SYMBOL_HASH_MISMATCH")
+    # V01 is bootstrapped from this immutable source.  Once an active pointer
+    # exists, a changed current source is an explicit rollover decision, never
+    # an implicit daily-universe expansion.
+    if ACTIVE_AUTHORITY_POINTER.exists():
+        try:
+            pointer = json.loads(ACTIVE_AUTHORITY_POINTER.read_text())
+            artifact = ROOT / pointer["authority"]
+            active = json.loads(artifact.read_text())
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise IncrementalError("ACTIVE_AUTHORITY_INVALID") from exc
+        require(pointer.get("schema") == "ASL_ACTIVE_R3_SHSZ_AUTHORITY_V01", "ACTIVE_AUTHORITY_INVALID")
+        require(active.get("authority_version") == pointer.get("authority_version"), "ACTIVE_AUTHORITY_INVALID")
+        require(sha256_bytes(canonical(active)) == pointer.get("authority_hash"), "ACTIVE_AUTHORITY_DRIFT")
+        lifecycle = active.get("lifecycle")
+        require(active.get("quality", {}).get("PASS") is True and isinstance(lifecycle, list), "ACTIVE_AUTHORITY_INVALID")
+        active_records = {row.get("symbol"): row for row in lifecycle if isinstance(row, dict)}
+        require(len(active_records) == active.get("symbol_n") == len(records), "AUTHORITY_REFRESH_REQUIRED")
+        require(tuple(sorted(active_records)) == symbols and active.get("identity_hash") == FORMAL_IDENTITY_HASH,
+                "AUTHORITY_REFRESH_REQUIRED")
+        require(all((active_records[s].get("list_date"), active_records[s].get("delist_date")) ==
+                    (records[s].get("list_date"), records[s].get("delist_date")) for s in symbols),
+                "AUTHORITY_REFRESH_REQUIRED")
+        records = {symbol: active_records[symbol] for symbol in symbols}
     return symbols, records
 
 
@@ -245,6 +299,64 @@ def file_rows() -> list[dict[str, Any]]:
             for path in sorted((ROOT / "curated/daily_bars").rglob("*.parquet"))]
 
 
+def _switch_pointer(stage_day: Path, manifest_hash: str) -> None:
+    """The sole authority mutation; callers verify physical state first."""
+    atomic_json(ROOT / "meta/asl/r3/published-daily-authority.json", {
+        "schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01", "manifest_hash": manifest_hash,
+        "plan": (stage_day / "promotion_plan.json").relative_to(ROOT).as_posix(),
+        "receipt": (stage_day / "promotion_receipt.json").relative_to(ROOT).as_posix(),
+    })
+
+
+def promotion_checkpoint(_name: str) -> None:
+    """Test-only interruption seam; production deliberately performs no action."""
+
+
+def recover_promotion(day: str) -> dict[str, Any]:
+    """Complete only an exact, previously evidenced interrupted promotion.
+
+    A curated orphan is never overwritten.  A candidate under staging may be
+    retried only when it is bound to the preceding pointer and the committed
+    plan/receipt hash it exactly; otherwise the state is an explicit conflict.
+    """
+    stage_day = STAGE / f"trade_date={day}"
+    candidate = stage_day / "part-merged.parquet"
+    destination = ROOT / "curated/daily_bars" / f"trade_date={day}" / "part-merged.parquet"
+    plan_path, receipt_path = stage_day / "promotion_plan.json", stage_day / "promotion_receipt.json"
+    if not destination.exists() and not candidate.exists():
+        return {"state": "READY_TO_RETRY"}
+    if not (plan_path.exists() and receipt_path.exists()):
+        if destination.exists():
+            raise IncrementalError("ORPHAN_CONFLICT:CURATED_WITHOUT_COMMITTED_EVIDENCE")
+        return {"state": "READY_TO_RETRY"}
+    try:
+        plan, receipt = json.loads(plan_path.read_text()), json.loads(receipt_path.read_text())
+        manifest = plan["EXPECTED_POST_INPUT_MANIFEST"]
+        files = manifest["FILES"]
+        expected_hash = manifest["INPUT_MANIFEST_HASH"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise IncrementalError("ORPHAN_CONFLICT:INVALID_PROMOTION_EVIDENCE") from exc
+    pointer, _old = published_manifest()
+    expected_record = next((row for row in files if row["relative_path"] == destination.relative_to(ROOT).as_posix()), None)
+    if not isinstance(expected_record, dict) or receipt.get("POST_INPUT_MANIFEST_HASH") != expected_hash:
+        raise IncrementalError("ORPHAN_CONFLICT:MANIFEST_RECEIPT_DISAGREE")
+    if pointer.get("manifest_hash") == expected_hash:
+        require(destination.exists() and sha256_file(destination) == expected_record.get("sha256"), "ORPHAN_CONFLICT:PUBLISHED_FILE_DRIFT")
+        return {"state": "ALREADY_PUBLISHED", "manifest_hash": expected_hash}
+    require(receipt.get("OLD_INPUT_MANIFEST_HASH") == pointer.get("manifest_hash"), "ORPHAN_CONFLICT:PREDECESSOR_DRIFT")
+    source = destination if destination.exists() else candidate
+    if not source.exists():
+        return {"state": "READY_TO_RETRY"}
+    if (source.stat().st_size != expected_record.get("file_size") or sha256_file(source) != expected_record.get("sha256")):
+        raise IncrementalError("ORPHAN_CONFLICT:CANDIDATE_HASH_MISMATCH")
+    if not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(candidate, destination)
+    require(file_rows() == files, "ORPHAN_CONFLICT:POST_INSTALL_MANIFEST_MISMATCH")
+    _switch_pointer(stage_day, expected_hash)
+    return {"state": "ORPHAN_MATCHES_EXPECTED_CANDIDATE", "manifest_hash": expected_hash}
+
+
 def promote(day: str, frame: Any, quality: dict[str, Any], classifications: list[dict[str, Any]]) -> dict[str, Any]:
     from cnequity.storage.atomic import write_parquet_atomic
 
@@ -256,7 +368,12 @@ def promote(day: str, frame: Any, quality: dict[str, Any], classifications: list
     stage_day = STAGE / f"trade_date={day}"
     candidate = stage_day / "part-merged.parquet"
     candidate.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(stage_day / "promotion_intent.json", {"schema": "R3_INCREMENTAL_PROMOTION_INTENT_V01", "date": day,
+                "candidate": candidate.relative_to(ROOT).as_posix(), "destination": destination.relative_to(ROOT).as_posix(),
+                "old_manifest_hash": pointer["manifest_hash"]})
+    promotion_checkpoint("INTENT_WRITTEN")
     write_parquet_atomic(candidate, frame.sort("symbol"), compression="zstd")
+    promotion_checkpoint("CANDIDATE_WRITTEN")
     new_file = {"relative_path": destination.relative_to(ROOT).as_posix(), "file_size": candidate.stat().st_size,
                 "sha256": sha256_file(candidate)}
     files = sorted([*expected_before, new_file], key=lambda value: value["relative_path"])
@@ -283,19 +400,33 @@ def promote(day: str, frame: Any, quality: dict[str, Any], classifications: list
     atomic_json(stage_day / "classifications.json", {"keys": classifications})
     atomic_json(stage_day / "promotion_plan.json", plan)
     atomic_json(stage_day / "promotion_receipt.json", receipt)
+    promotion_checkpoint("EVIDENCE_COMMITTED")
     destination.parent.mkdir(parents=True, exist_ok=True)
     os.replace(candidate, destination)
+    promotion_checkpoint("PHYSICAL_INSTALLED")
     require(file_rows() == files, "POST_PROMOTION_MANIFEST_MISMATCH")
-    atomic_json(ROOT / "meta/asl/r3/published-daily-authority.json", {
-        "schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01", "manifest_hash": manifest_hash,
-        "plan": (stage_day / "promotion_plan.json").relative_to(ROOT).as_posix(),
-        "receipt": (stage_day / "promotion_receipt.json").relative_to(ROOT).as_posix(),
-    })
+    promotion_checkpoint("POST_INSTALL_VERIFIED")
+    _switch_pointer(stage_day, manifest_hash)
+    promotion_checkpoint("POINTER_SWITCHED")
     return {"file_n": len(files), "manifest_hash": manifest_hash, "quality": quality_receipt}
 
 
 def run(day: str, *, execute: bool) -> dict[str, Any]:
     require(date.fromisoformat(day) <= date.today(), "FUTURE_TRADE_DATE_BLOCKED", day)
+    calendar = calendar_state(day)
+    if calendar == "NON_TRADING_DAY":
+        return {"status": "NON_TRADING_DAY", "trade_date": day, "network_request_n": 0,
+                "publication_attempted": False}
+    if execute:
+        with writer_lock():
+            recovered = recover_promotion(day)
+            if recovered["state"] in {"ALREADY_PUBLISHED", "ORPHAN_MATCHES_EXPECTED_CANDIDATE"}:
+                return {"status": recovered["state"], "trade_date": day, "network_request_n": 0, **recovered}
+            return _run_trading_day(day, execute=True)
+    return _run_trading_day(day, execute=False)
+
+
+def _run_trading_day(day: str, *, execute: bool) -> dict[str, Any]:
     frozen, records = frozen_authority()
     eligible = eligible_symbols(day, records)
     pointer, manifest = published_manifest()
