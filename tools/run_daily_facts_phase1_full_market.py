@@ -118,12 +118,17 @@ def _set_metadata(con: sqlite3.Connection, key: str, value: Any) -> None:
     con.execute("insert or replace into metadata(key,value) values(?,?)", (key, json.dumps(value, sort_keys=True)))
 
 
-def published_scope(root: Path) -> tuple[list[str], dict[str, int], date, str, str]:
+def published_scope(root: Path, *, start: date | None = None, end: date | None = None) -> tuple[list[str], dict[str, int], date, str, str]:
     """Get the formal R3 scope through the verified LocalQuery allowlist only."""
     with LocalQuery(root) as query:
+        predicates = ["regexp_matches(symbol, '^[0-9]{6}\\.(SH|SZ)$')"]
+        if start is not None:
+            predicates.append(f"trade_date >= date '{start.isoformat()}'")
+        if end is not None:
+            predicates.append(f"trade_date <= date '{end.isoformat()}'")
+        where = " and ".join(predicates)
         rows = query._execute(  # intentionally uses the already-verified published relation
-            f"select symbol, count(*) as n from {query._daily_relation} "
-            "where regexp_matches(symbol, '^[0-9]{6}\\.(SH|SZ)$') group by symbol order by symbol"
+            f"select symbol, count(*) as n from {query._daily_relation} where {where} group by symbol order by symbol"
         )
         symbols = [str(row["symbol"]) for row in rows]
         required = {str(row["symbol"]): int(row["n"]) for row in rows}
@@ -131,7 +136,7 @@ def published_scope(root: Path) -> tuple[list[str], dict[str, int], date, str, s
         # This relation contains only pointer-verified published files.  It is
         # deliberately captured after LocalQuery's full manifest validation,
         # rather than constructed from a physical glob.
-        daily_relation = query._daily_relation
+        daily_relation = f"(select * from {query._daily_relation} where {where})"
     if not symbols:
         raise DailyFactsError("REQUIRED_SCOPE_EMPTY", "published R3 contains no formal SH/SZ symbols")
     return symbols, required, date.fromisoformat(status["DAILY_PUBLISHED_AS_OF"]), str(status["DAILY_MANIFEST_HASH"]), daily_relation
@@ -340,14 +345,17 @@ def _acquire_batch(con: sqlite3.Connection, *, root: Path, raw_root: Path, provi
 
 
 def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None,
-            start: date = date(2016, 1, 1), max_symbols: int = 0,
+            start: date = date(2016, 1, 1), end: date | None = None, max_symbols: int = 0,
             retry_quality_fail: bool = False, retry_provider_fail: bool = False,
             acquire_only: bool = False, postprocess_only: bool = False,
             provider_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
     if acquire_only and postprocess_only:
         raise DailyFactsError("INVALID_MODE", "acquire-only and postprocess-only are exclusive")
     root = root.resolve()
-    formal_symbols, required, as_of, manifest_hash, daily_relation = published_scope(root)
+    formal_symbols, required, as_of, manifest_hash, daily_relation = (
+        published_scope(root) if start == date(2016, 1, 1) and end is None
+        else published_scope(root, start=start, end=end)
+    )
     ranges = published_ranges(daily_relation)
     selected = sorted(set(symbols or formal_symbols))
     if not set(selected).issubset(formal_symbols):
@@ -356,7 +364,7 @@ def execute(root: Path, *, run_name: str = RUN, symbols: list[str] | None = None
     con = _db(database)
     try:
         plan = {"symbols": selected, "symbol_hash": _sha(selected), "as_of": as_of.isoformat(),
-                "start": start.isoformat(), "daily_manifest_hash": manifest_hash, "schema": SCHEMA}
+                "start": start.isoformat(), "end": (end or as_of).isoformat(), "daily_manifest_hash": manifest_hash, "schema": SCHEMA}
         existing = _metadata(con, "plan")
         if existing is not None and existing != plan:
             raise DailyFactsError("RUN_PLAN_DRIFT", "existing run plan differs from current formal scope")
@@ -474,6 +482,8 @@ if __name__ == "__main__":
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--run-name", default=RUN)
     parser.add_argument("--symbols", nargs="*")
+    parser.add_argument("--start", type=date.fromisoformat, default=date(2016, 1, 1))
+    parser.add_argument("--end", type=date.fromisoformat)
     parser.add_argument("--max-symbols", type=int, default=0)
     parser.add_argument("--retry-quality-fail", action="store_true")
     parser.add_argument("--retry-provider-fail", action="store_true")
@@ -484,4 +494,4 @@ if __name__ == "__main__":
     if args.discover:
         print(json.dumps(discover(args.data_root), ensure_ascii=False, sort_keys=True))
     else:
-        print(json.dumps(execute(args.data_root, run_name=args.run_name, symbols=args.symbols, max_symbols=args.max_symbols, retry_quality_fail=args.retry_quality_fail, retry_provider_fail=args.retry_provider_fail, acquire_only=args.acquire_only, postprocess_only=args.postprocess_only), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(execute(args.data_root, run_name=args.run_name, symbols=args.symbols, start=args.start, end=args.end, max_symbols=args.max_symbols, retry_quality_fail=args.retry_quality_fail, retry_provider_fail=args.retry_provider_fail, acquire_only=args.acquire_only, postprocess_only=args.postprocess_only), ensure_ascii=False, sort_keys=True))

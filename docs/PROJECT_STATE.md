@@ -42,7 +42,7 @@ preserved below.
   - R3 Daily RAW: READY (published through 2026-09-09; coverage remains
     PARTIAL).
   - Identity: READY (5456 formal SH/SZ instruments).
-  - Publication Authority: READY (pointer-bound 2,595-file manifest).
+  - Publication Authority: READY (pointer-bound 2,597-file manifest).
   - LocalQuery: READY (published-manifest allowlist only).
   - MCP: READY (read-only `status`/`instrument`/`bars`/`latest`).
 - CURRENT_NOT_READY:
@@ -54,15 +54,19 @@ preserved below.
   - Share Capital Facts: NOT READY.
   - 5m Publication: NOT READY.
   - Limit Event Facts: NOT READY.
-- NEXT_GATE: Daily Facts Phase 1 vertical slice under
-  `docs/plans/ASL_MARKET_FACTS_NEXT_PHASE_V01.md`; no R3 authority rewrite,
-  no facts exposure, and no readiness flag change before its own quality and
-  publication authority are verified.
+- NEXT_GATE: bounded Daily Facts Phase 1 expansion from the separately
+  published vertical slice.  The first certification scope is the current
+  eligible formal SH/SZ universe for 2026-09-09 only; it is staging-only until
+  its own exact-key, provenance, tri-state, and reconciliation gates pass.
+  No R3 authority rewrite, facts exposure, or readiness-flag change is
+  permitted before a separate facts authority is verified.
 - ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
   read-only MCP at `http://127.0.0.1:8766/mcp`. The private Secure MCP Tunnel
   runtime targets this loopback endpoint; its connectivity is operationally
   separate from R3 publication.
-- NETWORK_PROVIDER_JOB: none running after the bounded 2026-09-08/09 update.
+- NETWORK_PROVIDER_JOB: one-shot, resumable BaoStock Daily Facts acquisition
+  for the 2026-09-09 bounded scope may run through its dedicated local
+  LaunchAgent.  Its RAW and staging outputs are not a publication authority.
 - DATA_CLEANUP_OR_REPAIR: preserve all physical incremental partitions and
   their audit evidence; do not treat physical files as authority without the
   corresponding committed receipt and pointer switch.
