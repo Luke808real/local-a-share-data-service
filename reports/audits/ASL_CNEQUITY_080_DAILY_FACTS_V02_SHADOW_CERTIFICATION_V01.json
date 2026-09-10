@@ -1,0 +1,315 @@
+{
+  "schema": "ASL_CNEQUITY_080_DAILY_FACTS_V02_SHADOW_CERTIFICATION_V01",
+  "asl_base_head": "9ad068e48899209ba531b66d9f3aa50dce8c48d0",
+  "branch": "codex/r3-incremental-hardening-daily-facts-phase1-v01",
+  "cnequity_before": {
+    "version": "0.7.2",
+    "commit": "a18ee0484dfb0801650175471724def3228b8a17"
+  },
+  "cnequity_after": {
+    "version": "0.8.0",
+    "commit": "d453853da766b3ba3e44489c0fb6e0089243fa25",
+    "import_path": "/Users/luke808/ASL/.venv/lib/python3.12/site-packages/cnequity",
+    "direct_url_verified": true,
+    "venv_mcp_untouched": true
+  },
+  "production_lake_compatibility": "PASS",
+  "r3_dry_run_after_upgrade": {
+    "status": "READY",
+    "frozen_n": 5456,
+    "eligible_n": 5208,
+    "network_request_n": 0,
+    "equivalent_to_pre_upgrade": true
+  },
+  "read_only_checks": {
+    "doctor": "all clear",
+    "config_validate": "OK",
+    "status_datasets": "readable",
+    "verify": "readable"
+  },
+  "trading_status_bootstrap": {
+    "dates": [
+      "2026-09-09",
+      "2026-09-10"
+    ],
+    "rows": 15492,
+    "files": 1,
+    "watermark": "2026-09-09",
+    "step_seconds": [
+      2.7,
+      5.4
+    ],
+    "status_counts": {
+      "normal": 14796,
+      "suspended": 22,
+      "delisted": 674
+    },
+    "risk_warning_counts": {
+      "true": 640,
+      "false": 14852,
+      "null": 0
+    },
+    "sources": {
+      "eastmoney": 14818,
+      "derived_delisted": 674
+    },
+    "on_2026_09_09": {
+      "normal": 7399,
+      "suspended": 10,
+      "delisted": 337
+    }
+  },
+  "valuation_metrics_bootstrap": {
+    "dates": [
+      "2026-09-09",
+      "2026-09-10"
+    ],
+    "rows": 10906,
+    "files": 2,
+    "float_mv_non_null": 10416,
+    "step_seconds": [
+      31.5,
+      33.4
+    ],
+    "role": "turnover crosscheck only"
+  },
+  "share_structure_reuse": {
+    "reused": true,
+    "refetched": false,
+    "rows": 166911,
+    "files": 26,
+    "symbols": 5919,
+    "float_shares_non_null": 162854,
+    "validate": "PASS",
+    "change_date_range": [
+      "2001-01-03",
+      "2026-09-09"
+    ]
+  },
+  "corporate_actions": {
+    "refetched": false,
+    "rows": 40694,
+    "files": 11,
+    "max_ex_date": "2026-09-08",
+    "exception_rows_for_2026_09_09": 0,
+    "role": "event detection only; official disclosures remain the certification authority"
+  },
+  "provider_request_counts": {
+    "BAOSTOCK_PER_SYMBOL_DAILY_REQUEST_N": 0,
+    "BAOSTOCK_REQUEST_N": 0,
+    "TDX_REQUEST_N": 0,
+    "OFFICIAL_DISCLOSURE_REQUEST_N": 0,
+    "EASTMONEY_BOOTSTRAP_ESTIMATED_2_DATES": 118,
+    "EASTMONEY_NORMAL_DAY_ESTIMATED": 64,
+    "counting_method": "derived from adapter pagination arithmetic and observed row counts, not instrumented"
+  },
+  "v02_source_contract": {
+    "module": "src/ashare_data/daily_facts_v02.py",
+    "contract_doc": "docs/contracts/DAILY_FACTS_V02_SOURCE_CONTRACT_V01.md",
+    "admissible_inputs": [
+      "R3 daily_bars",
+      "trading_status",
+      "corporate_actions",
+      "share_structure",
+      "valuation_metrics",
+      "official reference-price evidence",
+      "identity/lifecycle"
+    ],
+    "forbidden_inputs": [
+      "BaoStock V1 RAW",
+      "V1 normalized facts",
+      "V1 preclose/pct_chg/turnover_rate/trade_status/is_st"
+    ],
+    "rule_ids": {
+      "preclose_prior_close": "PRIOR_PUBLISHED_CLOSE_V02",
+      "preclose_reference": "EXCHANGE_REFERENCE_PRICE_V02",
+      "pct_chg": "CLOSE_OVER_PRECLOSE_V02",
+      "turnover": "VOLUME_OVER_PIT_FLOAT_SHARES_V02",
+      "status": "CNEQUITY_TRADING_STATUS_V02"
+    }
+  },
+  "delisted_contract": {
+    "rule": "delisted is a lifecycle fact, never a daily value",
+    "forbidden_mappings": [
+      "delisted -> SUSPENDED",
+      "delisted -> TRADING"
+    ],
+    "classification": "OUTSIDE_ELIGIBLE_LIFECYCLE",
+    "in_universe_blocker": "ELIGIBILITY_LIFECYCLE_CONFLICT",
+    "observed": "ELIGIBILITY_LIFECYCLE_CONFLICT_N = 0"
+  },
+  "turnover_pit_contract": {
+    "rule": "announce_date <= trade_date AND change_date <= trade_date, latest wins",
+    "forbidden": [
+      "future announce_date",
+      "future change_date",
+      "backfilling with later information"
+    ],
+    "no_fallback": "TURNOVER_UNRESOLVED",
+    "strict_pit_symbols_available": 5208,
+    "cost_vs_loose": "none",
+    "valuation_metrics_role": "crosscheck only"
+  },
+  "v02_row_n": 5208,
+  "structural": {
+    "EXPECTED_N": 5208,
+    "V02_ROW_N": 5208,
+    "MISSING_PK_N": 0,
+    "EXTRA_PK_N": 0,
+    "DUPLICATE_PK_N": 0,
+    "rows_hash": "358132ce95846191bb410735fd75dc9e9bf6ca03bebcbd6c76905be059f0a778"
+  },
+  "preclose_results": {
+    "MATCH_N": 5208,
+    "MISMATCH_N": 0,
+    "MAX_ABS_DIFF": 0
+  },
+  "pct_chg_results": {
+    "MATCH_N": 5208,
+    "MISMATCH_N": 0,
+    "MAX_ABS_DIFF": 0.00004999999999999449,
+    "TOLERANCE": 0.02
+  },
+  "turnover_results": {
+    "COMPARABLE_N": 5198,
+    "MATCH_N": 4923,
+    "MISMATCH_N": 275,
+    "NULL_EXPECTED_N": 10,
+    "UNRESOLVED_N": 0,
+    "MAX_ABS_DIFF": 6.413775972030427,
+    "P50_DIFF": 0.000030070808184401443,
+    "P95_DIFF": 0.02297139711088239,
+    "P99_DIFF": 0.5320681764645399,
+    "ROOT_CAUSE_COUNTS": {
+      "FREE_FLOAT_BASIS": 13,
+      "UNRESOLVED_DENOMINATOR_BASIS": 262
+    },
+    "direction": "strictly one-way; V02 denominator always larger",
+    "semantic_equivalence": "NOT_PROVEN"
+  },
+  "turnover_investigation": {
+    "volume_unit_ok": true,
+    "volume_ratio_median": {
+      "mismatch": 0.999,
+      "match": 1.002
+    },
+    "eastmoney_float_mv_agrees_with_v1": true,
+    "float_shares_score_0p1pct": 4923,
+    "free_float_shares_score_0p1pct": 213,
+    "no_share_record_explains_the_262": true,
+    "leading_hypothesis": "EastMoney share_structure carries consolidated all-share-class unrestricted count for A+H / A+B issuers while the exchange turnover denominator and EastMoney float_mv use the A-share tradable float",
+    "hypothesis_confirmed": false,
+    "why_not_confirmed": "instruments catalog holds A-shares only; zero 200xxx/900xxx rows to test sibling share classes"
+  },
+  "trade_status_results": {
+    "MATCH_N": 5208,
+    "MISMATCH_N": 0,
+    "UNKNOWN_N": 0
+  },
+  "is_st_results": {
+    "MATCH_N": 5208,
+    "MISMATCH_N": 0,
+    "UNKNOWN_N": 0
+  },
+  "is_st_detail": {
+    "V1_IS_ST_TRUE_N": 201,
+    "V02_IS_ST_TRUE_N": 201,
+    "V1_ONLY": [],
+    "V02_ONLY": [],
+    "ST_WHILE_SUSPENDED_IN_V1": 3,
+    "V02_RISK_WARNING_TRUE_ON_SUSPENDED": 3,
+    "conclusion": "the 0.8.0 two-column redesign preserves the ST label on halted sessions"
+  },
+  "suspension_results": {
+    "V1_SUSPENDED_N": 10,
+    "V02_SUSPENDED_N": 10,
+    "V1_ONLY": [],
+    "V02_ONLY": [],
+    "pct_chg_null": true,
+    "turnover_rate_null": true,
+    "r3_volume_zero": true,
+    "silent_repair": "none"
+  },
+  "reference_price_results": {
+    "V02_REFERENCE_PRICE_EXCEPTION_N": 16,
+    "V1_N": 16,
+    "symbol_sets_identical": true,
+    "rounding": "ROUND_HALF_UP to 0.01",
+    "regression_cases_held": [
+      "002322.SZ",
+      "300196.SZ",
+      "688271.SH"
+    ],
+    "network_requests": 0
+  },
+  "defects_found_and_fixed": [
+    {
+      "defect": "prior-session preclose hole",
+      "cause": "R3 encodes suspension as an absent row (9 symbols suspended 2026-09-08)",
+      "fix": "bounded walk-back (12 sessions) to the last observed close",
+      "resolved": 9
+    },
+    {
+      "defect": "suspended pct_chg derived as 0.0",
+      "cause": "zero-volume carry-forward made close == preclose",
+      "fix": "pct_chg and turnover_rate null whenever trade_status = SUSPENDED",
+      "resolved": 1
+    }
+  ],
+  "source_independence": "PASS",
+  "source_independence_mechanisms": [
+    "load_sources refuses forbidden path tokens",
+    "generate() and compare() are separate functions, asserted by test",
+    "generator module does not import the V1 producer"
+  ],
+  "pit_leakage_n": 0,
+  "v02_shadow_certification": "PASS_WITH_LIMITATIONS",
+  "acceptance_gate": {
+    "structural_completeness": "PASS",
+    "preclose": "PASS",
+    "pct_chg": "PASS",
+    "trade_status": "PASS",
+    "is_st": "PASS",
+    "turnover": "NOT_PROVEN",
+    "UNKNOWN_N": 0,
+    "SOURCE_ERROR_N": 0,
+    "PIT_LEAKAGE_N": 0,
+    "SOURCE_INDEPENDENCE": "PASS"
+  },
+  "authorities": {
+    "R3_AUTHORITY_UNCHANGED": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b",
+    "FACTS_V1_AUTHORITY_UNCHANGED": "9b4f474ebcb0db97d9dbfdb824eb6b7e17f017a6ac8957ed3d6a8fb5e3ca21ac",
+    "v02_pointer_created": false,
+    "daily_facts_2026_09_10_published": false,
+    "FACTS_READY": false,
+    "PRECLOSE_COMPLETE": false
+  },
+  "runtime_measured": {
+    "TRADING_STATUS_RUNTIME": "2.7 s / 5.4 s per date",
+    "VALUATION_METRICS_RUNTIME": "31.5 s / 33.4 s per date",
+    "SHARE_STRUCTURE_RUNTIME": "0 (reused)",
+    "V02_LOCAL_DERIVATION_RUNTIME": "0.51 s for 5208 keys",
+    "SHADOW_CERTIFICATION_RUNTIME": "0.7 s",
+    "EXPECTED_NORMAL_DAILY_REQUEST_N": 64,
+    "EXPECTED_NORMAL_DAILY_RUNTIME": "~1-2 min provider + ~0.5 s local"
+  },
+  "tests": {
+    "venv": "168 passed, 1 failed (pre-existing untracked file)",
+    "venv_mcp": "88 passed",
+    "new_tests": "tests/test_daily_facts_v02.py 27 passed",
+    "py_compile": "passed",
+    "cne_config_validate": "Configuration OK",
+    "pre_existing_failure": "tests/test_cnequity_v080_daily_reuse.py::test_v080_partial_stage_narrow_retry_and_cross_run_reuse",
+    "pre_existing_failure_disposition": "untracked, not authored this round, left in place; unrelated to V02"
+  },
+  "known_limitations": [
+    "turnover_rate not certified (5.3% denominator-basis divergence)",
+    "A+H / A+B hypothesis untestable: catalog holds A-shares only",
+    "EastMoney boards are current-state reads stamped onto a past session (restated evidence)",
+    "corporate_actions has no 2026-09-09 rows; exception trigger is the official evidence",
+    "provider request counts are code-derived, not instrumented",
+    "trading_status carries two dates only; no history backfilled",
+    "one pre-existing untracked test still fails"
+  ],
+  "next_gate": "resolve the turnover denominator basis, then a separate small gate to migrate the V02 authority"
+}
