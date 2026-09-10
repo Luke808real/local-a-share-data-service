@@ -12,23 +12,24 @@ preserved below.
 - DATA_ROOT: `/Users/luke808/AI/local-a-share-data-service-data`.
 - FOUNDATION: CNEquity; Parquet is the existing store, DuckDB is the read engine.
   The query runtime does not replace or update the ingestion runtime.
-- DAILY_PHYSICAL_FILE_N: 2597; DAILY_PHYSICAL_ROW_N: 10798446
+- DAILY_PHYSICAL_FILE_N: 2598; DAILY_PHYSICAL_ROW_N: 10803654
   (Parquet metadata, not a new historical quality scan).
-- DAILY_PHYSICAL_LATEST: 2026-09-09.
+- DAILY_PHYSICAL_LATEST: 2026-09-10.
 - DAILY_PHYSICAL_MANIFEST_HASH:
-  `91848857b69115679bcabf730265a1de1b2f1d8f466a8bd80b5da7dd01e3188e`.
-- R3_PROMOTED_DAILY_FILE_N: 2597; R3_PROMOTED_DAILY_AS_OF: 2026-09-09.
+  `140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b`.
+- R3_PROMOTED_DAILY_FILE_N: 2598; R3_PROMOTED_DAILY_AS_OF: 2026-09-10.
 - R3_PROMOTED_DAILY_MANIFEST_HASH:
-  `91848857b69115679bcabf730265a1de1b2f1d8f466a8bd80b5da7dd01e3188e`.
+  `140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b`.
 - DAILY_COVERAGE_STATUS: PARTIAL; FULL_HISTORY_CERTIFIED: false.
 - KNOWN_HISTORICAL_QUALITY_EXCEPTION_N: 15047 (prior authority, not re-audited).
 - FORMAL_IDENTITY_N: 5456 (SH/SZ formal R3 scope; not all instrument rows).
-- Incremental dates 2026-08-18 through 2026-09-09 have committed quality,
+- Incremental dates 2026-08-18 through 2026-09-10 have committed quality,
   provenance, and coverage receipts. The 2026-09-08 run classified nine
   requested-but-unobserved primary keys as same-date BaoStock suspensions; the
-  2026-09-09 run observed every one of its 5,208 eligible frozen symbols. The
-  authority pointer binds the complete 2,597-file manifest; the query runtime
-  verifies it before use.
+  2026-09-09 and 2026-09-10 runs observed every one of their 5,208 eligible
+  frozen symbols with zero unresolved keys and zero source errors, so neither
+  needed a secondary classification. The authority pointer binds the complete
+  2,598-file manifest; the query runtime verifies it before use.
 - QUERY_BASELINE: use the exact pointer-bound promoted file universe only.
 - R4A9: prior summary COMPLETE=2146, UNVISITED=3310. The original checkpoint
   hash was rechecked unchanged:
@@ -42,12 +43,18 @@ preserved below.
   The 16 exact-date preclose exceptions are bound to hash-verified official
   CNInfo implementation announcements and reconcile as reference-price
   exceptions; they do not change the R3 daily authority.
+- DAILY_FACTS_2026_09_10_STATUS: NOT_STARTED. A single-date ledger
+  (`staging/daily_facts_phase1_20260910_v01/progress.sqlite`, 5,208 units) was
+  created and then stopped by operator instruction before any RAW evidence was
+  persisted; no curated partition, manifest, or pointer change exists for
+  2026-09-10 Daily Facts. The R3 2026-09-10 publication above is complete and
+  unaffected.
 - MCP_STATUS: `status`, `instrument`, `bars`, `latest`, and `facts` are
   read-only published-authority tools. Local JSON-RPC validation succeeded for
-  the 2026-09-09 R3 and scoped Daily Facts authorities; this is operational
-  evidence, not an independent audit PASS.
+  the 2026-09-10 R3 authority and the scoped 2026-09-09 Daily Facts authority;
+  this is operational evidence, not an independent audit PASS.
 - CURRENT_READY:
-  - R3 Daily RAW: READY (published through 2026-09-09; coverage remains
+  - R3 Daily RAW: READY (published through 2026-09-10; coverage remains
     PARTIAL).
   - Identity: READY (5456 formal SH/SZ instruments).
   - Publication Authority: READY (pointer-bound 2,597-file manifest).
