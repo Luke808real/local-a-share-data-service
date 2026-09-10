@@ -1,0 +1,314 @@
+{
+  "schema": "ASL_CNEQUITY_DAILY_FACTS_DEDUP_AUDIT_V01",
+  "generated_at": "2026-09-10T17:05:58.108Z",
+  "method": "READ_ONLY_LOCAL_AUDIT_NO_PROVIDER_TRAFFIC",
+  "asl_head": "54c12300120c3661f60901e15916c94e5198c000",
+  "branch": "codex/r3-incremental-hardening-daily-facts-phase1-v01",
+  "cnequity": {
+    "runtime_version": "0.7.2",
+    "runtime_sha": "a18ee0484dfb0801650175471724def3228b8a17",
+    "install_path": "/Users/luke808/ASL/.venv/lib/python3.12/site-packages/cnequity",
+    "config": "/Users/luke808/ASL/config/cnequity.toml",
+    "python": "3.12.13",
+    "venv_mcp_installed": false,
+    "data_root": "/Users/luke808/AI/local-a-share-data-service-data",
+    "registered_dataset_n": 42
+  },
+  "dataset_inventory": [
+    {
+      "dataset": "daily_bars",
+      "native_preclose": false,
+      "native_pct_chg": false,
+      "native_turnover_rate": false,
+      "daily_semantics": "by_date",
+      "primary": "tdx_protocol",
+      "backup": "eastmoney",
+      "backfill": null,
+      "local_files": 2598,
+      "local_watermark": "2026-09-10",
+      "note": "ASL R3 authority; same schema and root"
+    },
+    {
+      "dataset": "trading_status",
+      "native_preclose": false,
+      "native_pct_chg": false,
+      "native_turnover_rate": false,
+      "daily_semantics": "snapshot",
+      "primary": "tdx_protocol(eastmoney snapshot)",
+      "backup": "eastmoney",
+      "backfill": "baostock",
+      "local_files": 0,
+      "local_watermark": null,
+      "status_vocabulary": [
+        "normal",
+        "st",
+        "*st",
+        "suspended"
+      ],
+      "note": "carries is_trading + status; bulk EM ST board + suspension report"
+    },
+    {
+      "dataset": "corporate_actions",
+      "native_preclose": false,
+      "native_pct_chg": false,
+      "native_turnover_rate": false,
+      "daily_semantics": "by_date",
+      "primary": "tdx_protocol",
+      "backup": "eastmoney",
+      "backfill": null,
+      "local_files": 11,
+      "local_rows": 40694,
+      "local_ex_date_range": [
+        "2016-01-07",
+        "2026-09-08"
+      ],
+      "local_watermark": "2026-09-08",
+      "note": "ex_date + cash_dividend + bonus_ratio + transfer_ratio; daily path = 1 exact-date datacenter call"
+    },
+    {
+      "dataset": "valuation_metrics",
+      "native_preclose": false,
+      "native_pct_chg": false,
+      "native_turnover_rate": false,
+      "daily_semantics": "snapshot",
+      "primary": "eastmoney(clist)",
+      "backup": null,
+      "backfill": "baostock",
+      "local_files": 0,
+      "local_watermark": null,
+      "note": "float_mv (f21); clist page_size=100 over 7757 instruments"
+    },
+    {
+      "dataset": "share_structure",
+      "native_preclose": false,
+      "native_pct_chg": false,
+      "native_turnover_rate": false,
+      "daily_semantics": "by_date",
+      "pit": true,
+      "primary": "eastmoney(datacenter)",
+      "backup": null,
+      "backfill": null,
+      "local_files": 0,
+      "local_watermark": null,
+      "note": "float_shares keyed by change_date; the turnover input"
+    },
+    {
+      "dataset": "instruments",
+      "local_rows": 7757,
+      "exchange_split": {
+        "SH": 3583,
+        "SZ": 4174,
+        "BJ": 0
+      }
+    },
+    {
+      "dataset": "trading_calendar",
+      "local_watermark": "2027-09-08"
+    },
+    {
+      "dataset": "adj_factors",
+      "local_watermark": "2026-09-08"
+    }
+  ],
+  "field_findings": {
+    "preclose": {
+      "native": false,
+      "stored_in_any_of_42_schemas": false,
+      "derivable_ordinary_day": true,
+      "derivable_ex_date": true,
+      "derivation_inputs": [
+        "daily_bars.close (prior published session)",
+        "corporate_actions.cash_dividend",
+        "corporate_actions.bonus_ratio",
+        "corporate_actions.transfer_ratio"
+      ],
+      "evidence_local_exception_rows": 0,
+      "evidence_local_exception_keys": 16,
+      "caveat": "requires exchange tick rounding",
+      "contract_conflict": "docs/contracts/DAILY_FACTS_PHASE1_PRECLOSE_AUTHORITY_V01.md freezes BAOSTOCK_HISTORY_K_PRECLOSE and forbids reconstruction from corporate actions",
+      "recommendation": "LOCAL_DERIVED_FROM_CNEQUITY",
+      "recommendation_blocked_by_contract": true,
+      "decision_required": "DESIGN_DECISION_REQUIRED"
+    },
+    "pct_chg": {
+      "native": false,
+      "derivable": true,
+      "derivation": "(close / preclose - 1) * 100",
+      "already_validated_by_asl": true,
+      "validated_detail": "2026-09-09 receipt PCT_CHG_UNRESOLVED_N = 0 over 5208 rows",
+      "recommendation": "LOCAL_DERIVED_FROM_CNEQUITY"
+    },
+    "turnover_rate": {
+      "native": false,
+      "derivable": true,
+      "derivation": "volume / share_structure.float_shares * 100",
+      "crosscheck_derivation": "amount / valuation_metrics.float_mv * 100",
+      "circularity_warning": "baostock valuation history computes float_mv FROM turn; do not invert it as evidence",
+      "validated_symbols": 8,
+      "validation_detail": "implied float shares match known counts: 000001.SZ 19.404bn, 600519.SH 1.250bn, 600036.SH 20.624bn, 000002.SZ 9.715bn",
+      "volume_unit_contract": "shares; verified amount/close/volume = 1.0022 on 000001.SZ 2026-09-09",
+      "recommendation": "LOCAL_DERIVED_FROM_CNEQUITY"
+    },
+    "trade_status": {
+      "native": true,
+      "native_field": "trading_status.is_trading + trading_status.status",
+      "daily_provider_pattern": "bulk",
+      "estimated_requests": 4,
+      "zero_network_alternative": "cne derive trading_status (derive_suspension_history from bar gaps, includes volume=0 rows)",
+      "local_gap_evidence": "2026-09-08 has 9 suspended symbols with 0 rows; 2026-09-09 has 10 suspended symbols with volume=0 rows",
+      "recommendation": "CNEQUITY_NATIVE + LOCAL_DERIVED_FROM_CNEQUITY"
+    },
+    "is_st": {
+      "native": true,
+      "native_field": "trading_status.status",
+      "mapping": {
+        "normal": "FALSE",
+        "st": "TRUE",
+        "st2": "TRUE",
+        "suspended": "FALSE",
+        "no_row": "UNKNOWN"
+      },
+      "unknown_arm_fail_closed": true,
+      "recommendation": "CNEQUITY_NATIVE"
+    }
+  },
+  "daily_pipeline": {
+    "available": true,
+    "entrypoint": "cne run daily",
+    "stale_only": "cne run daily --stale-only",
+    "waves": {
+      "reference": [
+        "instruments",
+        "trading_calendar",
+        "trading_status"
+      ],
+      "corporate_actions_to_bars": [
+        "corporate_actions",
+        "daily_bars"
+      ],
+      "index": [
+        "index_bars"
+      ],
+      "finalize": [
+        "compact",
+        "derive_adj_factors",
+        "derive_industry_index",
+        "audit"
+      ]
+    },
+    "provider_call_pattern": "bulk per dataset",
+    "resume_support": true,
+    "single_writer": "RunLock"
+  },
+  "current_asl_request_pattern": {
+    "measured_from": "staging/daily_facts_phase1_20260909_v01/progress.sqlite + raw/baostock/daily_facts/daily_facts_phase1_20260909_v01",
+    "units": 5208,
+    "sum_attempts": 5208,
+    "raw_files": 5208,
+    "rows_per_raw_file": 1,
+    "granularity": "one request per symbol per day",
+    "requests_per_day": 5208,
+    "batches": 261,
+    "batch_rest_seconds": 120,
+    "min_interval_seconds": 1,
+    "estimated_acquisition_hours": 10.3,
+    "observed_run_wall_hours": 13.5,
+    "multiyear_cost_if_not_single_date": 57288
+  },
+  "redesigned_request_pattern": {
+    "daily_bars_tdx_batches": 105,
+    "trading_status": 4,
+    "corporate_actions": 1,
+    "valuation_metrics": 78,
+    "share_structure": 2,
+    "total_approx": 190,
+    "per_symbol_provider_calls": 0,
+    "order_of_magnitude": "minutes"
+  },
+  "field_decision_matrix": [
+    {
+      "fact": "preclose",
+      "current_source": "BaoStock preclose",
+      "cnequity_native": false,
+      "derive_locally": "yes(ordinary,ex-date)",
+      "extra_provider_needed": false,
+      "recommended": "LOCAL_DERIVED_FROM_CNEQUITY"
+    },
+    {
+      "fact": "pct_chg",
+      "current_source": "BaoStock pctChg",
+      "cnequity_native": false,
+      "derive_locally": true,
+      "extra_provider_needed": false,
+      "recommended": "LOCAL_DERIVED_FROM_CNEQUITY"
+    },
+    {
+      "fact": "turnover_rate",
+      "current_source": "BaoStock turn",
+      "cnequity_native": false,
+      "derive_locally": true,
+      "extra_provider_needed": false,
+      "recommended": "LOCAL_DERIVED_FROM_CNEQUITY"
+    },
+    {
+      "fact": "trade_status",
+      "current_source": "BaoStock tradestatus",
+      "cnequity_native": true,
+      "derive_locally": true,
+      "extra_provider_needed": false,
+      "recommended": "CNEQUITY_NATIVE"
+    },
+    {
+      "fact": "is_st",
+      "current_source": "BaoStock isST",
+      "cnequity_native": true,
+      "derive_locally": "partial(suspension only)",
+      "extra_provider_needed": false,
+      "recommended": "CNEQUITY_NATIVE"
+    }
+  ],
+  "redundant_components": [
+    "Daily Facts BaoStock full-market sweep as a five-field bundle (5208 requests/day)",
+    "Provider pct_chg as a fetched field",
+    "Provider tradestatus as a fetched field",
+    "Provider isST as a fetched field",
+    "Provider turn as a fetched field",
+    "The 16-PDF CNInfo evidence workflow for a one-day ex-date delta"
+  ],
+  "required_asl_components": [
+    "R3 frozen-identity authority (5456 SH/SZ) and pointer-last publication",
+    "Quality/certification gates and evidence receipts",
+    "Daily Facts semantics layer (tri-state UNKNOWN, turnover_unit PERCENT, per-key provenance)",
+    "Reference-price exception evidence with hash-verified official sources",
+    "Read-only LocalQuery + MCP access layer",
+    "Single-writer resumable maintenance entry point"
+  ],
+  "decisions": {
+    "SHOULD_KEEP_CURRENT_BAOSTOCK_FULL_MARKET_ACQUISITION": "NO",
+    "CAN_DAILY_FACTS_BECOME_MOSTLY_LOCAL_DERIVED": "YES",
+    "EXPECTED_NETWORK_COMPLEXITY_AFTER_REDESIGN": "bulk snapshot + bounded exception requests (~190/day vs 5208/day; zero per-symbol)",
+    "PRECLOSE_SOURCE_RECOMMENDATION": "LOCAL_DERIVED_FROM_CNEQUITY (blocked by frozen contract; DESIGN_DECISION_REQUIRED)",
+    "PCT_CHG_SOURCE_RECOMMENDATION": "LOCAL_DERIVED_FROM_CNEQUITY",
+    "TURNOVER_SOURCE_RECOMMENDATION": "LOCAL_DERIVED_FROM_CNEQUITY",
+    "TRADE_STATUS_SOURCE_RECOMMENDATION": "CNEQUITY_NATIVE + LOCAL_DERIVED_FROM_CNEQUITY",
+    "IS_ST_SOURCE_RECOMMENDATION": "CNEQUITY_NATIVE"
+  },
+  "limitations": [
+    "no provider request issued; bulk claims come from code paths and pagination constants, not an observed run",
+    "trading_status, valuation_metrics, share_structure are not built locally (0 files each)",
+    "float-share identity validated on 8 symbols from one session",
+    "derived preclose needs the exchange tick-rounding rule, not implemented in this repo",
+    "frozen preclose contract conflicts with the recommended derivation; DESIGN_DECISION_REQUIRED",
+    "historical ST/suspension backfill remains a per-symbol sweep in CNEquity too; this audit covers the daily path"
+  ],
+  "next_implementation_task": {
+    "title": "Daily Facts local-derivation feasibility, phase 1 - build the CNEquity inputs",
+    "steps": [
+      "Resolve the preclose contract question (DESIGN_DECISION_REQUIRED)",
+      "Build trading_status, valuation_metrics, share_structure and record watermarks/coverage",
+      "Implement versioned derivation module with explicit rule ids and offline tests",
+      "Cross-validate against already-persisted 2026-09-09 BaoStock RAW (5208 files, no new network)",
+      "Only then replace the daily acquisition path and re-run maintenance idempotency tests"
+    ]
+  }
+}
