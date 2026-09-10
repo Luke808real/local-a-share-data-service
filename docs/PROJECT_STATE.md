@@ -60,13 +60,17 @@ preserved below.
   its own exact-key, provenance, tri-state, and reconciliation gates pass.
   No R3 authority rewrite, facts exposure, or readiness-flag change is
   permitted before a separate facts authority is verified.
+- DAILY_FACTS_2026_09_09_OFFLINE_CERTIFICATION: BLOCKED. The frozen full
+  eligible one-day ledger has 5,208 persisted RAW and 5,208 normalized facts,
+  but 16 unresolved preclose mismatches and 10 BaoStock `SUSPENDED` values
+  conflict with same-date R3 bars. No Daily Facts authority was advanced.
 - ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
   read-only MCP at `http://127.0.0.1:8766/mcp`. The private Secure MCP Tunnel
   runtime targets this loopback endpoint; its connectivity is operationally
   separate from R3 publication.
-- NETWORK_PROVIDER_JOB: one-shot, resumable BaoStock Daily Facts acquisition
-  for the 2026-09-09 bounded scope may run through its dedicated local
-  LaunchAgent.  Its RAW and staging outputs are not a publication authority.
+- NETWORK_PROVIDER_JOB: the one-shot BaoStock acquisition for the 2026-09-09
+  bounded scope completed with 5,208 persisted RAW units and zero provider
+  failures. Its staging output is not a publication authority.
 - DATA_CLEANUP_OR_REPAIR: preserve all physical incremental partitions and
   their audit evidence; do not treat physical files as authority without the
   corresponding committed receipt and pointer switch.

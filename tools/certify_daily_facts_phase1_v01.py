@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sqlite3
 import sys
 from datetime import date, timedelta
@@ -49,6 +50,26 @@ def _rows(paths: list[Path]) -> list[dict[str, Any]]:
     return output
 
 
+def _numeric(value: Any) -> float | None:
+    """Interpret parquet's nullable union values without altering persisted facts."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _null_numeric(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool) -> dict[str, Any]:
     root = root.resolve()
     symbols, required, as_of, daily_manifest_hash, _relation = published_scope(root, start=start, end=end)
@@ -80,27 +101,46 @@ def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool)
         keys = {(str(row["symbol"]), str(row["trade_date"])) for row in facts}
         expected_keys = _expected_keys(root, start, end)
         if len(keys) != len(facts) or keys != expected_keys:
-            result.update({"PASS": False, "error": "EXACT_KEY_COVERAGE_FAILURE", "actual_key_n": len(keys)})
+            result.update({"PASS": False, "error": "EXACT_KEY_COVERAGE_FAILURE", "actual_key_n": len(keys),
+                           "NORMALIZED_ROW_N": len(facts), "DUPLICATE_PK_N": len(facts) - len(keys),
+                           "MISSING_PK_N": len(expected_keys - keys), "EXTRA_PK_N": len(keys - expected_keys)})
         else:
             bars = _reconciliation_bars(root, start, end)
             reconcile(facts, bars)
+            bar_keys = {(str(row["symbol"]), str(row["trade_date"])) for row in bars}
+            numeric_null_n = sum(any(_null_numeric(row.get(field)) for field in ("preclose", "pct_chg", "turnover_rate")) for row in facts)
+            numeric_invalid_n = sum(any(not _null_numeric(row.get(field)) and _numeric(row.get(field)) is None
+                                        for field in ("preclose", "pct_chg", "turnover_rate")) for row in facts)
+            invalid_domain_n = sum((_numeric(row.get("preclose")) is not None and _numeric(row.get("preclose")) <= 0)
+                                   or (_numeric(row.get("turnover_rate")) is not None and _numeric(row.get("turnover_rate")) < 0)
+                                   for row in facts)
             quality = {
                 "DUPLICATE_N": len(facts) - len(keys),
+                "MISSING_PK_N": len(expected_keys - keys),
+                "EXTRA_PK_N": len(keys - expected_keys),
+                "IDENTITY_MISMATCH_N": sum(row.get("symbol") not in symbols for row in facts),
+                "DATE_MISMATCH_N": sum(row.get("trade_date") != start.isoformat() for row in facts),
                 "SOURCE_ERROR_N": state_counts.get("PROVIDER_FAIL", 0),
                 "UNKNOWN_N": sum(row.get("quality_status") == "UNKNOWN" for row in facts),
-                "UNRESOLVED_N": sum(row.get("quality_status") == "UNRESOLVED" for row in facts),
-                "PRECLOSE_MISMATCH_N": sum(row.get("preclose_reconciliation") in {"MISMATCH", "UNRESOLVED"} for row in facts),
-                "PCT_CHG_MISMATCH_N": sum(row.get("pct_chg_reconciliation") == "MISMATCH" for row in facts),
+                "PRECLOSE_UNRESOLVED_N": sum(row.get("preclose_reconciliation") in {"MISMATCH", "UNRESOLVED"} for row in facts),
+                "PCT_CHG_UNRESOLVED_N": sum(row.get("pct_chg_reconciliation") in {"MISMATCH", "UNKNOWN"} for row in facts),
+                "TRADE_STATUS_CONFLICT_N": sum((row.get("symbol"), row.get("trade_date")) in bar_keys and row.get("trade_status") != "TRADING" for row in facts),
+                "IS_ST_UNKNOWN_N": sum(row.get("is_st") == "UNKNOWN" for row in facts),
+                "NULL_NUMERIC_N": numeric_null_n,
+                "INVALID_NUMERIC_N": numeric_invalid_n,
+                "INVALID_DOMAIN_N": invalid_domain_n,
                 "PROVENANCE_FAILURE_N": sum(not all(row.get(k) for k in ("provider", "raw_values", "fetched_at", "provider_version", "schema_version")) for row in facts),
             }
-            result.update({"actual_key_n": len(keys), "quality": quality,
+            result.update({"actual_key_n": len(keys), "NORMALIZED_ROW_N": len(facts), "DUPLICATE_PK_N": quality["DUPLICATE_N"],
+                           "MISSING_PK_N": quality["MISSING_PK_N"], "EXTRA_PK_N": quality["EXTRA_PK_N"], "quality": quality,
                            "STRUCTURAL_PASS": quality["DUPLICATE_N"] == 0,
                            "COVERAGE_PASS": keys == expected_keys,
                            "PROVENANCE_PASS": quality["PROVENANCE_FAILURE_N"] == 0})
             result["PASS"] = all((result["STRUCTURAL_PASS"], result["COVERAGE_PASS"], result["PROVENANCE_PASS"],
                                   quality["SOURCE_ERROR_N"] == 0, quality["UNKNOWN_N"] == 0,
-                                  quality["UNRESOLVED_N"] == 0, quality["PRECLOSE_MISMATCH_N"] == 0,
-                                  quality["PCT_CHG_MISMATCH_N"] == 0))
+                                  quality["PRECLOSE_UNRESOLVED_N"] == 0, quality["PCT_CHG_UNRESOLVED_N"] == 0,
+                                  quality["TRADE_STATUS_CONFLICT_N"] == 0, quality["IS_ST_UNKNOWN_N"] == 0,
+                                  quality["INVALID_NUMERIC_N"] == 0, quality["INVALID_DOMAIN_N"] == 0))
             result["normalized_manifest"] = {"file_n": len(paths), "files": [_file_record(root, path) for path in paths]}
             result["normalized_manifest"]["manifest_hash"] = _sha(result["normalized_manifest"]["files"])
     if execute:

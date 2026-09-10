@@ -48,3 +48,9 @@ def test_parquet_date_is_canonicalized_before_reconciliation(tmp_path):
         con.execute("insert into x values ('000001.SZ', date '2026-09-09')")
         con.execute("copy x to ? (format parquet)", [str(path)])
     assert cert._rows([path])[0]["trade_date"] == "2026-09-09"
+
+
+def test_nullable_parquet_nan_is_not_coerced_to_zero_or_malformed():
+    assert cert._null_numeric(float("nan")) is True
+    assert cert._numeric(float("nan")) is None
+    assert cert._numeric("3.25") == 3.25
