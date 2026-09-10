@@ -22,10 +22,14 @@ from run_daily_facts_phase1_full_market import _atomic_json, _sha, _write_parque
 
 
 RUN = "daily_facts_phase1_20260909_v01"
-SCOPE = "2026-09-09_FULL_ELIGIBLE"
 PUBLISHED_NUMERIC_FIELDS = (
     "preclose", "pct_chg", "turnover_rate", "pct_chg_calculated", "reference_price_expected",
 )
+
+
+def publication_scope(day: date) -> str:
+    """Scope label for one independently published full-eligible Facts date."""
+    return f"{day.isoformat()}_FULL_ELIGIBLE"
 
 
 def _record(root: Path, path: Path) -> dict[str, Any]:
@@ -70,6 +74,7 @@ def _published_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def publish(root: Path, *, run_name: str, day: date, execute: bool) -> dict[str, Any]:
     root = root.resolve()
+    scope = publication_scope(day)
     certification = certify(root, run_name=run_name, start=day, end=day, execute=True)
     if certification.get("PASS") is not True:
         raise DailyFactsError("CERTIFICATION_NOT_PASSED", "Daily Facts staging cannot be published")
@@ -80,7 +85,9 @@ def publish(root: Path, *, run_name: str, day: date, execute: bool) -> dict[str,
     normalized = [root / row["relative_path"] for row in certification["normalized_manifest"]["files"]]
     rows = _rows(normalized)
     evidence_path = staging / "reference_price_evidence.json"
-    reference_evidence = load_reference_price_evidence(root, evidence_path)
+    # Certification already passed, so a missing document means this date had no
+    # reference-price exception to explain; certify() applies the same rule.
+    reference_evidence = load_reference_price_evidence(root, evidence_path) if evidence_path.is_file() else {}
     reconcile(rows, _reconciliation_bars(root, day, day), reference_price_evidence=reference_evidence)
     rows = _published_rows(rows)
     # Existing vertical-slice facts remain part of the authority; the new day
@@ -94,16 +101,16 @@ def publish(root: Path, *, run_name: str, day: date, execute: bool) -> dict[str,
         if any(item["relative_path"] == target.relative_to(root).as_posix() for item in prior_files):
             raise DailyFactsError("TARGET_FACTS_PARTITION_EXISTS", "authority already contains target facts date")
     if not execute:
-        return {"PASS": True, "publication": "READY", "scope": SCOPE, "candidate_file": target.relative_to(root).as_posix(),
+        return {"PASS": True, "publication": "READY", "scope": scope, "candidate_file": target.relative_to(root).as_posix(),
                 "expected_key_n": certification["expected_key_n"]}
     _write_parquet(target, rows)
     files = sorted([*prior_files, _record(root, target)], key=lambda item: item["relative_path"])
     manifest = {"schema": "ASL_DAILY_FACTS_MANIFEST_V01", "file_n": len(files), "files": files, "manifest_hash": _sha(files)}
-    plan = {"schema": "ASL_DAILY_FACTS_PUBLICATION_PLAN_V01", "scope": SCOPE, "eligible_n": certification["requested_symbol_n"],
+    plan = {"schema": "ASL_DAILY_FACTS_PUBLICATION_PLAN_V01", "scope": scope, "eligible_n": certification["requested_symbol_n"],
             "published_as_of": day.isoformat(), "manifest": manifest, "certification_receipt": (staging / "certification_receipt.json").relative_to(root).as_posix(),
             "r3_daily_manifest_hash": certification["daily_manifest_hash"]}
     receipt = {"schema": "ASL_DAILY_FACTS_PROMOTION_RECEIPT_V01", "STATE": "COMMITTED", "status": "FULL_ELIGIBLE_ONE_DAY_PUBLISHED",
-               "scope": SCOPE, "manifest_hash": manifest["manifest_hash"], "quality": certification,
+               "scope": scope, "manifest_hash": manifest["manifest_hash"], "quality": certification,
                "provider_network_request_n": 0}
     _atomic_json(staging / "promotion_plan.json", plan)
     _atomic_json(staging / "promotion_receipt.json", receipt)
@@ -113,7 +120,7 @@ def publish(root: Path, *, run_name: str, day: date, execute: bool) -> dict[str,
                                  "plan": (staging / "promotion_plan.json").relative_to(root).as_posix(),
                                  "receipt": (staging / "promotion_receipt.json").relative_to(root).as_posix(),
                                  "manifest_hash": manifest["manifest_hash"]})
-    return {"PASS": True, "publication": "PUBLISHED", "scope": SCOPE, "manifest_hash": manifest["manifest_hash"],
+    return {"PASS": True, "publication": "PUBLISHED", "scope": scope, "manifest_hash": manifest["manifest_hash"],
             "eligible_n": certification["requested_symbol_n"], "provider_network_request_n": 0}
 
 

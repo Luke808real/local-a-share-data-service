@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
@@ -31,6 +31,8 @@ TARGETS = (
     "001400.SZ", "002073.SZ", "002315.SZ", "002322.SZ", "002441.SZ", "002833.SZ", "002841.SZ", "300196.SZ",
     "300622.SZ", "301151.SZ", "600114.SH", "603992.SH", "603993.SH", "605377.SH", "688128.SH", "688271.SH",
 )
+SEARCH_START = "2026-08-15"
+SEARCH_END = "2026-09-10"
 CNINFO_SEARCH = "https://www.cninfo.com.cn/new/fulltextSearch/full"
 CNINFO_STATIC = "https://static.cninfo.com.cn/"
 
@@ -51,11 +53,11 @@ def _request(url: str) -> bytes:
         return response.read()
 
 
-def _search(symbol: str) -> list[dict[str, Any]]:
+def _search(symbol: str, search_start: str = SEARCH_START, search_end: str = SEARCH_END) -> list[dict[str, Any]]:
     code = symbol.split(".", 1)[0]
     params = {
         "searchkey": f"{code} 权益分派 实施公告",
-        "sdate": "2026-08-15", "edate": "2026-09-10", "isfulltext": "true",
+        "sdate": search_start, "edate": search_end, "isfulltext": "true",
         "sortName": "", "sortType": "", "pageNum": "1", "pageSize": "30", "type": "",
     }
     payload = json.loads(_request(CNINFO_SEARCH + "?" + urllib.parse.urlencode(params)).decode("utf-8"))
@@ -75,19 +77,23 @@ def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", value)
 
 
-def fetch(root: Path, *, execute: bool) -> dict[str, Any]:
+def fetch(root: Path, *, execute: bool, run_name: str = RUN_NAME, symbols: Iterable[str] = TARGETS,
+          search_start: str = SEARCH_START, search_end: str = SEARCH_END) -> dict[str, Any]:
     root = root.resolve()
-    destination = root / "raw" / "official_disclosures" / RUN_NAME / "cninfo"
+    targets = tuple(symbols)
+    if not targets:
+        raise EvidenceFetchError("NO_TARGET_SYMBOLS")
+    destination = root / "raw" / "official_disclosures" / run_name / "cninfo"
     records: list[dict[str, Any]] = []
-    for symbol in TARGETS:
-        candidate = _search(symbol)[0]
+    for symbol in targets:
+        candidate = _search(symbol, search_start, search_end)[0]
         adjunct = str(candidate["adjunctUrl"]).lstrip("/")
         source_url = CNINFO_STATIC + adjunct
         payload = _request(source_url)
         if not payload.startswith(b"%PDF"):
             raise EvidenceFetchError(f"CNINFO_NOT_PDF:{symbol}")
         filename = _safe_filename(str(candidate["announcementId"])) + ".pdf"
-        relative_path = Path("raw") / "official_disclosures" / RUN_NAME / "cninfo" / symbol / filename
+        relative_path = Path("raw") / "official_disclosures" / run_name / "cninfo" / symbol / filename
         record = {
             "symbol": symbol, "announcement_id": str(candidate["announcementId"]),
             "announcement_title": re.sub(r"<[^>]+>", "", str(candidate["announcementTitle"])),
@@ -103,7 +109,7 @@ def fetch(root: Path, *, execute: bool) -> dict[str, Any]:
             if not path.exists():
                 path.write_bytes(payload)
         records.append(record)
-    receipt = {"schema": SCHEMA, "run_name": RUN_NAME, "target_symbol_n": len(TARGETS), "records": records}
+    receipt = {"schema": SCHEMA, "run_name": run_name, "target_symbol_n": len(targets), "records": records}
     receipt["receipt_hash"] = _sha256(json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode())
     if execute:
         path = destination / "source_receipt.json"
@@ -116,9 +122,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--run-name", default=RUN_NAME)
+    parser.add_argument("--symbols", nargs="*")
+    parser.add_argument("--search-start", default=SEARCH_START)
+    parser.add_argument("--search-end", default=SEARCH_END)
     args = parser.parse_args()
     try:
-        print(json.dumps(fetch(args.data_root, execute=args.execute), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(fetch(args.data_root, execute=args.execute, run_name=args.run_name,
+                               symbols=args.symbols or TARGETS, search_start=args.search_start,
+                               search_end=args.search_end), ensure_ascii=False, sort_keys=True))
     except EvidenceFetchError as error:
         print(json.dumps({"error": str(error)}))
         raise SystemExit(2)
