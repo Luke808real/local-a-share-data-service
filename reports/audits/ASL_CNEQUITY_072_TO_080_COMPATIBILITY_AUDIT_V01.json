@@ -1,0 +1,366 @@
+{
+  "schema": "ASL_CNEQUITY_072_TO_080_COMPATIBILITY_AUDIT_V01",
+  "generated_at": "2026-09-10T17:27:28.412Z",
+  "method": "SIDE_BY_SIDE_ISOLATED_VENV_READ_ONLY",
+  "asl_head": "2342aba990e8bd506f0ae0908278962ad903117c",
+  "branch": "codex/r3-incremental-hardening-daily-facts-phase1-v01",
+  "production_data_mutations": "NONE",
+  "cnequity_072": {
+    "version": "0.7.2",
+    "commit": "a18ee0484dfb0801650175471724def3228b8a17",
+    "install_path": "/Users/luke808/ASL/.venv/lib/python3.12/site-packages/cnequity",
+    "venv": "/Users/luke808/ASL/.venv",
+    "python": "3.12.13",
+    "polars": "1.43.2",
+    "httpx": "0.28.1",
+    "socksio": "1.0.0"
+  },
+  "cnequity_080": {
+    "version": "0.8.0",
+    "tag": "v0.8.0",
+    "tag_object": "0a2f20475097341d486b3ccc3288cdfe136a033c",
+    "commit": "d453853da766b3ba3e44489c0fb6e0089243fa25",
+    "commit_equals_main": true,
+    "install_path": "/Users/luke808/ASL/.venv-cne080/lib/python3.12/site-packages/cnequity",
+    "venv": "/Users/luke808/ASL/.venv-cne080",
+    "python": "3.12.13",
+    "polars": "1.44.2",
+    "httpx": "0.28.1",
+    "socksio": "1.0.0",
+    "install_spec": "cnequity @ git+https://github.com/rootSunc/CNEquity.git@d453853da766b3ba3e44489c0fb6e0089243fa25",
+    "direct_url_verified": true,
+    "commits_between": 499,
+    "files_changed": 412
+  },
+  "dataset_registry": {
+    "v072": 42,
+    "v080": 42,
+    "added": [],
+    "removed": []
+  },
+  "contract_metadata_added_in_080": [
+    "contract_level",
+    "compatibility",
+    "schema_version",
+    "availability_col",
+    "session_scope",
+    "unit_contract",
+    "pit_grade",
+    "pit_quality",
+    "negative_evidence_ttl_days",
+    "reconciliation_lookback_mode",
+    "reconciliation_lookback_days"
+  ],
+  "machine_readable_contract": "contracts/v0.8.0.json (163519 bytes)",
+  "schema_diffs": {
+    "trading_status": "BREAKING_BEHAVIOURAL + ADDITIVE_COLUMN",
+    "daily_bars": "UNCHANGED",
+    "instruments": "UNCHANGED",
+    "corporate_actions": "UNCHANGED",
+    "share_structure": "UNCHANGED",
+    "valuation_metrics": "UNCHANGED",
+    "trading_calendar": "UNCHANGED"
+  },
+  "trading_status_contract": {
+    "v072": {
+      "status_vocabulary": [
+        "normal",
+        "st",
+        "*st",
+        "suspended"
+      ],
+      "excluded_statuses": [
+        "st",
+        "*st",
+        "suspended"
+      ]
+    },
+    "v080": {
+      "status_vocabulary": [
+        "normal",
+        "suspended",
+        "delisted"
+      ],
+      "risk_warning": "Boolean nullable",
+      "excluded_statuses": [
+        "st",
+        "*st",
+        "delisted",
+        "suspended"
+      ],
+      "legacy_st_statuses": [
+        "st",
+        "*st"
+      ],
+      "trading_states": [
+        "normal",
+        "suspended",
+        "delisted"
+      ],
+      "non_trading_states": [
+        "suspended",
+        "delisted"
+      ]
+    },
+    "legacy_read_path": "validate_dataframe -> normalize_legacy; risk_warning_expr accepts both encodings",
+    "normalize_legacy_idempotent": true,
+    "legacy_suspended_while_st_unrecoverable": true,
+    "verified_normalize": [
+      {
+        "in": {
+          "status": "st",
+          "is_trading": true
+        },
+        "out": {
+          "status": "normal",
+          "risk_warning": true
+        }
+      },
+      {
+        "in": {
+          "status": "suspended",
+          "is_trading": false
+        },
+        "out": {
+          "status": "suspended",
+          "risk_warning": false
+        }
+      },
+      {
+        "in": {
+          "status": "*st",
+          "is_trading": true
+        },
+        "out": {
+          "status": "normal",
+          "risk_warning": true
+        }
+      },
+      {
+        "in": {
+          "status": "normal",
+          "is_trading": true
+        },
+        "out": {
+          "status": "normal",
+          "risk_warning": false
+        }
+      }
+    ]
+  },
+  "critical_operational_finding": {
+    "summary": "CNEquity 0.7.2 is broken against httpx 0.28.1, which the production .venv already has",
+    "mechanism": "0.7.2 passes params to httpx; httpx>=0.28 replaces the caller's query instead of merging, so clist requests degenerate to '?ut=...' losing fs/fields/pn/pz/fid",
+    "upstream_documented_in_080": true,
+    "affected_in_072": [
+      "trading_status ST board",
+      "valuation_metrics",
+      "instruments clist path",
+      "rotation/boards",
+      "fund_flow"
+    ],
+    "measured": [
+      {
+        "probe": "eastmoney_st_board",
+        "v072": "FAIL all hosts 5/5",
+        "v080": "OK 201 symbols"
+      },
+      {
+        "probe": "fetch_valuation_metrics 2026-09-10",
+        "v072": "FAIL 0 rows",
+        "v080": "OK 5909 rows, 5563 with float_mv"
+      },
+      {
+        "probe": "suspend report RPT_CUSTOM_SUSPEND_DATA_INTERFACE",
+        "v072": "HTTP 200 code=9501 filter parameter must include DATETIME",
+        "v080": "n/a (uses datapc tfg list2)"
+      },
+      {
+        "probe": "datapc tfg list2 (0.8.0 endpoint)",
+        "v072": "not used",
+        "v080": "HTTP 200 success result.data present"
+      }
+    ]
+  },
+  "provider_changes": {
+    "corporate_actions": {
+      "v072": {
+        "primary": "tdx_protocol",
+        "backup": "eastmoney",
+        "backfill": null
+      },
+      "v080": {
+        "primary": "eastmoney",
+        "backup": "tdx_protocol",
+        "backfill": "tdx_protocol"
+      },
+      "schema_changed": false
+    },
+    "others": "unchanged"
+  },
+  "pit_grading_080": {
+    "pit_grade_counts": {
+      "none": 37,
+      "partial": 4,
+      "strict": 1
+    },
+    "pit_quality_counts": {
+      "strict": 30,
+      "snapshot_only": 8,
+      "reconstructed": 4
+    },
+    "pit_datasets": {
+      "announcement_index": {
+        "grade": "strict",
+        "quality": "strict",
+        "availability_col": "announce_date"
+      },
+      "financial_statement_items": {
+        "grade": "partial",
+        "quality": "reconstructed",
+        "availability_col": "announce_date"
+      },
+      "share_structure": {
+        "grade": "partial",
+        "quality": "reconstructed",
+        "availability_col": "announce_date"
+      },
+      "shareholder_counts": {
+        "grade": "partial",
+        "quality": "reconstructed",
+        "availability_col": "announce_date"
+      },
+      "top_holders": {
+        "grade": "partial",
+        "quality": "reconstructed",
+        "availability_col": "announce_date"
+      }
+    }
+  },
+  "new_write_guards": {
+    "sanitize_dataset_rows": "drops weekend/holiday rows for daily_bars/index_bars; masks is_trading on closed dates",
+    "measured_on_r3_2026_09_10": {
+      "in": 5208,
+      "out": 5208,
+      "dropped": 0
+    }
+  },
+  "existing_lake_read_compatibility": {
+    "verdict": "PASS",
+    "checks": {
+      "daily_bars_2026_09_09": "5208 rows, validate PASS",
+      "daily_bars_2026_09_10": "5208 rows, validate PASS",
+      "instruments": "7757 rows, validate PASS",
+      "corporate_actions": "40694 rows, validate PASS",
+      "share_structure": "166911 rows, validate PASS",
+      "trading_calendar": "4269 rows, validate PASS",
+      "watermarks": "readable via StateStore",
+      "manifest_db": "readable, 259 runs",
+      "asl_r3_updater_dry_run": "READY, frozen_n 5456, eligible_n 5208, network_request_n 0"
+    },
+    "asl_entry_points_present_in_080": [
+      "fetch_daily_bars",
+      "normalize_with_source",
+      "StagingWriter",
+      "write_parquet_atomic",
+      "Manifest",
+      "load_config"
+    ],
+    "dataversion_unchanged": {
+      "daily_bars": "v2"
+    }
+  },
+  "migration_tooling": {
+    "scripts": [
+      "migrate_trading_status_risk_warning.py",
+      "migrate_daily_bars_volume_v2.py",
+      "migrate_pit_vintages.py"
+    ],
+    "migrate_trading_status_risk_warning": {
+      "dry_run_default": true,
+      "requires_apply_flag": true,
+      "idempotent": true,
+      "rollback_built_in": false,
+      "does_not_invent_delisted_history": true,
+      "input": "curated/trading_status/**/*.parquet",
+      "needed_for_this_lake": false,
+      "reason": "zero trading_status files exist"
+    }
+  },
+  "breaking_changes": [
+    "trading_status: status no longer carries st/*st; risk_warning added",
+    "EXCLUDED_STATUSES gains delisted",
+    "status may take the value delisted",
+    "corporate_actions primary provider moved to eastmoney"
+  ],
+  "required_migrations": [],
+  "optional_migrations": [
+    "migrate_trading_status_risk_warning.py (only after importing legacy trading_status)",
+    "re-derive trading_status/valuation_metrics/share_structure under 0.8.0"
+  ],
+  "daily_facts_v02_impact": {
+    "preclose": "unchanged derivation; no native 0.8.0 preclose; frozen contract conflict persists",
+    "pct_chg": "unchanged derivation",
+    "turnover_rate": "formula unchanged; must choose announce_date (declared availability) vs change_date (economic effect); pit_quality=reconstructed",
+    "trade_status": "map {normal,suspended,delisted}; st/*st gone; delisted mapping onto ASL tri-state is an open contract question",
+    "is_st": "map risk_warning nullable Boolean; null -> UNKNOWN; strictly better than 0.7.2",
+    "open_questions": [
+      "delisted -> ASL tri-state mapping",
+      "turnover denominator date column"
+    ]
+  },
+  "safe_upgrade_sequence": [
+    "freeze current authority (already satisfied)",
+    "resolve the two Daily Facts contract questions",
+    "bump pyproject pin to d453853d..., re-lock, keep .venv-cne080 as fallback",
+    "read-only verify: cne status --datasets, cne verify, cne doctor, ASL R3 dry-run",
+    "build the three absent datasets from 0.8.0 bulk paths (no migration needed)",
+    "resume V02 shadow under the new contract; do not publish"
+  ],
+  "rollback_boundary": {
+    "target": "pyproject.toml pin + uv.lock -> a18ee048 (0.7.2)",
+    "safe_for": "reading",
+    "does_not_restore": "fetch capability (0.7.2 cannot reach ST board, suspension report, or clist datasets under httpx 0.28.1)",
+    "irreversible_step": "migrate_trading_status_risk_warning.py --apply (unnecessary for this lake)"
+  },
+  "interrupted_task_checkpoint": {
+    "provider_requests_completed": [
+      "eastmoney ST board probe (diagnostic)",
+      "eastmoney valuation probe (diagnostic)",
+      "baostock ST-history probe ABORTED",
+      "eastmoney share_structure backfill COMPLETED run e9afd938-7426-4888-aee0-0f86be7520c6"
+    ],
+    "datasets_created": {
+      "share_structure": {
+        "files": 26,
+        "rows": 166911,
+        "symbols": 5919,
+        "change_date_range": [
+          "2001-01-03",
+          "2026-09-09"
+        ],
+        "source": "eastmoney",
+        "rows_with_float_shares": 162854
+      }
+    },
+    "shadow_rows_generated": 0,
+    "files_changed": [
+      "src/ashare_data/daily_facts_v02.py (NEW untracked 467 lines, never executed, NOT production-ready)"
+    ],
+    "data_changed": [
+      "curated/share_structure"
+    ],
+    "publication_changed": "NONE",
+    "r3_pointer": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b",
+    "facts_v1_pointer": "9b4f474ebcb0db97d9dbfdb824eb6b7e17f017a6ac8957ed3d6a8fb5e3ca21ac"
+  },
+  "limitations": [
+    "R3 dry-run does not import cnequity; compatibility rests on dry-run PASS plus 6/6 entry-point imports",
+    "no dataset was built under 0.8.0; bulk patterns read from code, confirmed only for the two probes run",
+    "share_structure was populated by 0.7.2 via the datacenter path (not clist-based, unaffected by the httpx defect)",
+    "migration script read, not dry-run",
+    "delisted handling read from source and unit tests, not observed live",
+    "provider probes were single-session observations; the httpx mechanism is documented in 0.8.0 source"
+  ],
+  "next_gate": "authorized resolution of the two Daily Facts contract questions, or the pinned 0.8.0 upgrade plus read-only verification"
+}
