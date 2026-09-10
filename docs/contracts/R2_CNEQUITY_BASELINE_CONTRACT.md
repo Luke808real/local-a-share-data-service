@@ -6,16 +6,32 @@
 
 ## Runtime authority
 
-The sole upstream authority is `rootSunc/CNEquity`, tag/release `v0.7.2`, at
-immutable Git commit `a18ee0484dfb0801650175471724def3228b8a17`:
+The sole upstream authority is `rootSunc/CNEquity`, currently tag/release
+`v0.8.0`, at immutable Git commit
+`d453853da766b3ba3e44489c0fb6e0089243fa25`:
 
 ```text
 https://github.com/rootSunc/CNEquity.git
 ```
 
+### Superseded pin record
+
+The R2 baseline originally froze `v0.7.2` at
+`a18ee0484dfb0801650175471724def3228b8a17`. That pin was superseded by an
+explicitly authorized upgrade after the side-by-side compatibility audit
+(`reports/audits/ASL_CNEQUITY_072_TO_080_COMPATIBILITY_AUDIT_V01.md`), which
+found that 0.7.2 can no longer reach its own sources: under the `httpx 0.28.1`
+the environment already carried, its clist requests lost their query
+parameters, and the suspension report it depended on had been retired by the
+vendor. The upgrade was therefore a correctness fix, not a preference.
+
+Everything below about lock discipline, `direct_url.json` provenance and
+receipt content continues to apply unchanged; only the pinned commit and
+version moved.
+
 ASL uses CPython 3.12, selected by `.python-version`, with the service-owned
 `uv.lock` as the full dependency authority. The current lock hash is SHA-256
-`5f233fa9434624391c06e56a4596edfd52c1ec596d66688753b78f424dd571ac`.
+`035c03e1465d4b42eb32f927d1f0874fc3c8b71e763872ad3b9175dc5274635b`.
 Installed-package provenance is authoritative only when `direct_url.json`
 records VCS `git`, the repository URL above, and that exact `commit_id`.
 An editable checkout, local path, or PyPI-only origin is not an acceptable

@@ -15,8 +15,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_REPOSITORY = "https://github.com/rootSunc/CNEquity.git"
-UPSTREAM_SHA = "a18ee0484dfb0801650175471724def3228b8a17"
-CNEQUITY_VERSION = "0.7.2"
+UPSTREAM_SHA = "d453853da766b3ba3e44489c0fb6e0089243fa25"
+CNEQUITY_VERSION = "0.8.0"
 DATA_ROOT = Path("/Users/luke808/AI/local-a-share-data-service-data")
 LEGACY_ROOTS = (
     Path("/Users/luke808/AI/asl-shared"),
@@ -326,7 +326,7 @@ def test_baseline_contract_records_runtime_layout_and_local_only_boundary():
 
     for phrase in [
         "rootSunc/CNEquity",
-        "v0.7.2",
+        "v0.8.0",
         UPSTREAM_SHA,
         "CPython 3.12",
         "uv.lock",
