@@ -128,6 +128,8 @@ def test_status_reports_current_readiness_truthfully() -> None:
     assert value["PENDING_FILE_N"] == value["PHYSICAL_DAILY_FILE_N"] - 2597
     assert value["PRECLOSE_COMPLETE"] is False
     assert value["FACTS_READY"] is False
+    assert value["DAILY_FACTS_PHASE1_STATUS"] == "FULL_ELIGIBLE_ONE_DAY_PUBLISHED"
+    assert value["DAILY_FACTS_PHASE1_SCOPE"] == "2026-09-09_FULL_ELIGIBLE"
 
 
 def test_r4_fact_is_not_silently_derived() -> None:
@@ -143,7 +145,7 @@ def test_r4_fact_is_not_silently_derived() -> None:
 def test_facts_outside_independent_published_scope_fail_closed() -> None:
     with LocalQuery() as query:
         with pytest.raises(QueryError) as exc_info:
-            query.facts("002580.SZ", "2026-09-09")
+            query.facts("002580.SZ", "2026-09-08")
     assert exc_info.value.code == "OUTSIDE_PUBLISHED_FACT_SCOPE"
 
 

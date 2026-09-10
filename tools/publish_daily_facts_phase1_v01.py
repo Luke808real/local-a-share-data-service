@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from datetime import date
 from pathlib import Path
@@ -13,19 +14,58 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src")); sys.path.insert(0, str(REPO / "tools"))
 
-from ashare_data.daily_facts_phase1 import DailyFactsError  # noqa: E402
+from ashare_data.daily_facts_phase1 import DailyFactsError, reconcile  # noqa: E402
 from ashare_data.local_query import DEFAULT_DATA_ROOT  # noqa: E402
-from certify_daily_facts_phase1_v01 import certify  # noqa: E402
+from ashare_data.reference_price_evidence import load_reference_price_evidence  # noqa: E402
+from certify_daily_facts_phase1_v01 import _reconciliation_bars, _rows, certify  # noqa: E402
 from run_daily_facts_phase1_full_market import _atomic_json, _sha, _write_parquet, run_paths  # noqa: E402
 
 
 RUN = "daily_facts_phase1_20260909_v01"
 SCOPE = "2026-09-09_FULL_ELIGIBLE"
+PUBLISHED_NUMERIC_FIELDS = (
+    "preclose", "pct_chg", "turnover_rate", "pct_chg_calculated", "reference_price_expected",
+)
 
 
 def _record(root: Path, path: Path) -> dict[str, Any]:
     return {"relative_path": path.relative_to(root).as_posix(), "file_size": path.stat().st_size,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def _published_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make JSONL's inferred physical types match the certified fact schema.
+
+    DuckDB's dataframe conversion can surface DECIMAL values as JSON-encoded
+    strings.  A published partition must never silently turn canonical numeric
+    facts into JSON columns; null remains allowed for certified suspended rows.
+    """
+    result: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        for field in PUBLISHED_NUMERIC_FIELDS:
+            value = row.get(field)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                try:
+                    decoded = json.loads(value)
+                except json.JSONDecodeError:
+                    decoded = value
+                value = decoded
+            if value is None:
+                row[field] = None
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise DailyFactsError("PUBLISHED_FACT_INVALID_NUMERIC", f"{field} is not numeric") from exc
+            row[field] = number if math.isfinite(number) else None
+        for field, value in list(row.items()):
+            if hasattr(value, "isoformat"):
+                row[field] = value.isoformat()
+        result.append(row)
+    return result
 
 
 def publish(root: Path, *, run_name: str, day: date, execute: bool) -> dict[str, Any]:
@@ -38,13 +78,11 @@ def publish(root: Path, *, run_name: str, day: date, execute: bool) -> dict[str,
     if target.exists():
         raise DailyFactsError("TARGET_FACTS_PARTITION_EXISTS", "refuse to overwrite published facts")
     normalized = [root / row["relative_path"] for row in certification["normalized_manifest"]["files"]]
-    import duckdb
-    with duckdb.connect(":memory:") as con:
-        rows = [dict(row) for row in con.execute("select * from read_parquet(?, union_by_name=true) order by symbol, trade_date", [[str(p) for p in normalized]]).fetchdf().to_dict("records")]
-    for row in rows:
-        value = row.get("trade_date")
-        if hasattr(value, "date"):
-            row["trade_date"] = value.date().isoformat()
+    rows = _rows(normalized)
+    evidence_path = staging / "reference_price_evidence.json"
+    reference_evidence = load_reference_price_evidence(root, evidence_path)
+    reconcile(rows, _reconciliation_bars(root, day, day), reference_price_evidence=reference_evidence)
+    rows = _published_rows(rows)
     # Existing vertical-slice facts remain part of the authority; the new day
     # has no vertical file and therefore cannot create a duplicate primary key.
     prior_pointer = root / "meta/asl/daily_facts/published-daily-facts-authority.json"

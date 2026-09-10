@@ -13,7 +13,10 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
+
+if TYPE_CHECKING:
+    from ashare_data.reference_price_evidence import CashDividendReferenceEvidence
 
 
 SCHEMA = "ASL_DAILY_FACTS_PHASE1_V01"
@@ -105,10 +108,12 @@ def normalize(raw_rows: Iterable[ProviderRawRow]) -> list[dict[str, Any]]:
     return normalized
 
 
-def reconcile(rows: list[dict[str, Any]], daily_rows: Iterable[dict[str, Any]], *, corporate_action_year_symbols: set[str] | None = None) -> list[dict[str, Any]]:
+def reconcile(rows: list[dict[str, Any]], daily_rows: Iterable[dict[str, Any]], *, corporate_action_year_symbols: set[str] | None = None,
+              reference_price_evidence: Mapping[tuple[str, str], "CashDividendReferenceEvidence"] | None = None) -> list[dict[str, Any]]:
     """Attach independent TDX comparison results; no provider value is overwritten."""
     daily_rows = list(daily_rows)
     corporate_action_year_symbols = corporate_action_year_symbols or set()
+    reference_price_evidence = reference_price_evidence or {}
     bars = {(str(r["symbol"]), str(r["trade_date"])): r for r in daily_rows}
     by_symbol: dict[str, list[dict[str, Any]]] = {}
     for bar in daily_rows:
@@ -116,15 +121,19 @@ def reconcile(rows: list[dict[str, Any]], daily_rows: Iterable[dict[str, Any]], 
     for values in by_symbol.values():
         values.sort(key=lambda r: str(r["trade_date"]))
     previous: dict[tuple[str, str], float] = {}
+    previous_dates: dict[tuple[str, str], str] = {}
     for symbol, values in by_symbol.items():
         last: float | None = None
+        last_date: str | None = None
         for bar in values:
             key = (symbol, str(bar["trade_date"]))
-            if last is not None:
+            if last is not None and last_date is not None:
                 previous[key] = last
+                previous_dates[key] = last_date
             value = bar.get("close")
             if isinstance(value, (int, float)) and math.isfinite(float(value)):
                 last = float(value)
+                last_date = str(bar["trade_date"])
 
     for row in rows:
         key = (row["symbol"], row["trade_date"])
@@ -149,6 +158,17 @@ def reconcile(rows: list[dict[str, Any]], daily_rows: Iterable[dict[str, Any]], 
             row["preclose_reconciliation"] = "NOT_COMPARABLE"
         elif _display_equal(float(row["preclose"]), prior):
             row["preclose_reconciliation"] = "MATCH"
+        elif (evidence := reference_price_evidence.get(key)) is not None:
+            if evidence.record_date != previous_dates.get(key):
+                row["preclose_reconciliation"] = "MISMATCH"
+            else:
+                expected = evidence.expected_reference_price(prior)
+                row["reference_price_expected"] = expected
+                row["reference_price_provenance"] = evidence.provenance
+                row["reference_price_source_hash"] = evidence.source_hash
+                row["reference_price_source_url"] = evidence.source_url
+                row["reference_price_announcement_id"] = evidence.announcement_id
+                row["preclose_reconciliation"] = "MATCH_REFERENCE_PRICE_EXCEPTION" if _display_equal(float(row["preclose"]), expected) else "MISMATCH"
         elif row["symbol"] in corporate_action_year_symbols:
             # Existing local corporate_actions only holds a year, not an ex-date.
             row["preclose_reconciliation"] = "UNRESOLVED"
@@ -161,7 +181,13 @@ def reconcile(rows: list[dict[str, Any]], daily_rows: Iterable[dict[str, Any]], 
             calculated = (float(close) / float(row["preclose"]) - 1.0) * 100.0
             row["pct_chg_calculated"] = calculated
             row["pct_chg_reconciliation"] = "MATCH" if abs(calculated - float(row["pct_chg"])) <= 0.02 else "MISMATCH"
-        row["quality_status"] = "PASS" if row["preclose_reconciliation"] in {"MATCH", "NOT_COMPARABLE"} and row["pct_chg_reconciliation"] == "MATCH" else "UNRESOLVED"
+        row["quality_status"] = "PASS" if row["preclose_reconciliation"] in {"MATCH", "MATCH_REFERENCE_PRICE_EXCEPTION", "NOT_COMPARABLE"} and row["pct_chg_reconciliation"] == "MATCH" else "UNRESOLVED"
+        row["preclose_quality"] = (
+            "PASS_NORMAL_CONTINUITY" if row["preclose_reconciliation"] == "MATCH"
+            else "PASS_REFERENCE_PRICE_EXCEPTION" if row["preclose_reconciliation"] == "MATCH_REFERENCE_PRICE_EXCEPTION"
+            else "NOT_COMPARABLE" if row["preclose_reconciliation"] == "NOT_COMPARABLE"
+            else "UNRESOLVED"
+        )
     return rows
 
 

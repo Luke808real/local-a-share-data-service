@@ -1,6 +1,6 @@
 # PROJECT_STATE
 
-## Current operational snapshot — 2026-09-09
+## Current operational snapshot — 2026-09-10
 
 This section supersedes the historical 2026-08-18 snapshot below. It records
 local observations, not a new independent audit PASS. Original R2 history is
@@ -35,39 +35,44 @@ preserved below.
   `d013e171734d9c688e8c370163a617f35ce45c55c134ca6cee655b2a2c1e8f7b`.
 - PRECLOSE_COMPLETE: false; FACTS_READY: false.
 - FULL_R4A9_CONTINUATION_AUTHORIZED: false; R7_FIRST_PUBLISH_PASS: false.
-- MCP_STATUS: `status`, `instrument`, `bars`, and `latest` are read-only
-  published-R3 tools. Local JSON-RPC validation succeeded for the 2026-09-09
-  authority; this is operational evidence, not an independent audit PASS.
+- DAILY_FACTS_PHASE1_STATUS: FULL_ELIGIBLE_ONE_DAY_PUBLISHED;
+  DAILY_FACTS_PHASE1_SCOPE: `2026-09-09_FULL_ELIGIBLE`. The independent Facts
+  pointer binds the vertical slice plus a 5,208-row 2026-09-09 partition at
+  manifest hash `9b4f474ebcb0db97d9dbfdb824eb6b7e17f017a6ac8957ed3d6a8fb5e3ca21ac`.
+  The 16 exact-date preclose exceptions are bound to hash-verified official
+  CNInfo implementation announcements and reconcile as reference-price
+  exceptions; they do not change the R3 daily authority.
+- MCP_STATUS: `status`, `instrument`, `bars`, `latest`, and `facts` are
+  read-only published-authority tools. Local JSON-RPC validation succeeded for
+  the 2026-09-09 R3 and scoped Daily Facts authorities; this is operational
+  evidence, not an independent audit PASS.
 - CURRENT_READY:
   - R3 Daily RAW: READY (published through 2026-09-09; coverage remains
     PARTIAL).
   - Identity: READY (5456 formal SH/SZ instruments).
   - Publication Authority: READY (pointer-bound 2,597-file manifest).
   - LocalQuery: READY (published-manifest allowlist only).
-  - MCP: READY (read-only `status`/`instrument`/`bars`/`latest`).
+  - MCP: READY (read-only `status`/`instrument`/`bars`/`latest` plus scoped
+    `facts` authority reads).
 - CURRENT_NOT_READY:
   - Formal Preclose: NOT READY.
-  - Daily Facts: NOT READY.
+  - Daily Facts: NOT READY globally; the 2026-09-09 full-eligible one-day
+    scope is separately published and queryable through `facts`.
   - Price Limit Facts: NOT READY.
   - Turnover Facts: NOT READY.
   - ST / Trade Status Facts: NOT READY.
   - Share Capital Facts: NOT READY.
   - 5m Publication: NOT READY.
   - Limit Event Facts: NOT READY.
-- NEXT_GATE: bounded Daily Facts Phase 1 expansion from the separately
-  published vertical slice.  The first certification scope is the current
-  eligible formal SH/SZ universe for 2026-09-09 only; it is staging-only until
-  its own exact-key, provenance, tri-state, and reconciliation gates pass.
-  No R3 authority rewrite, facts exposure, or readiness-flag change is
-  permitted before a separate facts authority is verified.
-- DAILY_FACTS_2026_09_09_OFFLINE_CERTIFICATION: BLOCKED. The frozen full
-  eligible one-day ledger has 5,208 persisted RAW and 5,208 normalized facts.
-  Offline diagnosis established that the ten BaoStock `SUSPENDED` values align
-  with R3 zero-volume/zero-amount carry-forward bars; the certification now
-  treats those as valid suspension evidence, not traded-bar conflicts. Sixteen
-  preclose mismatches remain unresolved because local corporate-action data has
-  year-level, not exact-date/reference-price, evidence. No Daily Facts
-  authority was advanced.
+- NEXT_GATE: a separately authorized bounded Daily Facts expansion/backfill.
+  Do not set global readiness until full intended scope has an independent
+  authority and certification.
+- DAILY_FACTS_2026_09_09_OFFLINE_CERTIFICATION: PASS. The frozen full eligible
+  one-day ledger has 5,208 persisted RAW and 5,208 normalized facts. Ten
+  BaoStock `SUSPENDED` values align with R3 zero-volume/zero-amount
+  carry-forward bars. Sixteen preclose mismatches have exact-date,
+  hash-verified official reference-price evidence and were published only
+  after pointer-last certification; global Facts readiness is unchanged.
 - ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
   read-only MCP at `http://127.0.0.1:8766/mcp`. The private Secure MCP Tunnel
   runtime targets this loopback endpoint; its connectivity is operationally

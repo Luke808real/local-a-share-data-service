@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO / "tools"))
 
 from ashare_data.daily_facts_phase1 import DailyFactsError, reconcile  # noqa: E402
 from ashare_data.local_query import DEFAULT_DATA_ROOT, LocalQuery  # noqa: E402
+from ashare_data.reference_price_evidence import ReferencePriceEvidenceError, load_reference_price_evidence  # noqa: E402
 from run_daily_facts_phase1_full_market import _atomic_json, _db, _set_metadata, _sha, published_scope, run_paths  # noqa: E402
 
 
@@ -120,8 +121,13 @@ def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool)
                            "NORMALIZED_ROW_N": len(facts), "DUPLICATE_PK_N": len(facts) - len(keys),
                            "MISSING_PK_N": len(expected_keys - keys), "EXTRA_PK_N": len(keys - expected_keys)})
         else:
+            evidence_path = staging / "reference_price_evidence.json"
+            try:
+                reference_evidence = load_reference_price_evidence(root, evidence_path) if evidence_path.is_file() else {}
+            except ReferencePriceEvidenceError as exc:
+                raise DailyFactsError(exc.code, "reference-price evidence is invalid") from exc
             bars = _reconciliation_bars(root, start, end)
-            reconcile(facts, bars)
+            reconcile(facts, bars, reference_price_evidence=reference_evidence)
             bar_by_key = {(str(row["symbol"]), str(row["trade_date"])): row for row in bars}
             numeric_null_n = sum(any(_null_numeric(row.get(field)) for field in ("preclose", "pct_chg", "turnover_rate")) for row in facts)
             numeric_invalid_n = sum(any(not _null_numeric(row.get(field)) and _numeric(row.get(field)) is None
@@ -152,6 +158,14 @@ def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool)
             }
             result.update({"actual_key_n": len(keys), "NORMALIZED_ROW_N": len(facts), "DUPLICATE_PK_N": quality["DUPLICATE_N"],
                            "MISSING_PK_N": quality["MISSING_PK_N"], "EXTRA_PK_N": quality["EXTRA_PK_N"], "quality": quality,
+                           "NORMAL_CONTINUITY_N": sum(row.get("preclose_reconciliation") == "MATCH" for row in facts),
+                           "REFERENCE_PRICE_EXCEPTION_N": sum(row.get("preclose_reconciliation") == "MATCH_REFERENCE_PRICE_EXCEPTION" for row in facts),
+                           "SUSPENDED_N": sum(row.get("trade_status") == "SUSPENDED" for row in facts),
+                           "reference_price_evidence": {
+                               "path": evidence_path.relative_to(root).as_posix() if evidence_path.is_file() else None,
+                               "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest() if evidence_path.is_file() else None,
+                               "record_n": len(reference_evidence),
+                           },
                            "STRUCTURAL_PASS": quality["DUPLICATE_N"] == 0,
                            "COVERAGE_PASS": keys == expected_keys,
                            "PROVENANCE_PASS": quality["PROVENANCE_FAILURE_N"] == 0})
