@@ -70,6 +70,21 @@ def _null_numeric(value: Any) -> bool:
         return False
 
 
+def _trade_status_conflicts_with_r3_bar(fact: dict[str, Any], bar: dict[str, Any]) -> bool:
+    """Reject a suspended fact only when R3 proves an actual traded bar.
+
+    R3 retains a zero-volume/zero-amount price carry-forward record for a
+    suspended session.  That is not counter-evidence to BaoStock
+    ``tradestatus=0``.  Either positive metric, however, is not the bounded
+    zero-bar case and remains fail-closed.
+    """
+    if fact.get("trade_status") == "TRADING":
+        return False
+    volume = _numeric(bar.get("volume"))
+    amount = _numeric(bar.get("amount"))
+    return (volume is not None and volume > 0) or (amount is not None and amount > 0)
+
+
 def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool) -> dict[str, Any]:
     root = root.resolve()
     symbols, required, as_of, daily_manifest_hash, _relation = published_scope(root, start=start, end=end)
@@ -107,7 +122,7 @@ def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool)
         else:
             bars = _reconciliation_bars(root, start, end)
             reconcile(facts, bars)
-            bar_keys = {(str(row["symbol"]), str(row["trade_date"])) for row in bars}
+            bar_by_key = {(str(row["symbol"]), str(row["trade_date"])): row for row in bars}
             numeric_null_n = sum(any(_null_numeric(row.get(field)) for field in ("preclose", "pct_chg", "turnover_rate")) for row in facts)
             numeric_invalid_n = sum(any(not _null_numeric(row.get(field)) and _numeric(row.get(field)) is None
                                         for field in ("preclose", "pct_chg", "turnover_rate")) for row in facts)
@@ -124,7 +139,11 @@ def certify(root: Path, *, run_name: str, start: date, end: date, execute: bool)
                 "UNKNOWN_N": sum(row.get("quality_status") == "UNKNOWN" for row in facts),
                 "PRECLOSE_UNRESOLVED_N": sum(row.get("preclose_reconciliation") in {"MISMATCH", "UNRESOLVED"} for row in facts),
                 "PCT_CHG_UNRESOLVED_N": sum(row.get("pct_chg_reconciliation") in {"MISMATCH", "UNKNOWN"} for row in facts),
-                "TRADE_STATUS_CONFLICT_N": sum((row.get("symbol"), row.get("trade_date")) in bar_keys and row.get("trade_status") != "TRADING" for row in facts),
+                "TRADE_STATUS_CONFLICT_N": sum(
+                    _trade_status_conflicts_with_r3_bar(row, bar_by_key[(row.get("symbol"), row.get("trade_date"))])
+                    for row in facts
+                    if (row.get("symbol"), row.get("trade_date")) in bar_by_key
+                ),
                 "IS_ST_UNKNOWN_N": sum(row.get("is_st") == "UNKNOWN" for row in facts),
                 "NULL_NUMERIC_N": numeric_null_n,
                 "INVALID_NUMERIC_N": numeric_invalid_n,
@@ -160,7 +179,7 @@ def _reconciliation_bars(root: Path, start: date, end: date) -> list[dict[str, A
     # normal CN market weekend/holiday gap; the start boundary itself remains
     # the exact expected-set authority.
     with LocalQuery(root) as query:
-        return query._execute("select symbol, cast(trade_date as varchar) as trade_date, close from " + query._daily_relation +
+        return query._execute("select symbol, cast(trade_date as varchar) as trade_date, close, volume, amount from " + query._daily_relation +
                               " where trade_date between ? and ?", [start - timedelta(days=7), end])
 
 

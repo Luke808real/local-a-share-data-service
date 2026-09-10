@@ -1,0 +1,1373 @@
+{
+  "conclusion": {
+    "certification_repair_authorized": false,
+    "publication_allowed": false,
+    "reason": "No exact-date local corporate-action/reference-price authority exists for the 16 preclose keys; status conflicts retain the provider and R3 evidence without changing tri-state semantics."
+  },
+  "counts": {
+    "ADAPTER_BUG_N": 0,
+    "INTERSECTION_N": 0,
+    "NULL_NUMERIC_INTERSECTION_TRADE_STATUS_CONFLICT_N": 10,
+    "NULL_NUMERIC_KEY_N": 10,
+    "OTHER_RESOLVED_N": 10,
+    "PRECLOSE_KEY_N": 16,
+    "PRECLOSE_ONLY_N": 16,
+    "PROVIDER_STATUS_CONFLICT_N": 0,
+    "REFERENCE_PRICE_EXCEPTION_N": 0,
+    "STILL_UNRESOLVED_N": 16,
+    "TRADE_STATUS_KEY_N": 10,
+    "TRADE_STATUS_ONLY_N": 10
+  },
+  "network_provider_call_n": 0,
+  "preclose_mismatches": [
+    {
+      "baostock_preclose": 79.67,
+      "classification": "UNRESOLVED",
+      "difference": -0.5,
+      "difference_pct": -0.6236746912810278,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.4,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "001400.SZ",
+          "transfer_ratio": 0.0
+        },
+        {
+          "action_type": "bonus",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.4,
+          "cash_dividend": 0.0,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "001400.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "江顺科技",
+      "provider_raw_values": {
+        "code": "sz.001400",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-2.309500",
+        "preclose": "79.6700",
+        "tradestatus": "1",
+        "turn": "5.374800"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 132949920.0,
+        "close": 80.17,
+        "high": 81.74,
+        "low": 79.2,
+        "open": 80.02,
+        "symbol": "001400.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 1650400
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 135978912.0,
+        "close": 77.83,
+        "high": 80.52,
+        "low": 77.48,
+        "open": 80.01,
+        "symbol": "001400.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 1731400
+      },
+      "r3_previous_published_close": 80.17,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "001400.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 5.86,
+      "classification": "UNRESOLVED",
+      "difference": -0.019999999999999574,
+      "difference_pct": -0.3401360544217614,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.020000000298023225,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002073.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "软控股份",
+      "provider_raw_values": {
+        "code": "sz.002073",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-0.341300",
+        "preclose": "5.8600",
+        "tradestatus": "1",
+        "turn": "0.859500"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 59211484.0,
+        "close": 5.88,
+        "high": 5.9,
+        "low": 5.82,
+        "open": 5.84,
+        "symbol": "002073.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 10084200
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 50948832.0,
+        "close": 5.84,
+        "high": 5.89,
+        "low": 5.81,
+        "open": 5.87,
+        "symbol": "002073.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 8716700
+      },
+      "r3_previous_published_close": 5.88,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "002073.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 25.48,
+      "classification": "UNRESOLVED",
+      "difference": -0.5,
+      "difference_pct": -1.924557351809084,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "bonus",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.3,
+          "cash_dividend": 0.0,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002315.SZ",
+          "transfer_ratio": 0.0
+        },
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.7,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002315.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "焦点科技",
+      "provider_raw_values": {
+        "code": "sz.002315",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-2.040800",
+        "preclose": "25.4800",
+        "tradestatus": "1",
+        "turn": "2.700500"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 201186800.0,
+        "close": 25.98,
+        "high": 26.4,
+        "low": 25.7,
+        "open": 26.02,
+        "symbol": "002315.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 7717900
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 178387072.0,
+        "close": 24.96,
+        "high": 25.49,
+        "low": 24.77,
+        "open": 25.48,
+        "symbol": "002315.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 7131000
+      },
+      "r3_previous_published_close": 25.98,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "002315.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 12.38,
+      "classification": "UNRESOLVED",
+      "difference": -0.33000000000000007,
+      "difference_pct": -2.596380802517703,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.32999999523162843,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002322.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "理工能科",
+      "provider_raw_values": {
+        "code": "sz.002322",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-0.888500",
+        "preclose": "12.3800",
+        "tradestatus": "1",
+        "turn": "1.329700"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 63760324.0,
+        "close": 12.71,
+        "high": 12.77,
+        "low": 12.6,
+        "open": 12.77,
+        "symbol": "002322.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 5026200
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 57275164.0,
+        "close": 12.27,
+        "high": 12.39,
+        "low": 12.16,
+        "open": 12.37,
+        "symbol": "002322.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 4672200
+      },
+      "r3_previous_published_close": 12.71,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "002322.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 8.18,
+      "classification": "UNRESOLVED",
+      "difference": -0.20000000000000107,
+      "difference_pct": -2.3866348448687473,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.3,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002441.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "众业达",
+      "provider_raw_values": {
+        "code": "sz.002441",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "0.489000",
+        "preclose": "8.1800",
+        "tradestatus": "1",
+        "turn": "1.114700"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 38839764.0,
+        "close": 8.38,
+        "high": 8.4,
+        "low": 8.3,
+        "open": 8.33,
+        "symbol": "002441.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 4645400
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 36503488.0,
+        "close": 8.22,
+        "high": 8.26,
+        "low": 8.14,
+        "open": 8.22,
+        "symbol": "002441.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 4447300
+      },
+      "r3_previous_published_close": 8.38,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "002441.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 18.61,
+      "classification": "UNRESOLVED",
+      "difference": -0.3000000000000007,
+      "difference_pct": -1.586462189317825,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.6,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002833.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "弘亚数控",
+      "provider_raw_values": {
+        "code": "sz.002833",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "0.214900",
+        "preclose": "18.6100",
+        "tradestatus": "1",
+        "turn": "1.043900"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 76542296.0,
+        "close": 18.91,
+        "high": 19.15,
+        "low": 18.77,
+        "open": 19.08,
+        "symbol": "002833.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 4046900
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 56774064.0,
+        "close": 18.65,
+        "high": 18.69,
+        "low": 18.38,
+        "open": 18.6,
+        "symbol": "002833.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 3059200
+      },
+      "r3_previous_published_close": 18.91,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "002833.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 46.9,
+      "classification": "UNRESOLVED",
+      "difference": -0.5,
+      "difference_pct": -1.0548523206751055,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.7199999809265136,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "002841.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "视源股份",
+      "provider_raw_values": {
+        "code": "sz.002841",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-0.383800",
+        "preclose": "46.9000",
+        "tradestatus": "1",
+        "turn": "0.854200"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 357282624.0,
+        "close": 47.4,
+        "high": 47.95,
+        "low": 46.8,
+        "open": 47.95,
+        "symbol": "002841.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 7564900
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 209476112.0,
+        "close": 46.72,
+        "high": 47.55,
+        "low": 46.56,
+        "open": 46.99,
+        "symbol": "002841.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 4453100
+      },
+      "r3_previous_published_close": 47.4,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "002841.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 16.7,
+      "classification": "UNRESOLVED",
+      "difference": -0.1999999999999993,
+      "difference_pct": -1.1834319526627177,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.35,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "300196.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "长海股份",
+      "provider_raw_values": {
+        "code": "sz.300196",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "1.317400",
+        "preclose": "16.7000",
+        "tradestatus": "1",
+        "turn": "3.576300"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 188093968.0,
+        "close": 16.9,
+        "high": 17.25,
+        "low": 16.75,
+        "open": 16.85,
+        "symbol": "300196.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 11063200
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 150044720.0,
+        "close": 16.92,
+        "high": 17.15,
+        "low": 16.82,
+        "open": 16.85,
+        "symbol": "300196.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 8839400
+      },
+      "r3_previous_published_close": 16.9,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "300196.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 15.46,
+      "classification": "UNRESOLVED",
+      "difference": -0.15999999999999837,
+      "difference_pct": -1.0243277848911547,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.2700000047683716,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "300622.SZ",
+          "transfer_ratio": 0.0
+        },
+        {
+          "action_type": "bonus",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.4,
+          "cash_dividend": 0.0,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "300622.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "博士眼镜",
+      "provider_raw_values": {
+        "code": "sz.300622",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-1.617100",
+        "preclose": "15.4600",
+        "tradestatus": "1",
+        "turn": "2.422900"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 94023736.0,
+        "close": 15.62,
+        "high": 15.75,
+        "low": 15.54,
+        "open": 15.72,
+        "symbol": "300622.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 6021500
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 81627528.0,
+        "close": 15.21,
+        "high": 15.5,
+        "low": 15.11,
+        "open": 15.48,
+        "symbol": "300622.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 5349700
+      },
+      "r3_previous_published_close": 15.62,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "300622.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 22.38,
+      "classification": "UNRESOLVED",
+      "difference": -0.1999999999999993,
+      "difference_pct": -0.8857395925597844,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.2,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "301151.SZ",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "冠龙节能",
+      "provider_raw_values": {
+        "code": "sz.301151",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "0.312800",
+        "preclose": "22.3800",
+        "tradestatus": "1",
+        "turn": "3.593200"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 197846128.0,
+        "close": 22.58,
+        "high": 22.84,
+        "low": 21.59,
+        "open": 22.0,
+        "symbol": "301151.SZ",
+        "trade_date": "2026-09-08",
+        "volume": 8890200
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 135553536.0,
+        "close": 22.45,
+        "high": 22.82,
+        "low": 22.01,
+        "open": 22.35,
+        "symbol": "301151.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 6064600
+      },
+      "r3_previous_published_close": 22.58,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "301151.SZ",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 28.73,
+      "classification": "UNRESOLVED",
+      "difference": -0.09999999999999787,
+      "difference_pct": -0.34686090877557363,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.3,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "600114.SH",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "东睦股份",
+      "provider_raw_values": {
+        "code": "sh.600114",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-0.487300",
+        "preclose": "28.7300",
+        "tradestatus": "1",
+        "turn": "1.529500"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 554080960.0,
+        "close": 28.83,
+        "high": 30.35,
+        "low": 28.75,
+        "open": 30.13,
+        "symbol": "600114.SH",
+        "trade_date": "2026-09-08",
+        "volume": 18923400
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 271040928.0,
+        "close": 28.59,
+        "high": 29.04,
+        "low": 28.41,
+        "open": 28.7,
+        "symbol": "600114.SH",
+        "trade_date": "2026-09-09",
+        "volume": 9427300
+      },
+      "r3_previous_published_close": 28.83,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "600114.SH",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 20.02,
+      "classification": "UNRESOLVED",
+      "difference": -0.28000000000000114,
+      "difference_pct": -1.3793103448275916,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.2650000095367432,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "603992.SH",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "松霖科技",
+      "provider_raw_values": {
+        "code": "sh.603992",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-0.050000",
+        "preclose": "20.0200",
+        "tradestatus": "1",
+        "turn": "0.726800"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 65779472.0,
+        "close": 20.3,
+        "high": 20.53,
+        "low": 20.12,
+        "open": 20.43,
+        "symbol": "603992.SH",
+        "trade_date": "2026-09-08",
+        "volume": 3238700
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 64602776.0,
+        "close": 20.01,
+        "high": 20.25,
+        "low": 19.9,
+        "open": 20.1,
+        "symbol": "603992.SH",
+        "trade_date": "2026-09-09",
+        "volume": 3220100
+      },
+      "r3_previous_published_close": 20.3,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "603992.SH",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 18.85,
+      "classification": "UNRESOLVED",
+      "difference": -0.08999999999999986,
+      "difference_pct": -0.4751847940865884,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.2859999895095825,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "603993.SH",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "洛阳钼业",
+      "provider_raw_values": {
+        "code": "sh.603993",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "1.273200",
+        "preclose": "18.8500",
+        "tradestatus": "1",
+        "turn": "1.123600"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 4638398464.0,
+        "close": 18.94,
+        "high": 19.1,
+        "low": 18.76,
+        "open": 18.8,
+        "symbol": "603993.SH",
+        "trade_date": "2026-09-08",
+        "volume": 244839500
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 3732174080.0,
+        "close": 19.09,
+        "high": 19.3,
+        "low": 18.75,
+        "open": 18.94,
+        "symbol": "603993.SH",
+        "trade_date": "2026-09-09",
+        "volume": 196181900
+      },
+      "r3_previous_published_close": 18.94,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "603993.SH",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 8.02,
+      "classification": "UNRESOLVED",
+      "difference": -0.20000000000000107,
+      "difference_pct": -2.433090024330913,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.20999999046325685,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "605377.SH",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "华旺科技",
+      "provider_raw_values": {
+        "code": "sh.605377",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "0.623400",
+        "preclose": "8.0200",
+        "tradestatus": "1",
+        "turn": "0.976000"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 40424880.0,
+        "close": 8.22,
+        "high": 8.24,
+        "low": 8.15,
+        "open": 8.17,
+        "symbol": "605377.SH",
+        "trade_date": "2026-09-08",
+        "volume": 4933600
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 43600464.0,
+        "close": 8.07,
+        "high": 8.1,
+        "low": 7.95,
+        "open": 8.03,
+        "symbol": "605377.SH",
+        "trade_date": "2026-09-09",
+        "volume": 5433000
+      },
+      "r3_previous_published_close": 8.22,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "605377.SH",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 21.89,
+      "classification": "UNRESOLVED",
+      "difference": -0.25,
+      "difference_pct": -1.1291779584462511,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.25,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "688128.SH",
+          "transfer_ratio": 0.0
+        },
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.3,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "688128.SH",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "中国电研",
+      "provider_raw_values": {
+        "code": "sh.688128",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "0.274100",
+        "preclose": "21.8900",
+        "tradestatus": "1",
+        "turn": "0.279400"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 29215288.0,
+        "close": 22.14,
+        "high": 22.24,
+        "low": 21.95,
+        "open": 22.08,
+        "symbol": "688128.SH",
+        "trade_date": "2026-09-08",
+        "volume": 1321000
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 24792908.0,
+        "close": 21.95,
+        "high": 22.04,
+        "low": 21.81,
+        "open": 21.92,
+        "symbol": "688128.SH",
+        "trade_date": "2026-09-09",
+        "volume": 1130300
+      },
+      "r3_previous_published_close": 22.14,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "688128.SH",
+      "trade_date": "2026-09-09"
+    },
+    {
+      "baostock_preclose": 106.87,
+      "classification": "UNRESOLVED",
+      "difference": -0.12999999999999545,
+      "difference_pct": -0.12149532710279949,
+      "evidence_assessment": "YEAR_ONLY_CORPORATE_ACTION_EVIDENCE_NOT_EXACT_DATE",
+      "exception_type": "PRECLOSE_MISMATCH",
+      "local_corporate_action_rows": [
+        {
+          "action_type": "cash_dividend",
+          "allotment_price": null,
+          "allotment_ratio": null,
+          "bonus_ratio": 0.0,
+          "cash_dividend": 0.1799999952316284,
+          "data_version": "v1",
+          "ex_date": 2026,
+          "source": "tdx_protocol",
+          "symbol": "688271.SH",
+          "transfer_ratio": 0.0
+        }
+      ],
+      "name": "联影医疗",
+      "provider_raw_values": {
+        "code": "sh.688271",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "-3.153400",
+        "preclose": "106.8700",
+        "tradestatus": "1",
+        "turn": "0.485800"
+      },
+      "r3_2026_09_08_ohlcv": {
+        "amount": 324803840.0,
+        "close": 107.0,
+        "high": 107.66,
+        "low": 106.26,
+        "open": 107.24,
+        "symbol": "688271.SH",
+        "trade_date": "2026-09-08",
+        "volume": 3036400
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 417796032.0,
+        "close": 103.5,
+        "high": 106.87,
+        "low": 103.37,
+        "open": 106.55,
+        "symbol": "688271.SH",
+        "trade_date": "2026-09-09",
+        "volume": 4003400
+      },
+      "r3_previous_published_close": 107.0,
+      "r3_previous_trade_date": "2026-09-08",
+      "symbol": "688271.SH",
+      "trade_date": "2026-09-09"
+    }
+  ],
+  "run_name": "daily_facts_phase1_20260909_v01",
+  "schema": "ASL_DAILY_FACTS_20260909_BLOCKER_DIAGNOSIS_V01",
+  "trade_date": "2026-09-09",
+  "trade_status_conflicts": [
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "2.4600",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "*ST康佳A",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sz.000016",
+        "date": "2026-09-09",
+        "isST": "1",
+        "pctChg": "",
+        "preclose": "2.4600",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 2.46,
+        "high": 2.46,
+        "low": 2.46,
+        "open": 2.46,
+        "symbol": "000016.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "000016.SZ",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "0.7700",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "*ST萃华",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sz.002731",
+        "date": "2026-09-09",
+        "isST": "1",
+        "pctChg": "",
+        "preclose": "0.7700",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 0.77,
+        "high": 0.77,
+        "low": 0.77,
+        "open": 0.77,
+        "symbol": "002731.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "002731.SZ",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "53.0000",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "香山股份",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sz.002870",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "53.0000",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 53.0,
+        "high": 53.0,
+        "low": 53.0,
+        "open": 53.0,
+        "symbol": "002870.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "002870.SZ",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "8.6000",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "优彩资源",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sz.002998",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "8.6000",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 8.6,
+        "high": 8.6,
+        "low": 8.6,
+        "open": 8.6,
+        "symbol": "002998.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "002998.SZ",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "3.3100",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "*ST元道",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sz.301139",
+        "date": "2026-09-09",
+        "isST": "1",
+        "pctChg": "",
+        "preclose": "3.3100",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 3.31,
+        "high": 3.31,
+        "low": 3.31,
+        "open": 3.31,
+        "symbol": "301139.SZ",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "301139.SZ",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "5.3100",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "新华传媒",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sh.600825",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "5.3100",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 5.31,
+        "high": 5.31,
+        "low": 5.31,
+        "open": 5.31,
+        "symbol": "600825.SH",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "600825.SH",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "6.0400",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "雪天盐业",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sh.600929",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "6.0400",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 6.04,
+        "high": 6.04,
+        "low": 6.04,
+        "open": 6.04,
+        "symbol": "600929.SH",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "600929.SH",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "18.6700",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "龙版传媒",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sh.605577",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "18.6700",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 18.67,
+        "high": 18.67,
+        "low": 18.67,
+        "open": 18.67,
+        "symbol": "605577.SH",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "605577.SH",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "44.4000",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "金橙子",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sh.688291",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "44.4000",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 44.4,
+        "high": 44.4,
+        "low": 44.4,
+        "open": 44.4,
+        "symbol": "688291.SH",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "688291.SH",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    },
+    {
+      "adapter_contract": "tradestatus '0' normalizes to SUSPENDED; empty pctChg/turn normalize to null, never zero",
+      "amount": 0.0,
+      "baostock_numeric_raw_fields": {
+        "pct_chg": null,
+        "preclose": "45.2200",
+        "turnover_rate": null
+      },
+      "baostock_tradestatus_raw": "0",
+      "classification": "PASS_SUSPENDED_ZERO_BAR",
+      "exception_type": "TRADE_STATUS_CONFLICT",
+      "name": "有研硅",
+      "normalized_trade_status": "SUSPENDED",
+      "null_numeric_fields": [
+        "pct_chg",
+        "turnover_rate"
+      ],
+      "provider_raw_values": {
+        "code": "sh.688432",
+        "date": "2026-09-09",
+        "isST": "0",
+        "pctChg": "",
+        "preclose": "45.2200",
+        "tradestatus": "0",
+        "turn": ""
+      },
+      "r3_2026_09_09_ohlcv": {
+        "amount": 0.0,
+        "close": 45.22,
+        "high": 45.22,
+        "low": 45.22,
+        "open": 45.22,
+        "symbol": "688432.SH",
+        "trade_date": "2026-09-09",
+        "volume": 0
+      },
+      "symbol": "688432.SH",
+      "trade_date": "2026-09-09",
+      "volume": 0.0
+    }
+  ]
+}

@@ -39,7 +39,7 @@ timestamp for every persisted symbol.
 | DATE_MISMATCH_N | 0 |
 | PRECLOSE_UNRESOLVED_N | **16** |
 | PCT_CHG_UNRESOLVED_N | 0 |
-| TRADE_STATUS_CONFLICT_N | **10** |
+| TRADE_STATUS_CONFLICT_N | 0 |
 | IS_ST_UNKNOWN_N | 0 |
 | INVALID_NUMERIC_N | 0 |
 | INVALID_DOMAIN_N | 0 |
@@ -48,8 +48,9 @@ timestamp for every persisted symbol.
 
 `NULL_NUMERIC_N` is reported separately: these are BaoStock nullable
 `pct_chg`/`turnover_rate` values for records labeled `SUSPENDED`. They were not
-coerced to zero. The same ten records are independently publication-blocking
-because R3 has a same-date bar while BaoStock says `SUSPENDED`.
+coerced to zero. The same ten keys have zero-volume/zero-amount R3
+carry-forward bars with all OHLC equal to the BaoStock preclose, so they are
+valid suspended sessions rather than traded-bar conflicts.
 
 ## Preclose unresolved keys
 
@@ -77,11 +78,13 @@ may be reclassified as resolved.
 | 688128.SH | 21.89 | 22.14 | -0.25 |
 | 688271.SH | 106.87 | 107.00 | -0.13 |
 
-## Trade-status conflicts
+## Trade-status diagnosis
 
-BaoStock returned `SUSPENDED` for the following keys despite a 2026-09-09 R3
-bar: `000016.SZ`, `002731.SZ`, `002870.SZ`, `002998.SZ`, `301139.SZ`,
-`600825.SH`, `600929.SH`, `605577.SH`, `688291.SH`, `688432.SH`.
+BaoStock returned `SUSPENDED` for the following keys, each with a 2026-09-09
+R3 zero-volume/zero-amount carry-forward bar: `000016.SZ`, `002731.SZ`,
+`002870.SZ`, `002998.SZ`, `301139.SZ`, `600825.SH`, `600929.SH`,
+`605577.SH`, `688291.SH`, `688432.SH`. The certification contract now
+distinguishes these from positive-activity R3 bars, which remain fail-closed.
 
 ## Authority decision
 

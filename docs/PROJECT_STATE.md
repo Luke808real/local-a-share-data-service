@@ -61,9 +61,13 @@ preserved below.
   No R3 authority rewrite, facts exposure, or readiness-flag change is
   permitted before a separate facts authority is verified.
 - DAILY_FACTS_2026_09_09_OFFLINE_CERTIFICATION: BLOCKED. The frozen full
-  eligible one-day ledger has 5,208 persisted RAW and 5,208 normalized facts,
-  but 16 unresolved preclose mismatches and 10 BaoStock `SUSPENDED` values
-  conflict with same-date R3 bars. No Daily Facts authority was advanced.
+  eligible one-day ledger has 5,208 persisted RAW and 5,208 normalized facts.
+  Offline diagnosis established that the ten BaoStock `SUSPENDED` values align
+  with R3 zero-volume/zero-amount carry-forward bars; the certification now
+  treats those as valid suspension evidence, not traded-bar conflicts. Sixteen
+  preclose mismatches remain unresolved because local corporate-action data has
+  year-level, not exact-date/reference-price, evidence. No Daily Facts
+  authority was advanced.
 - ACTIVE_BACKGROUND_JOB: login LaunchAgent `io.asl.market-data-mcp`, serving
   read-only MCP at `http://127.0.0.1:8766/mcp`. The private Secure MCP Tunnel
   runtime targets this loopback endpoint; its connectivity is operationally

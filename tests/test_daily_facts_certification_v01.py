@@ -54,3 +54,12 @@ def test_nullable_parquet_nan_is_not_coerced_to_zero_or_malformed():
     assert cert._null_numeric(float("nan")) is True
     assert cert._numeric(float("nan")) is None
     assert cert._numeric("3.25") == 3.25
+
+
+def test_suspended_zero_bar_is_not_a_trade_status_conflict_but_real_activity_is():
+    """A zero-volume R3 carry-forward bar corroborates, not defeats, suspension."""
+    suspended = {"trade_status": "SUSPENDED"}
+    assert cert._trade_status_conflicts_with_r3_bar(suspended, {"volume": 0, "amount": 0}) is False
+    assert cert._trade_status_conflicts_with_r3_bar(suspended, {"volume": 1, "amount": 0}) is True
+    assert cert._trade_status_conflicts_with_r3_bar(suspended, {"volume": 0, "amount": 1}) is True
+    assert cert._trade_status_conflicts_with_r3_bar({"trade_status": "TRADING"}, {"volume": 1, "amount": 1}) is False
