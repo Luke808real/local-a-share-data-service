@@ -1,0 +1,238 @@
+--- a/cnequity/adapters/eastmoney/valuation.py	2026-09-11 12:33:58
++++ b/cnequity/adapters/eastmoney/valuation.py	2026-09-11 12:28:25
+@@ -10,12 +10,17 @@
+ from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
+ from cnequity.adapters.eastmoney.common import _to_float
+ from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
++from cnequity.domain.snapshot_guard import assert_snapshot_matches_session
+ 
+ # f8 is the turnover rate in percent (换手率), the same field
+ # ``adapters/eastmoney/rotation.py`` already reads as ``turnover_pct``. It
+ # rides along on the clist page this adapter already requests, so adding it
+ # costs no extra provider call.
+-_VALUATION_FIELDS = "f12,f13,f8,f9,f23,f45,f20,f21"
++#
++# f124 is the vendor's per-row last-update epoch. It is what makes the
++# snapshot-date guard possible without a second request: the same response that
++# carries the values also says which session they describe.
++_VALUATION_FIELDS = "f12,f13,f8,f9,f23,f45,f20,f21,f124"
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -48,11 +53,19 @@
+                     "total_mv": _to_float(item.get("f20")),
+                     "float_mv": _to_float(item.get("f21")),
+                     "turnover_rate": _to_float(item.get("f8")),
++                    "updated_at": item.get("f124"),
+                 }
+             )
+     finally:
+         if owns:
+             client.close()
++    # A snapshot page describes whichever session the vendor is currently
++    # serving. Writing it under a caller-supplied trade_date it does not
++    # describe publishes false data, and an intraday capture publishes partial
++    # data. Both are refused here, before anything reaches staging, using the
++    # stamps that came back on this very response.
++    if rows:
++        assert_snapshot_matches_session(rows, trade_date)
+     return (
+         pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
+         if rows
+--- /dev/null
++++ b/cnequity/domain/snapshot_guard.py
+@@ -0,0 +1,194 @@
++"""Snapshot-date guard for the Daily Facts snapshot datasets.
++
++CNEquity declares ``valuation_metrics`` as ``fetch_semantics = snapshot``: the
++vendor serves a live page stamped with the requested date, and a past date can
++never be replayed. Two failure modes follow, both observed on the live endpoint:
++
++* **Stale or future stamping.** Passing ``trade_date=2026-09-09`` while the page
++  describes the 2026-09-10 close produces a partition that is simply false.
++* **Intraday capture.** During the session the page continuously updates, so the
++  values are partial and the session has not settled.
++
++The guard therefore refuses to let a caller *declare* a session. It resolves the
++session the vendor's own payload describes and requires it to match the intended
++trade date, from a settled window.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import date, datetime, time
++from typing import Any, Iterable, Mapping, Sequence
++from zoneinfo import ZoneInfo
++
++#: The vendor's per-row last-update epoch, in seconds. It is the only field in
++#: the payload that says *when* the values were true.
++#: Both spellings are accepted so the guard works on a raw vendor payload and on
++#: an adapter row without the caller having to reshape either.
++UPDATED_AT_FIELDS = ("updated_at", "f124")
++
++#: Field carrying the turnover rate the guard sanity-checks the cross-section on.
++TURNOVER_FIELDS = ("turnover_rate", "f8")
++
++#: A snapshot is only usable once the session has settled. This matches the
++#: cutoff CNEquity already applies to its own daily bar window.
++SETTLED_AFTER = time(15, 5)
++
++#: Share of rows that must carry the resolved session's stamp. Below this the
++#: page is a mixture rather than one coherent observation.
++MIN_SESSION_COVERAGE = 0.90
++
++#: Share of rows that must carry a non-null, non-zero turnover value when the
++#: target session was an ordinary trading day. A next-session reset publishes
++#: zeros for the whole market, which is the case this catches.
++MIN_TURNOVER_PRESENT = 0.50
++
++SHANGHAI = ZoneInfo("Asia/Shanghai")
++
++
++class SnapshotWindowError(RuntimeError):
++    """Stable error for a snapshot that cannot be trusted for its target date."""
++
++    def __init__(self, code: str, message: str) -> None:
++        super().__init__(message)
++        self.code = code
++
++
++def _shanghai(value: datetime) -> datetime:
++    if value.tzinfo is None:
++        return value.replace(tzinfo=SHANGHAI)
++    return value.astimezone(SHANGHAI)
++
++
++@dataclass(frozen=True)
++class SnapshotObservation:
++    """What the vendor payload itself says about when it was true."""
++
++    row_n: int
++    stamped_n: int
++    latest_update: datetime | None
++    session_date: date | None
++    session_coverage: float
++    turnover_present_n: int
++    turnover_zero_n: int
++
++    @property
++    def is_settled(self) -> bool:
++        return self.latest_update is not None and self.latest_update.time() >= SETTLED_AFTER
++
++    def as_dict(self) -> dict[str, Any]:
++        return {
++            "row_n": self.row_n,
++            "stamped_n": self.stamped_n,
++            "latest_update": self.latest_update.isoformat() if self.latest_update else None,
++            "session_date": self.session_date.isoformat() if self.session_date else None,
++            "session_coverage": round(self.session_coverage, 4),
++            "turnover_present_n": self.turnover_present_n,
++            "turnover_zero_n": self.turnover_zero_n,
++            "is_settled": self.is_settled,
++        }
++
++
++def observe_snapshot(rows: Iterable[Mapping[str, Any]]) -> SnapshotObservation:
++    """Read the session a vendor payload actually describes.
++
++    The session is taken from the **latest** stamp in the cross-section, not the
++    modal one: a page mixes long-halted rows that keep an old stamp with live
++    ones, and only the newest stamp tells us how far the page has advanced.
++    """
++    rows = list(rows)
++    updates: list[datetime] = []
++    turnover_present = 0
++    turnover_zero = 0
++    for row in rows:
++        raw = next((row.get(name) for name in UPDATED_AT_FIELDS if row.get(name) is not None), None)
++        if isinstance(raw, (int, float)) and raw > 0:
++            try:
++                updates.append(datetime.fromtimestamp(float(raw), tz=SHANGHAI))
++            except (OverflowError, OSError, ValueError):
++                pass
++        value = next((row.get(name) for name in TURNOVER_FIELDS if row.get(name) is not None), None)
++        if isinstance(value, (int, float)):
++            turnover_present += 1
++            if float(value) == 0.0:
++                turnover_zero += 1
++
++    latest = max(updates) if updates else None
++    session = latest.date() if latest else None
++    if session is None or not updates:
++        coverage = 0.0
++    else:
++        same = sum(1 for value in updates if value.date() == session)
++        coverage = same / len(updates)
++    return SnapshotObservation(
++        row_n=len(rows),
++        stamped_n=len(updates),
++        latest_update=latest,
++        session_date=session,
++        session_coverage=coverage,
++        turnover_present_n=turnover_present,
++        turnover_zero_n=turnover_zero,
++    )
++
++
++def assert_snapshot_matches_session(
++    rows: Sequence[Mapping[str, Any]],
++    target: date,
++    *,
++    now: datetime | None = None,
++    require_settled: bool = True,
++    min_session_coverage: float = MIN_SESSION_COVERAGE,
++    min_turnover_present: float = MIN_TURNOVER_PRESENT,
++) -> SnapshotObservation:
++    """Fail closed unless the payload really describes ``target``, settled.
++
++    The checks run in the order a caller would reason about them: is anything
++    stamped, is it the right day, has that day finished, is the cross-section
++    coherent, and does it carry real values rather than a reset.
++    """
++    observation = observe_snapshot(rows)
++    moment = _shanghai(now or datetime.now(tz=SHANGHAI))
++
++    if observation.stamped_n == 0:
++        raise SnapshotWindowError(
++            "SNAPSHOT_UNSTAMPED",
++            "no row carries a vendor update timestamp, so the described session is unknown",
++        )
++    if observation.session_date != target:
++        raise SnapshotWindowError(
++            "SNAPSHOT_SESSION_MISMATCH",
++            f"vendor payload describes {observation.session_date}, not the requested {target}",
++        )
++    if observation.session_coverage < min_session_coverage:
++        raise SnapshotWindowError(
++            "SNAPSHOT_SESSION_INCOHERENT",
++            f"only {observation.session_coverage:.1%} of stamped rows belong to {target}",
++        )
++    if require_settled:
++        if observation.latest_update is None or not observation.is_settled:
++            raise SnapshotWindowError(
++                "SNAPSHOT_NOT_SETTLED",
++                f"latest vendor stamp is {observation.latest_update} and the session is not "
++                f"final before {SETTLED_AFTER} Asia/Shanghai (now {moment:%F %T})",
++            )
++        if moment.time() < SETTLED_AFTER:
++            raise SnapshotWindowError(
++                "SNAPSHOT_WINDOW_NOT_OPEN",
++                f"local time {moment:%F %T} is before the {SETTLED_AFTER} settlement cutoff; "
++                "an intraday capture is partial and must not be published",
++            )
++    if observation.turnover_present_n == 0:
++        raise SnapshotWindowError(
++            "SNAPSHOT_TURNOVER_ABSENT",
++            "no row carries a turnover value",
++        )
++    present = observation.turnover_present_n - observation.turnover_zero_n
++    share = present / observation.turnover_present_n
++    if share < min_turnover_present:
++        raise SnapshotWindowError(
++            "SNAPSHOT_TURNOVER_RESET",
++            f"only {share:.1%} of rows carry a non-zero turnover; a whole-market zero "
++            "cross-section is the next-session reset, not an observation of "
++            f"{target}",
++        )
++    return observation
