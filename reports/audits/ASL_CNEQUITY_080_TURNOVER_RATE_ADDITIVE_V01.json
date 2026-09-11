@@ -1,0 +1,213 @@
+{
+  "schema": "ASL_CNEQUITY_080_TURNOVER_RATE_ADDITIVE_V01",
+  "base_head": "1f00e832bd5c94ca7e841023c6f3ae2d11d0feb1",
+  "branch": "codex/r3-incremental-hardening-daily-facts-phase1-v01",
+  "cnequity_upstream_base": {
+    "version": "0.8.0",
+    "sha": "d453853da766b3ba3e44489c0fb6e0089243fa25"
+  },
+  "local_patch": {
+    "status": "APPLIED_TO_INSTALLED_PACKAGE",
+    "patch_file": "patches/cnequity/0001-valuation-metrics-turnover-rate.patch",
+    "record": "patches/cnequity/README.md",
+    "contract_vintage": "patches/cnequity/contracts_registry_after_patch.json",
+    "files": [
+      "adapters/eastmoney/valuation.py",
+      "domain/schemas.py",
+      "domain/datasets.py"
+    ],
+    "file_hashes_sha256_16": {
+      "valuation": "4ee536f43f38494a",
+      "schemas": "69bfa5380f3ab311",
+      "datasets": "cb4ed8999c2dbe33"
+    },
+    "upstream_pr": "not_submitted",
+    "is_patch_upstreamable": "YES"
+  },
+  "eastmoney_field_evidence": {
+    "field": "f8",
+    "semantics": "turnover rate (换手率)",
+    "unit": "PERCENT",
+    "angular_evidence": [
+      "existing adapter convention: rotation.py reads f8 as turnover_pct; kline uses f61",
+      "bounded live sample: numeric float for 100/100 rows, range 0.62-80.84, no nulls/dashes",
+      "cross-vendor same-session agreement: 5196 comparables, 97.56% within 1%, 99.38% within 2%"
+    ],
+    "cross_vendor_method": "TDX volume / BaoStock-implied float * 100 vs EastMoney f8, session 2026-09-10",
+    "cross_vendor_result": {
+      "comparable": 5196,
+      "within_1pct": 5069,
+      "within_2pct": 5164,
+      "median_rel": 0.00131
+    }
+  },
+  "valuation_schema_before": [
+    "symbol",
+    "trade_date",
+    "pe_ttm",
+    "pb",
+    "ps_ttm",
+    "total_mv",
+    "float_mv",
+    "source",
+    "data_version",
+    "fetched_at"
+  ],
+  "valuation_schema_after": [
+    "symbol",
+    "trade_date",
+    "pe_ttm",
+    "pb",
+    "ps_ttm",
+    "total_mv",
+    "float_mv",
+    "turnover_rate",
+    "source",
+    "data_version",
+    "fetched_at"
+  ],
+  "schema_delta": {
+    "added_columns": [
+      "turnover_rate"
+    ],
+    "removed_columns": [],
+    "unit_delta": {
+      "turnover_rate": "PERCENT"
+    },
+    "primary_key_changed": false,
+    "existing_columns_changed": false,
+    "compatibility": "additive",
+    "contract_validate_against_registry": "Contract OK"
+  },
+  "provider_cost": {
+    "VALUATION_REQUEST_N": 61,
+    "VALUATION_ROW_N": 5453,
+    "TURNOVER_NON_NULL_N": 5453,
+    "PER_SYMBOL_REQUEST_N": 0,
+    "TDX_REQUEST_N": 0,
+    "BAOSTOCK_REQUEST_N": 0,
+    "OFFICIAL_DISCLOSURE_REQUEST_N": 0,
+    "counting_method": "EastMoney client instrumented to count clist page requests",
+    "conclusion": "adding f8 adds zero provider calls; same page walk as before"
+  },
+  "null_semantics": {
+    "dash": "null",
+    "empty": "null",
+    "none": "null",
+    "invalid": "null",
+    "nan": "null",
+    "inf": "null",
+    "observed_zero": "preserved as 0",
+    "coerced_to_zero": false
+  },
+  "findings_that_changed_the_plan": {
+    "snapshot_effective_date": {
+      "observation": "2026-09-09 and 2026-09-10 valuation rows were byte-identical in all five business columns",
+      "vendor_timestamp_f124": "2026-09-10 15:34:09 Asia/Shanghai",
+      "conclusion": "one live snapshot stamped with two dates; the 09-09 stamp was forged",
+      "contract_reference": "CNEquity declares valuation_metrics fetch_semantics=snapshot"
+    },
+    "f8_pre_open_reset": {
+      "observation_0847": "f8 returned real values for the 09-10 session",
+      "observation_0856": "f8 returned 0.0 for all 5913 symbols",
+      "conclusion": "f8 is a live current-cycle field that resets before the next session opens",
+      "consequences": [
+        "post-close fetch is the supported path (CNEquity runs it after 16:00)",
+        "a pre-open catch-up returns zeros with stale prices and must not be published",
+        "clist cannot backfill a missed turnover day; that is why the registry pairs snapshot with baostock backfill"
+      ]
+    }
+  },
+  "turnover_result": {
+    "requested_0909_comparison": {
+      "EXPECTED_N": 5208,
+      "V02_ROW_N": 5208,
+      "COMPARABLE_N": 0,
+      "SUSPENDED_N": 10,
+      "UNRESOLVED_N": 5198,
+      "root_cause": "MISSING_PROVIDER_VALUE (DATE_ALIGNMENT)",
+      "producible": false,
+      "reason": "the clist cannot describe 2026-09-09"
+    },
+    "same_session_validation": {
+      "COMPARABLE_N": 5196,
+      "MATCH_N": 5069,
+      "MISMATCH_N": 127,
+      "MATCH_within_1pct": 5069,
+      "MATCH_within_2pct": 5164,
+      "exact_match": 0,
+      "MAX_ABS_DIFF": 35.852871,
+      "P50_ABS_DIFF": 0.00252,
+      "P95_ABS_DIFF": 0.00478,
+      "P99_ABS_DIFF": 0.004982,
+      "MEDIAN_REL_DIFF": 0.00131
+    },
+    "root_causes": {
+      "MATCH_WITHIN_1PCT": 5069,
+      "LOW_TURNOVER_DISPLAY_ROUNDING": 118,
+      "SHARE_DENOMINATOR_MOVED": 9,
+      "UNKNOWN": 0
+    },
+    "display_precision_equivalence": "accepted; dominated by low-turnover banks where 2-decimal publishing gives up to 0.005 absolute error"
+  },
+  "full_v02_shadow": {
+    "preclose": {
+      "match": 5208,
+      "mismatch": 0
+    },
+    "pct_chg": {
+      "match": 5208,
+      "mismatch": 0
+    },
+    "trade_status": {
+      "match": 5208,
+      "mismatch": 0
+    },
+    "is_st": {
+      "match": 5208,
+      "mismatch": 0
+    },
+    "turnover_rate": {
+      "match": "NOT_PRODUCIBLE_FOR_2026_09_09"
+    },
+    "st_while_suspended_preserved": 3
+  },
+  "v02_shadow_certification": "PASS_WITH_LIMITATIONS",
+  "source_independence": "PASS",
+  "pit_leakage_n": 0,
+  "lake_changes": {
+    "curated_valuation_metrics": "EMPTY (only in-scope rebuild ran pre-open and was quarantined)",
+    "quarantine_path": "staging/valuation_metrics_quarantine_v01_pre_turnover/",
+    "quarantined": [
+      "trade_date=2026-09-09 (pre-patch, forged stamp)",
+      "trade_date=2026-09-10 (pre-patch, no turnover_rate)",
+      "zero_build_preopen_20260911 (post-patch, turnover 0.0)",
+      "meta_revisions superseded generations and pointers",
+      "two pre-patch staging runs"
+    ],
+    "deleted": "nothing"
+  },
+  "authorities": {
+    "R3_AUTHORITY_UNCHANGED": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b",
+    "FACTS_V1_AUTHORITY_UNCHANGED": "9b4f474ebcb0db97d9dbfdb824eb6b7e17f017a6ac8957ed3d6a8fb5e3ca21ac",
+    "v02_pointer_created": false,
+    "daily_facts_2026_09_10_published": false
+  },
+  "tests": {
+    "venv": "186 passed, 1 failed (pre-existing untracked)",
+    "venv_mcp": "88 passed",
+    "new": "tests/test_valuation_turnover_rate_v01.py 18 passed",
+    "py_compile": "passed",
+    "cne_config_validate": "Configuration OK",
+    "cne_contract_validate": "Contract OK"
+  },
+  "known_limitations": [
+    "the requested 2026-09-09 turnover comparison is not producible from a snapshot source",
+    "valuation_metrics is currently empty; the next post-close run repopulates it",
+    "f8 publishes 2 decimals vs BaoStock 4, so exact match is 0 by construction",
+    "the cross-vendor validation denominator is implied from the previous session and is stale for 9 keys",
+    "the added column makes validate_dataframe reject pre-patch partitions; other deployments need a rebuild",
+    "tests/test_cnequity_v080_daily_reuse.py still fails (untracked, not authored here)"
+  ],
+  "next_gate": "V02 authority migration + first production publication"
+}
