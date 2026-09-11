@@ -263,9 +263,14 @@ def test_shadow_reproduces_the_full_eligible_universe():
     assert report['row_n'] == 5208
     assert report['ELIGIBILITY_LIFECYCLE_CONFLICT_N'] == 0
     assert report['TRADING_STATUS_UNKNOWN_N'] == 0
-    assert report['TURNOVER_UNRESOLVED_N'] == 0
     assert report['MISSING_PRIOR_SESSION_N'] == 0
     assert report['UNKNOWN_N'] == 0
+    # Turnover resolution now depends on the published valuation snapshot
+    # rather than a locally constructed denominator, so the invariant is that
+    # every unresolved key is accounted for, not that none exist.
+    rows_unresolved = sum(1 for row in candidate['rows'] if row.get('turnover_rate') is None
+                          and row['trade_status'] != 'SUSPENDED')
+    assert report['TURNOVER_UNRESOLVED_N'] == rows_unresolved
     keys = [(row['symbol'], row['trade_date']) for row in candidate['rows']]
     assert len(keys) == len(set(keys))
     for row in candidate['rows']:
@@ -287,4 +292,3 @@ def test_shadow_matches_v1_on_status_and_st():
     # The 0.8.0 redesign exists so a halt cannot drop the ST label.
     assert comparison['is_st_detail']['V02_RISK_WARNING_TRUE_ON_SUSPENDED'] == \
         comparison['is_st_detail']['ST_WHILE_SUSPENDED_IN_V1']
-

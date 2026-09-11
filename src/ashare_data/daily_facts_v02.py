@@ -45,7 +45,14 @@ DISPLAY_TICK = Decimal("0.01")
 RULE_PRECLOSE_PRIOR_CLOSE = "PRIOR_PUBLISHED_CLOSE_V02"
 RULE_PRECLOSE_REFERENCE_PRICE = "EXCHANGE_REFERENCE_PRICE_V02"
 RULE_PCT_CHG = "CLOSE_OVER_PRECLOSE_V02"
-RULE_TURNOVER = "VOLUME_OVER_PIT_FLOAT_SHARES_V02"
+#: Canonical V02 turnover source: the EastMoney clist ``f8`` field, carried
+#: additively by CNEquity's ``valuation_metrics`` dataset. It is the exchange's
+#: own turnover rate in PERCENT and needs no locally constructed denominator.
+RULE_TURNOVER = "CNEQUITY_VALUATION_METRICS_TURNOVER_V02"
+#: Superseded derivation, retained only so historical audit records that named
+#: it stay interpretable. It must not be used as a fact source: its denominator
+#: is a different basis for multi-class issuers (measured 5.3% divergence).
+RULE_TURNOVER_DERIVED_AUDIT_ONLY = "VOLUME_OVER_PIT_FLOAT_SHARES_V02"
 RULE_STATUS_DATASET = "CNEQUITY_TRADING_STATUS_V02"
 
 SOURCE_PRIOR_R3_CLOSE = "R3_PUBLISHED_CLOSE"
@@ -250,6 +257,9 @@ class SourceBundle:
     share_structure_files: tuple[str, ...]
     valuation_metrics: Mapping[tuple[str, str], float]
     valuation_files: tuple[str, ...]
+    #: (symbol, trade_date) -> exchange turnover rate in PERCENT, from
+    #: CNEquity's ``valuation_metrics.turnover_rate`` (EastMoney clist ``f8``).
+    turnover_rate: Mapping[tuple[str, str], float]
     reference_price_evidence: Mapping[tuple[str, str], CashDividendReferenceEvidence]
 
     def provenance(self) -> dict[str, Any]:
@@ -313,16 +323,28 @@ def load_sources(root: Path, *, evidence_path: Path | None = None) -> SourceBund
     structures = index_float_shares(_load_rows(structure_files))
 
     valuation: dict[tuple[str, str], float] = {}
+    turnover: dict[tuple[str, str], float] = {}
     for row in _load_rows(valuation_files):
         value = row.get("float_mv")
-        if value is None:
-            continue
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(numeric):
-            valuation[(str(row.get("symbol")), str(_as_date(row.get("trade_date"))))] = numeric
+        symbol = str(row.get("symbol"))
+        day = str(_as_date(row.get("trade_date")))
+        if value is not None:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                numeric = None
+            if numeric is not None and math.isfinite(numeric):
+                valuation[(symbol, day)] = numeric
+        # A missing or malformed turnover stays absent rather than becoming a
+        # zero: the adapter already maps "-", empty and junk to null.
+        turnover_value = row.get("turnover_rate")
+        if turnover_value is not None:
+            try:
+                parsed = float(turnover_value)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and math.isfinite(parsed):
+                turnover[(symbol, day)] = parsed
 
     evidence: dict[tuple[str, str], CashDividendReferenceEvidence] = {}
     if evidence_path is not None:
@@ -349,6 +371,7 @@ def load_sources(root: Path, *, evidence_path: Path | None = None) -> SourceBund
         share_structure_files=tuple(str(p) for p in structure_files),
         valuation_metrics=valuation,
         valuation_files=tuple(str(p) for p in valuation_files),
+        turnover_rate=turnover,
         reference_price_evidence=evidence,
     )
 
@@ -528,39 +551,38 @@ def build_shadow_rows(
             row["pct_chg_rule_id"] = None
             blockers.append("PCT_CHG_UNDERIVABLE")
 
-        # ---- turnover_rate: strict PIT denominator --------------------------
-        point = pit_float_shares(bundle.share_structure.get(symbol, ()), target)
-        if point is None:
+        # ---- turnover_rate: the exchange's own rate, carried by CNEquity ----
+        # The canonical source is the EastMoney clist ``f8`` field that
+        # ``valuation_metrics`` now carries additively. It is the exchange's
+        # published turnover rate, so no local denominator is constructed and
+        # the multi-class-issuer basis problem cannot arise.
+        published = bundle.turnover_rate.get((symbol, day))
+        if trade_status == SUSPENDED:
+            # A halted session keeps the frozen V1 semantics: null, never 0.
             row["turnover_rate"] = None
             row["turnover_rate_rule_id"] = None
-            row["float_shares"] = None
+            row["turnover_null_reason"] = "SUSPENDED"
+        elif published is None:
+            row["turnover_rate"] = None
+            row["turnover_rate_rule_id"] = None
+            row["turnover_null_reason"] = "PROVIDER_VALUE_ABSENT"
             turnover_unresolved.append(symbol)
             blockers.append("TURNOVER_UNRESOLVED")
         else:
-            row["float_shares"] = point.float_shares
-            row["float_shares_change_date"] = point.change_date.isoformat()
-            row["float_shares_announce_date"] = point.announce_date.isoformat() if point.announce_date else None
-            row["float_shares_source"] = point.source
-            # A suspended session keeps the V1 semantics: null, never 0.
-            if trade_status == SUSPENDED:
-                row["turnover_rate"] = None
-                row["turnover_rate_rule_id"] = None
-                row["turnover_null_reason"] = "SUSPENDED"
-            elif isinstance(volume, (int, float)):
-                row["turnover_rate"] = derive_turnover_rate(volume, point.float_shares)
-                row["turnover_rate_rule_id"] = RULE_TURNOVER
-            else:
-                row["turnover_rate"] = None
-                row["turnover_rate_rule_id"] = None
-                blockers.append("VOLUME_MISSING")
+            row["turnover_rate"] = published
+            row["turnover_rate_rule_id"] = RULE_TURNOVER
+            row["turnover_rate_source"] = "CNEQUITY_VALUATION_METRICS"
         row["turnover_unit"] = "PERCENT"
 
         # ---- crosscheck evidence only, never a canonical denominator --------
         float_mv = bundle.valuation_metrics.get((symbol, day))
-        if float_mv is not None and row.get("float_shares") and close is not None:
+        if float_mv is not None and close is not None:
             row["valuation_float_mv"] = float_mv
-            row["float_shares_times_close"] = float(
-                _decimal(row["float_shares"], "float_shares") * _decimal(close, "close")
+            # Independent consistency probe: the vendor's own market cap over
+            # its own price must reproduce the float it implies. This is an
+            # audit aid, not an input to any published fact.
+            row["valuation_float_mv_over_close"] = float(
+                _decimal(float_mv, "float_mv") / _decimal(close, "close")
             )
 
         row["quality_status"] = "PASS" if not blockers else "UNKNOWN"

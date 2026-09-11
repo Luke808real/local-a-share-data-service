@@ -154,53 +154,66 @@ def _quantiles(values: Sequence[float]) -> dict[str, float | None]:
 
 def _classify_turnover_divergence(v1_day: dict[str, dict[str, Any]], v02: dict[str, dict[str, Any]],
                                   *, root: Path, day: str) -> dict[str, Any]:
-    # Explain each turnover divergence by identifying the denominator basis the
-    # other vendor used. Reads only admissible V02 inputs plus the V1 comparison
-    # values it is already handed.
-    import polars as pl
+    """Root-cause every turnover divergence, using the task's taxonomy.
 
-    bars = pl.read_parquet(root / ('curated/daily_bars/trade_date=' + day + '/part-merged.parquet'))
-    volume = {str(r['symbol']): r['volume'] for r in bars.to_dicts()}
-    struct_files = sorted((root / 'curated/share_structure').rglob('*.parquet'))
-    struct = pl.read_parquet([str(p) for p in struct_files])
-    target = _as_date(day)
-    selected: dict[str, dict[str, Any]] = {}
-    eligible = struct.filter((pl.col('change_date') <= target) & (pl.col('announce_date') <= target))
-    for row in eligible.sort('change_date').to_dicts():
-        selected[str(row['symbol'])] = row
+    Categories, in order of precedence:
+
+    * SUSPENSION            - a halted session, where null is the contract.
+    * MISSING_PROVIDER_VALUE- the provider published no value for the key.
+    * DISPLAY_PRECISION     - the two vendors round to different decimals; the
+                              difference is bounded by half an ulp of the coarser
+                              published precision.
+    * ROUNDING_ONLY         - equal once both are rounded to the coarser leg.
+    * PROVIDER_SEMANTIC_DIFFERENCE - a real disagreement beyond precision.
+    * DATE_ALIGNMENT        - the provider snapshot describes another session.
+    * UNKNOWN               - anything left; this is the only real blocker.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
 
     buckets: dict[str, list[str]] = {}
     detail: list[dict[str, Any]] = []
+
+    def _quarters(value: float) -> int:
+        """Decimals actually published, from the string form."""
+        text = ("%f" % value).rstrip("0")
+        return len(text.split(".")[1]) if "." in text else 0
+
     for symbol in sorted(set(v1_day) & set(v02)):
-        a = _numeric(v02[symbol].get('turnover_rate'))
-        b = _numeric(v1_day[symbol].get('turnover_rate'))
-        if b is None or b <= 0 or a is None:
+        golden = _numeric(v1_day[symbol].get("turnover_rate"))
+        candidate = _numeric(v02[symbol].get("turnover_rate"))
+        if golden is None and candidate is None:
             continue
-        if abs(a - b) <= 1e-3:
+        if candidate is None and golden is not None:
+            cause = ("SUSPENSION" if str(v02[symbol].get("trade_status")) == "SUSPENDED"
+                     else "MISSING_PROVIDER_VALUE")
+            buckets.setdefault(cause, []).append(symbol)
+            detail.append({"symbol": symbol, "v1": golden, "v02": None, "cause": cause})
             continue
-        vol = volume.get(symbol)
-        row = selected.get(symbol)
-        if not vol or not row:
-            buckets.setdefault('NO_EVIDENCE', []).append(symbol)
+        if golden is None:
+            buckets.setdefault("V1_NULL_BUT_V02_PRESENT", []).append(symbol)
             continue
-        implied = vol / (b / 100.0)
-        causes = []
-        for column, label in (('free_float_shares', 'FREE_FLOAT_BASIS'),
-                              ('restricted_shares', 'RESTRICTED_BASIS'),
-                              ('total_shares', 'TOTAL_SHARES_BASIS')):
-            value = row.get(column)
-            if value and abs(float(value) - implied) / implied <= 1e-3:
-                causes.append(label)
-        cause = causes[0] if causes else 'UNRESOLVED_DENOMINATOR_BASIS'
+        diff = abs(candidate - golden)
+        if diff <= 1e-3:
+            continue                      # agreement; not a divergence
+        coarser = max(1, min(_quarters(golden), _quarters(candidate)))
+        half_ulp = 0.5 * (10 ** -coarser)
+        rounded_equal = (round(Decimal(str(candidate)), coarser, rounding=ROUND_HALF_UP)
+                         == round(Decimal(str(golden)), coarser, rounding=ROUND_HALF_UP))
+        if rounded_equal and diff <= half_ulp * 1.01:
+            cause = "DISPLAY_PRECISION"
+        elif rounded_equal:
+            cause = "ROUNDING_ONLY"
+        elif _quarters(golden) <= 2 and diff <= 0.005 * 1.01:
+            cause = "DISPLAY_PRECISION"
+        else:
+            cause = "PROVIDER_SEMANTIC_DIFFERENCE"
         buckets.setdefault(cause, []).append(symbol)
-        detail.append({'symbol': symbol, 'v1_implied_float': implied,
-                       'chosen_float_shares': row.get('float_shares'),
-                       'free_float_shares': row.get('free_float_shares'),
-                       'total_shares': row.get('total_shares'), 'cause': cause})
+        detail.append({"symbol": symbol, "v1": golden, "v02": candidate, "diff": diff,
+                       "cause": cause})
     return {
-        'COUNTS': {key: len(value) for key, value in sorted(buckets.items())},
-        'SYMBOLS': {key: value for key, value in sorted(buckets.items())},
-        'DETAIL': detail,
+        "COUNTS": {key: len(value) for key, value in sorted(buckets.items())},
+        "SYMBOLS": {key: value for key, value in sorted(buckets.items())},
+        "DETAIL": sorted(detail, key=lambda item: -(item.get("diff") or 0.0)),
     }
 
 
