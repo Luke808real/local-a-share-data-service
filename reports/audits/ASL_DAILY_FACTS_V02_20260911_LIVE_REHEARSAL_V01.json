@@ -1,0 +1,155 @@
+{
+  "schema": "ASL_DAILY_FACTS_V02_20260911_LIVE_REHEARSAL_V01",
+  "status": "BLOCKED_SNAPSHOT_WINDOW",
+  "base_head": "9afc81587bb71903fde2165865ae12e907486041",
+  "branch": "codex/r3-incremental-hardening-daily-facts-phase1-v01",
+  "blocked_reason": "task arrived mid-session; 2026-09-11 close is 15:00 and the settlement cutoff is 15:05 Asia/Shanghai",
+  "arrival_time_local": "2026-09-11 12:26 Asia/Shanghai",
+  "r3_before": {
+    "published_as_of": "2026-09-10",
+    "file_n": 2598,
+    "manifest": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b"
+  },
+  "r3_after": {
+    "published_as_of": "2026-09-10",
+    "file_n": 2598,
+    "manifest": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b",
+    "changed": false,
+    "partition_2026_09_11": "absent"
+  },
+  "r3_2026_09_11": "NOT_RUN",
+  "r3_guard": {
+    "source": "upstream CNEquity, unmodified",
+    "A_SHARE_FINAL_AT": "15:05:00",
+    "behaviour": "execute path REJECTED; dry-run reported READY",
+    "note": "dry-run answers 'is this date after the published authority', not 'has this session finished'"
+  },
+  "snapshot_capture_time": "2026-09-11 12:32:33 Asia/Shanghai",
+  "provider_snapshot_timestamp": "2026-09-11T12:33:00+08:00",
+  "resolved_snapshot_trade_date": "2026-09-11",
+  "snapshot_date_alignment": {
+    "session_matches_target": true,
+    "is_settled": false,
+    "local_window_open": false,
+    "session_coverage": 1,
+    "stamped_n": 5913,
+    "row_n": 5913,
+    "turnover_zero_n": 363,
+    "turnover_present_n": 5913,
+    "snapshot_date_alignment_verdict": "NOT_EVALUABLE (window closed)"
+  },
+  "provider_request_counts": {
+    "valuation_probe_page_requests": 61,
+    "valuation_probe_rows_sampled": 5913,
+    "TDX_REQUEST_N": 0,
+    "BAOSTOCK_REQUEST_N": 0,
+    "OFFICIAL_DISCLOSURE_REQUEST_N": 0,
+    "PER_SYMBOL_REQUEST_N": 0,
+    "note": "one clist walk for the preflight probe; R3/trading_status/valuation steps did not run"
+  },
+  "fail_closed_verification": {
+    "curated_valuation_partitions": 0,
+    "staging_valuation_files": 0,
+    "new_cnEquity_runs_this_round": 0,
+    "v02_pointer_created": false,
+    "daily_facts_v1_values_read_by_generator": false
+  },
+  "snapshot_guard": {
+    "patch": "patches/cnequity/0002-valuation-metrics-snapshot-date-guard.patch",
+    "module": "cnequity/domain/snapshot_guard.py",
+    "adapter_field_added": "f124",
+    "extra_requests_cost": 0,
+    "error_codes": [
+      "SNAPSHOT_UNSTAMPED",
+      "SNAPSHOT_SESSION_MISMATCH",
+      "SNAPSHOT_SESSION_INCOHERENT",
+      "SNAPSHOT_NOT_SETTLED",
+      "SNAPSHOT_WINDOW_NOT_OPEN",
+      "SNAPSHOT_TURNOVER_ABSENT",
+      "SNAPSHOT_TURNOVER_RESET"
+    ],
+    "live_proof": [
+      {
+        "requested": "2026-09-11",
+        "result": "SNAPSHOT_NOT_SETTLED",
+        "detail": "latest stamp 2026-09-11 12:30:27, session not final before 15:05"
+      },
+      {
+        "requested": "2026-09-10",
+        "result": "SNAPSHOT_SESSION_MISMATCH",
+        "detail": "payload describes 2026-09-11; this is the previous round's forged partition, now impossible"
+      }
+    ],
+    "design_discovery": "an early date-only guard would have passed an intraday capture, because during the session f124 tracks live ticks; the settle check is what makes the guard meaningful during market hours"
+  },
+  "v02_eligible_n": null,
+  "v02_row_n": null,
+  "preclose_results": "NOT_RUN",
+  "pct_chg_results": "NOT_RUN",
+  "turnover_results": "NOT_RUN",
+  "trade_status_results": "NOT_RUN",
+  "is_st_results": "NOT_RUN",
+  "reference_price_exception_n": null,
+  "suspended_n": null,
+  "source_independence": "NOT_EVALUATED (generator did not run against 09-11)",
+  "baselines": {
+    "local_query": {
+      "DAILY_PUBLISHED_AS_OF": "2026-09-10",
+      "DAILY_MANIFEST_FILE_N": 2598,
+      "DAILY_MANIFEST_HASH": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b",
+      "DAILY_USABLE": true
+    },
+    "mcp": {
+      "LATEST_PUBLISHED_TRADE_DATE": "2026-09-10",
+      "DAILY_MANIFEST_HASH": "140197cd3c95a3f8e1c9f5750f117c66eafc09d9113757e511f31e46848bf66b",
+      "FACTS_READY": false
+    }
+  },
+  "r3_dry_run_after_guard": {
+    "status": "READY",
+    "frozen_n": 5456,
+    "eligible_n": 5208,
+    "network_request_n": 0
+  },
+  "patch_chain_replay": {
+    "adapters/eastmoney/valuation.py": "2593c8dabc87863f MATCH",
+    "domain/schemas.py": "69bfa5380f3ab311 MATCH",
+    "domain/datasets.py": "cb4ed8999c2dbe33 MATCH",
+    "domain/snapshot_guard.py": "d783cb960b83f468 MATCH",
+    "verified": true
+  },
+  "runtime_breakdown": {
+    "RUNTIME_R3": "not run",
+    "RUNTIME_TRADING_STATUS": "not run",
+    "RUNTIME_VALUATION": "not run",
+    "RUNTIME_V02_DERIVATION": "not run",
+    "RUNTIME_PREFLIGHT_PROBE_S": 30.44,
+    "RUNTIME_TOTAL_S": 30.55
+  },
+  "expected_normal_daily_runtime": "unmeasured for 09-11; the blocked run only measured the 30s probe",
+  "authorities": {
+    "R3_AUTHORITY_CHANGE": "NONE (140197cd..., unchanged; recomputed and verified)",
+    "FACTS_V1_AUTHORITY_UNCHANGED": "9b4f474ebcb0db97d9dbfdb824eb6b7e17f017a6ac8957ed3d6a8fb5e3ca21ac",
+    "FACTS_V1_UNCHANGED": true,
+    "V02_POINTER": "none created",
+    "FACTS_READY": false,
+    "PRECLOSE_COMPLETE": false,
+    "daily_facts_v1_values_read_by_generator": false
+  },
+  "tests": {
+    "venv": "206 passed, 1 failed (pre-existing untracked)",
+    "venv_mcp": "88 passed",
+    "new": "tests/test_snapshot_guard.py 20 passed",
+    "py_compile": "passed",
+    "cne_config_validate": "Configuration OK",
+    "cne_contract_validate": "Contract OK"
+  },
+  "known_limitations": [
+    "the live chain past the preflight gate is unexercised for 2026-09-11",
+    "re-running before 15:05 reports the same blocked status, correctly",
+    "the 15:05 settle cutoff is inherited from CNEquity's daily-bar cutoff rather than measured against when EastMoney finalises the page",
+    "whether a pre-cutoff refresh can safely overwrite the same partition is untested",
+    "tests/test_cnequity_v080_daily_reuse.py still fails (untracked, not authored here)"
+  ],
+  "next_gate": "re-run the live rehearsal after 15:05 on 2026-09-11, then the V02 authority migration gate"
+}
