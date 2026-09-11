@@ -1,0 +1,46 @@
+--- a/cnequity/adapters/eastmoney/valuation.py	2026-09-11 08:47:50
++++ b/cnequity/adapters/eastmoney/valuation.py	2026-09-11 08:48:13
+@@ -11,7 +11,11 @@
+ from cnequity.adapters.eastmoney.common import _to_float
+ from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+ 
+-_VALUATION_FIELDS = "f12,f13,f9,f23,f45,f20,f21"
++# f8 is the turnover rate in percent (换手率), the same field
++# ``adapters/eastmoney/rotation.py`` already reads as ``turnover_pct``. It
++# rides along on the clist page this adapter already requests, so adding it
++# costs no extra provider call.
++_VALUATION_FIELDS = "f12,f13,f8,f9,f23,f45,f20,f21"
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -43,6 +47,7 @@
+                     "ps_ttm": _to_float(item.get("f45")),
+                     "total_mv": _to_float(item.get("f20")),
+                     "float_mv": _to_float(item.get("f21")),
++                    "turnover_rate": _to_float(item.get("f8")),
+                 }
+             )
+     finally:
+--- a/cnequity/domain/schemas.py	2026-09-11 08:47:50
++++ b/cnequity/domain/schemas.py	2026-09-11 08:48:05
+@@ -331,6 +331,10 @@
+     "ps_ttm": pl.Float64,
+     "total_mv": pl.Float64,
+     "float_mv": pl.Float64,
++    # Turnover rate in PERCENT ("2.35" means 2.35%), the same unit BaoStock's
++    # `turn` and the exchange publish. Nullable: a halted security has no
++    # traded turnover, and a missing value must not become a real zero.
++    "turnover_rate": pl.Float64,
+     "source": pl.Utf8,
+     "data_version": pl.Utf8,
+     "fetched_at": FETCHED_AT_DTYPE,
+--- a/cnequity/domain/datasets.py	2026-09-11 08:47:50
++++ b/cnequity/domain/datasets.py	2026-09-11 08:48:05
+@@ -136,6 +136,7 @@
+         "ps_ttm": "ratio",
+         "total_mv": "CNY",
+         "float_mv": "CNY",
++        "turnover_rate": "PERCENT",
+     },
+     "block_trades": {
+         "price": "CNY/share",
