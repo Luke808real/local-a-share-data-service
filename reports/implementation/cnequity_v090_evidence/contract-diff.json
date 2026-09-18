@@ -1,0 +1,715 @@
+{
+  "format": "cnequity.contract-diff",
+  "old_fingerprint": "8946d9228db57b53615d1eb91f78f8978c3a1d70b4e87c9ef7551f942bd3fc21",
+  "new_fingerprint": "43ea3456a0f672fb8e313b762ca8062d56083659101c0925a58a2033b55c013d",
+  "changes": [
+    {
+      "dataset": "adj_factors",
+      "kind": "pit_quality_changed",
+      "path": "datasets.adj_factors.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "block_trades",
+      "kind": "pit_quality_changed",
+      "path": "datasets.block_trades.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "commodity_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.commodity_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "corporate_actions",
+      "kind": "pit_quality_changed",
+      "path": "datasets.corporate_actions.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "daily_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.daily_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "delisting_events",
+      "kind": "pit_quality_changed",
+      "path": "datasets.delisting_events.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "dragon_tiger",
+      "kind": "pit_quality_changed",
+      "path": "datasets.dragon_tiger.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "earnings_disclosure_schedule",
+      "kind": "pit_quality_changed",
+      "path": "datasets.earnings_disclosure_schedule.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "index_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.index_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "index_constituents",
+      "kind": "pit_quality_changed",
+      "path": "datasets.index_constituents.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "industry_index",
+      "kind": "pit_quality_changed",
+      "path": "datasets.industry_index.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "industry_members",
+      "kind": "pit_quality_changed",
+      "path": "datasets.industry_members.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "institutional_holdings",
+      "kind": "pit_quality_changed",
+      "path": "datasets.institutional_holdings.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "instruments",
+      "kind": "pit_quality_changed",
+      "path": "datasets.instruments.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "macro_indicators",
+      "kind": "pit_quality_changed",
+      "path": "datasets.macro_indicators.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "margin_trading",
+      "kind": "pit_quality_changed",
+      "path": "datasets.margin_trading.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "market_breadth",
+      "kind": "pit_quality_changed",
+      "path": "datasets.market_breadth.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "minute_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.minute_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "minute_bars_5m",
+      "kind": "pit_quality_changed",
+      "path": "datasets.minute_bars_5m.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "northbound_flows",
+      "kind": "pit_quality_changed",
+      "path": "datasets.northbound_flows.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "northbound_holdings",
+      "kind": "pit_quality_changed",
+      "path": "datasets.northbound_holdings.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "regulatory_events",
+      "kind": "pit_quality_changed",
+      "path": "datasets.regulatory_events.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "sector_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.sector_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "sentiment_scores",
+      "kind": "pit_quality_changed",
+      "path": "datasets.sentiment_scores.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "share_unlock_schedule",
+      "kind": "pit_quality_changed",
+      "path": "datasets.share_unlock_schedule.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trade_ticks",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trade_ticks.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trading_calendar",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trading_calendar.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trading_status",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trading_status.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "valuation_metrics",
+      "kind": "pit_quality_changed",
+      "path": "datasets.valuation_metrics.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    }
+  ],
+  "breaking": [
+    {
+      "dataset": "adj_factors",
+      "kind": "pit_quality_changed",
+      "path": "datasets.adj_factors.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "block_trades",
+      "kind": "pit_quality_changed",
+      "path": "datasets.block_trades.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "commodity_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.commodity_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "corporate_actions",
+      "kind": "pit_quality_changed",
+      "path": "datasets.corporate_actions.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "daily_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.daily_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "delisting_events",
+      "kind": "pit_quality_changed",
+      "path": "datasets.delisting_events.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "dragon_tiger",
+      "kind": "pit_quality_changed",
+      "path": "datasets.dragon_tiger.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "earnings_disclosure_schedule",
+      "kind": "pit_quality_changed",
+      "path": "datasets.earnings_disclosure_schedule.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "index_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.index_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "index_constituents",
+      "kind": "pit_quality_changed",
+      "path": "datasets.index_constituents.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "industry_index",
+      "kind": "pit_quality_changed",
+      "path": "datasets.industry_index.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "industry_members",
+      "kind": "pit_quality_changed",
+      "path": "datasets.industry_members.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "institutional_holdings",
+      "kind": "pit_quality_changed",
+      "path": "datasets.institutional_holdings.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "instruments",
+      "kind": "pit_quality_changed",
+      "path": "datasets.instruments.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "macro_indicators",
+      "kind": "pit_quality_changed",
+      "path": "datasets.macro_indicators.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "margin_trading",
+      "kind": "pit_quality_changed",
+      "path": "datasets.margin_trading.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "market_breadth",
+      "kind": "pit_quality_changed",
+      "path": "datasets.market_breadth.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "minute_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.minute_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "minute_bars_5m",
+      "kind": "pit_quality_changed",
+      "path": "datasets.minute_bars_5m.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "northbound_flows",
+      "kind": "pit_quality_changed",
+      "path": "datasets.northbound_flows.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "northbound_holdings",
+      "kind": "pit_quality_changed",
+      "path": "datasets.northbound_holdings.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "regulatory_events",
+      "kind": "pit_quality_changed",
+      "path": "datasets.regulatory_events.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "sector_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.sector_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "sentiment_scores",
+      "kind": "pit_quality_changed",
+      "path": "datasets.sentiment_scores.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "share_unlock_schedule",
+      "kind": "pit_quality_changed",
+      "path": "datasets.share_unlock_schedule.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trade_ticks",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trade_ticks.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trading_calendar",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trading_calendar.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trading_status",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trading_status.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "valuation_metrics",
+      "kind": "pit_quality_changed",
+      "path": "datasets.valuation_metrics.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    }
+  ],
+  "compatible": [],
+  "breaking_changes": [
+    {
+      "dataset": "adj_factors",
+      "kind": "pit_quality_changed",
+      "path": "datasets.adj_factors.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "block_trades",
+      "kind": "pit_quality_changed",
+      "path": "datasets.block_trades.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "commodity_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.commodity_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "corporate_actions",
+      "kind": "pit_quality_changed",
+      "path": "datasets.corporate_actions.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "daily_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.daily_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "delisting_events",
+      "kind": "pit_quality_changed",
+      "path": "datasets.delisting_events.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "dragon_tiger",
+      "kind": "pit_quality_changed",
+      "path": "datasets.dragon_tiger.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "earnings_disclosure_schedule",
+      "kind": "pit_quality_changed",
+      "path": "datasets.earnings_disclosure_schedule.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "index_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.index_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "index_constituents",
+      "kind": "pit_quality_changed",
+      "path": "datasets.index_constituents.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "industry_index",
+      "kind": "pit_quality_changed",
+      "path": "datasets.industry_index.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "industry_members",
+      "kind": "pit_quality_changed",
+      "path": "datasets.industry_members.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "institutional_holdings",
+      "kind": "pit_quality_changed",
+      "path": "datasets.institutional_holdings.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "instruments",
+      "kind": "pit_quality_changed",
+      "path": "datasets.instruments.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "macro_indicators",
+      "kind": "pit_quality_changed",
+      "path": "datasets.macro_indicators.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "margin_trading",
+      "kind": "pit_quality_changed",
+      "path": "datasets.margin_trading.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "market_breadth",
+      "kind": "pit_quality_changed",
+      "path": "datasets.market_breadth.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "minute_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.minute_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "minute_bars_5m",
+      "kind": "pit_quality_changed",
+      "path": "datasets.minute_bars_5m.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "northbound_flows",
+      "kind": "pit_quality_changed",
+      "path": "datasets.northbound_flows.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "northbound_holdings",
+      "kind": "pit_quality_changed",
+      "path": "datasets.northbound_holdings.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "regulatory_events",
+      "kind": "pit_quality_changed",
+      "path": "datasets.regulatory_events.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "sector_bars",
+      "kind": "pit_quality_changed",
+      "path": "datasets.sector_bars.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "sentiment_scores",
+      "kind": "pit_quality_changed",
+      "path": "datasets.sentiment_scores.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "share_unlock_schedule",
+      "kind": "pit_quality_changed",
+      "path": "datasets.share_unlock_schedule.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trade_ticks",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trade_ticks.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trading_calendar",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trading_calendar.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "trading_status",
+      "kind": "pit_quality_changed",
+      "path": "datasets.trading_status.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    },
+    {
+      "dataset": "valuation_metrics",
+      "kind": "pit_quality_changed",
+      "path": "datasets.valuation_metrics.pit_quality",
+      "old": "strict",
+      "new": "not_applicable",
+      "severity": "breaking"
+    }
+  ],
+  "compatible_changes": [],
+  "is_breaking": true,
+  "has_breaking_changes": true,
+  "breaking_count": 29,
+  "compatible_count": 0,
+  "added_datasets": [],
+  "removed_datasets": []
+}

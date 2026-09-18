@@ -19,3 +19,6 @@ dist/
 .DS_Store
 .env
 .env.*
+
+# Isolated CNEquity upgrade runtime
+.venv-cne090/

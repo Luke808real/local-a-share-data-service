@@ -1,0 +1,19 @@
+{
+  "PATCHED_CONTRACT_RESULT": "PASS",
+  "CONFIG_COMPATIBILITY_RESULT": "PASS",
+  "version": 1,
+  "pristine_fingerprint": "aab4181acc5f5acd620d5b40cb1b41444295f35a24f952252c190e957ac5b458",
+  "patched_fingerprint": "43ea3456a0f672fb8e313b762ca8062d56083659101c0925a58a2033b55c013d",
+  "old_patched_fingerprint": "8946d9228db57b53615d1eb91f78f8978c3a1d70b4e87c9ef7551f942bd3fc21",
+  "changed_metadata_dataset_n": 29,
+  "storage_schema_changes": 0,
+  "ASL_PIT_CONSUMER_IMPACT": "NO_ASL_CONSUMER_IMPACT",
+  "tdx_limit": {
+    "min_interval": 0.1,
+    "concurrency_limit": 1
+  },
+  "direct_fallback": false,
+  "ths_backfill": false,
+  "config_sha256": "3ae40dfdd26a310e132deb4e56a072be8688bb93c4bad659fbddcd1525b89d0c",
+  "lock_sha256": "95bfdbaacfff2cc696ffdab4018140fad9e33396e22b7eb6f6ee4bc175a5a614"
+}

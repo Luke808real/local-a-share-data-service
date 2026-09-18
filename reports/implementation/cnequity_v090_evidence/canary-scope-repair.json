@@ -1,0 +1,12 @@
+{
+  "initial_canary_result": "ASSERTION_FAILURE",
+  "file": "tools/audits/cnequity_v090_canary.py",
+  "function": "run",
+  "assertion": "set(frame[ex_date]) == {target}",
+  "root_cause": "native corporate_actions DatasetSpec reconciliation_lookback_days=30 ignores the intended one-day watermark bound; fetched 307 recent event rows from 2026-08-19 through 2026-09-18 into isolated root",
+  "classification": "canary scope assumption, not upgrade regression",
+  "repair": "native exact-date corporate_actions adapter, schema/provenance, Manifest, StagingWriter and native JobEngine compact; no registry modification or relaxed assertion",
+  "retry_result": "PASS: 30 event rows on 2026-09-18; no future dates",
+  "first_attempt_root": ".runtime/cne090/settled-canary/lake",
+  "final_root": ".runtime/cne090/final-canary/lake"
+}

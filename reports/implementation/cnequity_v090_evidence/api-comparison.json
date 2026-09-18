@@ -1,0 +1,260 @@
+{
+  "cnequity.adapters.tdx_protocol.client": {
+    "call_signatures_equal": true,
+    "module_identical": false,
+    "old": {
+      "module_sha256": "d1be766c260c0266d3b5c3b11f261f774e698a9c73ef98459d8165e5af452696",
+      "api": {
+        "fetch_daily_bars": {
+          "signature": "(symbols: 'list[str]', start: 'date', end: 'date', *, rate_limit: 'RateLimitSpec | None' = None, allow_mock: 'bool' = False, backfill: 'bool' = False, config: 'Config | None' = None, on_heartbeat: 'Callable[[], None] | None' = None, metrics: 'dict[str, int] | None' = None) -> 'pl.DataFrame'",
+          "source_sha256": "722bfa63f544d2bfc04b3ed6acbbe61e282b04ca25d41706a758c5380d18bb51"
+        },
+        "normalize_with_source": {
+          "signature": "(df: 'pl.DataFrame', source: 'str' = 'tdx_protocol', *, dataset: 'str | None' = None) -> 'pl.DataFrame'",
+          "source_sha256": "0e21623d9156533ef3eaa7a373323f141708c40d8c8f5954e16c9d951292bd02"
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "e4979a126abdc2b3451caa1d31db4605fffda3a0ae84cc8ed4bf20503c813ac3",
+      "api": {
+        "fetch_daily_bars": {
+          "signature": "(symbols: 'list[str]', start: 'date', end: 'date', *, rate_limit: 'RateLimitSpec | None' = None, allow_mock: 'bool' = False, backfill: 'bool' = False, config: 'Config | None' = None, on_heartbeat: 'Callable[[], None] | None' = None, metrics: 'dict[str, int] | None' = None) -> 'pl.DataFrame'",
+          "source_sha256": "722bfa63f544d2bfc04b3ed6acbbe61e282b04ca25d41706a758c5380d18bb51"
+        },
+        "normalize_with_source": {
+          "signature": "(df: 'pl.DataFrame', source: 'str' = 'tdx_protocol', *, dataset: 'str | None' = None) -> 'pl.DataFrame'",
+          "source_sha256": "0e21623d9156533ef3eaa7a373323f141708c40d8c8f5954e16c9d951292bd02"
+        }
+      }
+    }
+  },
+  "cnequity.config.loader": {
+    "call_signatures_equal": true,
+    "module_identical": false,
+    "old": {
+      "module_sha256": "5ae9baadb2b68b8883a311bf10b7028494b3ac4f188131fded0b055c7edf1019",
+      "api": {
+        "load_config": {
+          "signature": "(path: 'str | Path') -> 'Config'",
+          "source_sha256": "d7be0c22ba10864d7bb13714de8faf6dcb72ad6edc568875fa4d3a04f02b5b8a"
+        },
+        "validate_config": {
+          "signature": "(cfg: 'Config') -> 'list[str]'",
+          "source_sha256": "d58b3035d4086b4ebbdb66c76527a0781d4075976fec6195d611da5ee32523a5"
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "5c87c0c619f384d95899f8991505af0dbe8d104a9b2effdaa5d8531da4a7734d",
+      "api": {
+        "load_config": {
+          "signature": "(path: 'str | Path') -> 'Config'",
+          "source_sha256": "e132008b7e31a5860c3af325a14f8d8127505accb20bcfe4f1514d9b10f8cbcd"
+        },
+        "validate_config": {
+          "signature": "(cfg: 'Config') -> 'list[str]'",
+          "source_sha256": "e7807d22ab364fe7c10fb745f4b28c17077d1e8db4f1a812867f69be6163b5b3"
+        }
+      }
+    }
+  },
+  "cnequity.storage.parquet": {
+    "call_signatures_equal": true,
+    "module_identical": false,
+    "old": {
+      "module_sha256": "4e7328ba7e6c5d52a171770a843858a57079d6782b9d59e61ff2618c994d8609",
+      "api": {
+        "StagingWriter": {
+          "signature": "(staging_root: 'Path | str')",
+          "source_sha256": "3abda40ae760db3479cd8923f8fe8da3c113bfbcf81de22cb4195850cf6b29a9",
+          "methods": {
+            "write_batch": "(self, dataset: 'str', run_id: 'str', batch_id: 'str', df: 'pl.DataFrame') -> 'Path'"
+          }
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "cb3730599517078306360385d7bd94b50b658a279fc87970d1fedc486ce15786",
+      "api": {
+        "StagingWriter": {
+          "signature": "(staging_root: 'Path | str')",
+          "source_sha256": "3abda40ae760db3479cd8923f8fe8da3c113bfbcf81de22cb4195850cf6b29a9",
+          "methods": {
+            "write_batch": "(self, dataset: 'str', run_id: 'str', batch_id: 'str', df: 'pl.DataFrame') -> 'Path'"
+          }
+        }
+      }
+    }
+  },
+  "cnequity.storage.atomic": {
+    "call_signatures_equal": true,
+    "module_identical": true,
+    "old": {
+      "module_sha256": "11b3d2542de718769de05dbb9af2e7f8d1923f7799c9cad71c33812326022c0d",
+      "api": {
+        "write_parquet_atomic": {
+          "signature": "(path: 'Path', df: 'pl.DataFrame', **kwargs) -> 'Path'",
+          "source_sha256": "a5b413bb26a4d996b7e98936380ecb12ae73f26fa1371827ca5fe96ef217a626"
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "11b3d2542de718769de05dbb9af2e7f8d1923f7799c9cad71c33812326022c0d",
+      "api": {
+        "write_parquet_atomic": {
+          "signature": "(path: 'Path', df: 'pl.DataFrame', **kwargs) -> 'Path'",
+          "source_sha256": "a5b413bb26a4d996b7e98936380ecb12ae73f26fa1371827ca5fe96ef217a626"
+        }
+      }
+    }
+  },
+  "cnequity.orchestrator.manifest": {
+    "call_signatures_equal": true,
+    "module_identical": false,
+    "old": {
+      "module_sha256": "8cf56aba5e2d0cd9d35bbd13ddc29fa3092f52f3e04b4cde007e47e1789fc46d",
+      "api": {
+        "Manifest": {
+          "signature": "(db_path: 'Path | str')",
+          "source_sha256": "eaeb8ef2e2b33403ee9d676c927d8a43d46990caa1ebf66d6b477b9a2adb73b3",
+          "methods": {
+            "start_run": "(self, job_name: 'str', metadata: 'dict[str, Any] | None' = None) -> 'str'",
+            "start_batch": "(self, run_id: 'str', batch_id: 'str', task_id: 'str', dataset: 'str', symbols: 'list[str] | None' = None, window_start: 'str | None' = None, window_end: 'str | None' = None, blocks_compaction: 'bool' = True) -> 'None'",
+            "finish_batch": "(self, run_id: 'str', batch_id: 'str', status: 'str', rows_read: 'int' = 0, rows_written: 'int' = 0, error_message: 'str | None' = None, retry_count: 'int | None' = None, request_retry_count: 'int | None' = None) -> 'None'",
+            "finish_run": "(self, run_id: 'str', status: 'str', rows_read: 'int' = 0, rows_written: 'int' = 0, error_message: 'str | None' = None) -> 'None'",
+            "get_successful_batches": "(self, dataset: 'str', window_start: 'str', window_end: 'str', *, exclude_run_id: 'str | None' = None) -> 'list[sqlite3.Row]'"
+          }
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "8cbc9c4bef4637df90c6ca880af97c7d376f416c2f63dff3b8905e867e6bc743",
+      "api": {
+        "Manifest": {
+          "signature": "(db_path: 'Path | str')",
+          "source_sha256": "2a41c60b7ea8cc56619362ad8fe44b8b8252d6de9b0e3e535f14014de9c1114f",
+          "methods": {
+            "start_run": "(self, job_name: 'str', metadata: 'dict[str, Any] | None' = None) -> 'str'",
+            "start_batch": "(self, run_id: 'str', batch_id: 'str', task_id: 'str', dataset: 'str', symbols: 'list[str] | None' = None, window_start: 'str | None' = None, window_end: 'str | None' = None, blocks_compaction: 'bool' = True) -> 'None'",
+            "finish_batch": "(self, run_id: 'str', batch_id: 'str', status: 'str', rows_read: 'int' = 0, rows_written: 'int' = 0, error_message: 'str | None' = None, retry_count: 'int | None' = None, request_retry_count: 'int | None' = None) -> 'None'",
+            "finish_run": "(self, run_id: 'str', status: 'str', rows_read: 'int' = 0, rows_written: 'int' = 0, error_message: 'str | None' = None) -> 'None'",
+            "get_successful_batches": "(self, dataset: 'str', window_start: 'str', window_end: 'str', *, exclude_run_id: 'str | None' = None) -> 'list[sqlite3.Row]'"
+          }
+        }
+      }
+    }
+  },
+  "cnequity.orchestrator.engine": {
+    "call_signatures_equal": true,
+    "module_identical": true,
+    "old": {
+      "module_sha256": "5eabbb53a77d80c8a37f41dcdb5a413de4ac950c0aaea0f9ef8303051c9662dd",
+      "api": {
+        "JobEngine": {
+          "signature": "(config: 'Config')",
+          "source_sha256": "4134f9ef45340c9414e6d1afa310053293858c088133cec93fdeb1abfd9e9ff5",
+          "methods": {
+            "run_job": "(self, job_name: 'str', trade_date: 'date | None' = None, *, steps: 'list[str] | None' = None, waves: 'list[WaveConfig] | None' = None, backfill: 'bool' = False, run_id: 'str | None' = None, retry_failed_only: 'bool' = False, finalize_run: 'bool' = True) -> 'dict[str, Any]'"
+          }
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "5eabbb53a77d80c8a37f41dcdb5a413de4ac950c0aaea0f9ef8303051c9662dd",
+      "api": {
+        "JobEngine": {
+          "signature": "(config: 'Config')",
+          "source_sha256": "4134f9ef45340c9414e6d1afa310053293858c088133cec93fdeb1abfd9e9ff5",
+          "methods": {
+            "run_job": "(self, job_name: 'str', trade_date: 'date | None' = None, *, steps: 'list[str] | None' = None, waves: 'list[WaveConfig] | None' = None, backfill: 'bool' = False, run_id: 'str | None' = None, retry_failed_only: 'bool' = False, finalize_run: 'bool' = True) -> 'dict[str, Any]'"
+          }
+        }
+      }
+    }
+  },
+  "cnequity.adapters.eastmoney.clist": {
+    "call_signatures_equal": true,
+    "module_identical": true,
+    "old": {
+      "module_sha256": "05ea2881b9a47c18ea1bfe655f62447e8f058ba590852d21621a09c69e44ac0e",
+      "api": {
+        "fetch_clist_pages": {
+          "signature": "(client: 'EastMoneyClient', *, fields: 'str', fs: 'str' = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048', page_size: 'int' = 100, archive: 'RawPayloadArchive | None' = None, archive_dataset: 'str | None' = None, archive_run_id: 'str | None' = None) -> 'list[dict]'",
+          "source_sha256": "ad5d0bfd3beddb12a2d6253c53d15e86362fb20431d2abdcbe1f5fbde64a9eec"
+        },
+        "_fetch_clist_page": {
+          "signature": "(client: 'EastMoneyClient', *, host: 'str', fields: 'str', fs: 'str', page: 'int', page_size: 'int', max_retries: 'int' = 3, retry_backoff_seconds: 'float' = 1.0, archive: 'RawPayloadArchive | None' = None, archive_dataset: 'str | None' = None, archive_run_id: 'str | None' = None) -> 'tuple[list[dict], int | None]'",
+          "source_sha256": "a0fb0889ad1a8cd751a97f9ce1ac30ce2f875fda50d3aefab0009f72528a5189"
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "05ea2881b9a47c18ea1bfe655f62447e8f058ba590852d21621a09c69e44ac0e",
+      "api": {
+        "fetch_clist_pages": {
+          "signature": "(client: 'EastMoneyClient', *, fields: 'str', fs: 'str' = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048', page_size: 'int' = 100, archive: 'RawPayloadArchive | None' = None, archive_dataset: 'str | None' = None, archive_run_id: 'str | None' = None) -> 'list[dict]'",
+          "source_sha256": "ad5d0bfd3beddb12a2d6253c53d15e86362fb20431d2abdcbe1f5fbde64a9eec"
+        },
+        "_fetch_clist_page": {
+          "signature": "(client: 'EastMoneyClient', *, host: 'str', fields: 'str', fs: 'str', page: 'int', page_size: 'int', max_retries: 'int' = 3, retry_backoff_seconds: 'float' = 1.0, archive: 'RawPayloadArchive | None' = None, archive_dataset: 'str | None' = None, archive_run_id: 'str | None' = None) -> 'tuple[list[dict], int | None]'",
+          "source_sha256": "a0fb0889ad1a8cd751a97f9ce1ac30ce2f875fda50d3aefab0009f72528a5189"
+        }
+      }
+    }
+  },
+  "cnequity.adapters.eastmoney.em_auth": {
+    "call_signatures_equal": true,
+    "module_identical": false,
+    "old": {
+      "module_sha256": "7403eddd54807a535a855c817d88c9ed1507b480424a5cc50f88e39d24a91b9a",
+      "api": {
+        "EastMoneyClient": {
+          "signature": "(min_interval: 'float | None' = None, *, config: 'Config | None' = None, timeout_sec: 'float | None' = None)",
+          "source_sha256": "658ad7196585aa24352f8d0c3225208483b56bb3cf354f8974b1cbd789386ab8",
+          "methods": {}
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "6dcf6b0b1ab12db76500df977891be5f55fb516b12bcf5fcddcea3288c764831",
+      "api": {
+        "EastMoneyClient": {
+          "signature": "(min_interval: 'float | None' = None, *, config: 'Config | None' = None, timeout_sec: 'float | None' = None)",
+          "source_sha256": "d05ea678ef7b3eca9be271a955dd1056962cc24438c47642c07a4c01774a5196",
+          "methods": {}
+        }
+      }
+    }
+  },
+  "cnequity.adapters.baostock._session": {
+    "call_signatures_equal": true,
+    "module_identical": true,
+    "old": {
+      "module_sha256": "26275ed2e37c89d232ee8a07591a2a13f2b9e440a18fe6e0155636395c571932",
+      "api": {
+        "fetch_per_symbol": {
+          "signature": "(symbols: 'list[str]', start: 'date', end: 'date', fetch_one: 'Callable[[object, str, date, date], list[dict] | None]', *, bs=None, sleep=<built-in function sleep>, label: 'str' = 'baostock', deadline: 'float' = 45.0, on_deadline: 'Callable[[], None]' = <function _force_close_baostock_socket at 0xADDRESS>, config=None, rest_after_batch: 'bool' = False, request_managed: 'bool' = False) -> 'tuple[list[dict], list[str]]'",
+          "source_sha256": "71a25c6c04682c16217ffcc8b56323962502745748f55aa52f3a48ba3dd0671c"
+        },
+        "to_baostock_symbol": {
+          "signature": "(symbol: 'str') -> 'str'",
+          "source_sha256": "ec7bb3d85e662436941e9a669025141d82b15cd643d4ba3966a020e39a623b0c"
+        }
+      }
+    },
+    "new": {
+      "module_sha256": "26275ed2e37c89d232ee8a07591a2a13f2b9e440a18fe6e0155636395c571932",
+      "api": {
+        "fetch_per_symbol": {
+          "signature": "(symbols: 'list[str]', start: 'date', end: 'date', fetch_one: 'Callable[[object, str, date, date], list[dict] | None]', *, bs=None, sleep=<built-in function sleep>, label: 'str' = 'baostock', deadline: 'float' = 45.0, on_deadline: 'Callable[[], None]' = <function _force_close_baostock_socket at 0xADDRESS>, config=None, rest_after_batch: 'bool' = False, request_managed: 'bool' = False) -> 'tuple[list[dict], list[str]]'",
+          "source_sha256": "71a25c6c04682c16217ffcc8b56323962502745748f55aa52f3a48ba3dd0671c"
+        },
+        "to_baostock_symbol": {
+          "signature": "(symbol: 'str') -> 'str'",
+          "source_sha256": "ec7bb3d85e662436941e9a669025141d82b15cd643d4ba3966a020e39a623b0c"
+        }
+      }
+    }
+  }
+}

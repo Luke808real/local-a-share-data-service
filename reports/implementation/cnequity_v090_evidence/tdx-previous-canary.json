@@ -1,0 +1,64 @@
+{
+  "STATUS": "PASS",
+  "date": "2026-09-17",
+  "row_n": 3,
+  "matches_published_OHLC_volume_amount": true,
+  "records": [
+    {
+      "symbol": "002311.SZ",
+      "trade_date": "2026-09-17",
+      "open": 42.3,
+      "high": 42.35,
+      "low": 41.88,
+      "close": 42.15,
+      "volume": 6359600,
+      "amount": 267742480.0,
+      "source": "tdx_protocol",
+      "data_version": "v2",
+      "fetched_at": "2026-09-18 06:04:37.788154+00:00"
+    },
+    {
+      "symbol": "002580.SZ",
+      "trade_date": "2026-09-17",
+      "open": 19.01,
+      "high": 19.28,
+      "low": 18.73,
+      "close": 19.02,
+      "volume": 33712900,
+      "amount": 638796544.0,
+      "source": "tdx_protocol",
+      "data_version": "v2",
+      "fetched_at": "2026-09-18 06:04:37.788154+00:00"
+    },
+    {
+      "symbol": "600519.SH",
+      "trade_date": "2026-09-17",
+      "open": 1257.98,
+      "high": 1267.6,
+      "low": 1254.0,
+      "close": 1266.98,
+      "volume": 1755300,
+      "amount": 2217338368.0,
+      "source": "tdx_protocol",
+      "data_version": "v2",
+      "fetched_at": "2026-09-18 06:04:37.788154+00:00"
+    }
+  ],
+  "compact": {
+    "step": "compact",
+    "status": "success",
+    "elapsed": 0.07688379200408235,
+    "rows_read": 3,
+    "rows_written": 3,
+    "dataset_revisions": {
+      "daily_bars": {
+        "revision": 1,
+        "revision_id": "5bbd4dde93aa40e7ae62b40a9ceeb2e3",
+        "content_digest": "3b008b71f92d859710588a1f57c7983f2ac06c7937a66395bebef539f53d986d",
+        "changed_partitions": [
+          "daily_bars/trade_date=2026-09-17"
+        ]
+      }
+    }
+  }
+}

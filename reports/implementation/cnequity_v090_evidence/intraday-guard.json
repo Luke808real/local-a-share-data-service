@@ -1,0 +1,17 @@
+{
+  "observation": {
+    "row_n": 10,
+    "stamped_n": 10,
+    "latest_update": "2026-09-18T13:56:01+08:00",
+    "session_date": "2026-09-18",
+    "session_coverage": 1.0,
+    "turnover_present_n": 10,
+    "turnover_zero_n": 0,
+    "is_settled": false
+  },
+  "negative_checks": {
+    "2026-09-17": "SNAPSHOT_SESSION_MISMATCH",
+    "2026-09-18": "SNAPSHOT_NOT_SETTLED",
+    "2026-09-19": "SNAPSHOT_SESSION_MISMATCH"
+  }
+}

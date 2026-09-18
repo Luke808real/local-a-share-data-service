@@ -131,3 +131,31 @@ shipped `contracts/v0.8.0.json` is exactly one added column and one unit entry.
 The shipped `contracts/v0.8.0.json` inside the package is deliberately **not**
 rewritten: it documents the upstream 0.8.0 release, and editing it would forge an
 upstream artifact.
+
+## 0.9.0 isolated upgrade verification (2026-09-18)
+
+The production runtime above is preserved. The upgrade branch pins version
+0.9.0 to `ca5c568f52a4cc1fad8bd812c3c406802c39d2fc` in `.venv-cne090`.
+All three patches are STILL_REQUIRED: pristine 0.9.0 lacks f8/turnover in the
+valuation adapter/schema/unit contract and has no snapshot guard module.
+Each dry-run and application succeeds in order with no patch edits. A second
+pristine replay reproduces all four installed files byte-for-byte.
+
+Reproduce only in the isolated environment (never change production .venv):
+
+```sh
+UV_PROJECT_ENVIRONMENT=.venv-cne090 uv sync --locked --group query-test
+patch --dry-run -p1 -d .venv-cne090/lib/python3.12/site-packages < patches/cnequity/0001-valuation-metrics-turnover-rate.patch
+patch -p1 -d .venv-cne090/lib/python3.12/site-packages < patches/cnequity/0001-valuation-metrics-turnover-rate.patch
+patch --dry-run -p1 -d .venv-cne090/lib/python3.12/site-packages < patches/cnequity/0002-valuation-metrics-snapshot-date-guard.patch
+patch -p1 -d .venv-cne090/lib/python3.12/site-packages < patches/cnequity/0002-valuation-metrics-snapshot-date-guard.patch
+patch --dry-run -p1 -d .venv-cne090/lib/python3.12/site-packages < patches/cnequity/0003-snapshot-target-session-cutoff.patch
+patch -p1 -d .venv-cne090/lib/python3.12/site-packages < patches/cnequity/0003-snapshot-target-session-cutoff.patch
+```
+
+These commands assume a pristine install; do not apply twice. Preserve original
+upstream contract artifacts. Patched 0.9.0 registry validation returns no errors.
+The older `contracts_registry_after_patch.json` stays the 0.8.0 comparison baseline.
+Execution evidence is in `reports/implementation/cnequity_v090_evidence/`.
+The observed remote v0.9.0 tag differs from the requested SHA; this upgrade
+intentionally uses the user's exact immutable commit, never the tag or main.

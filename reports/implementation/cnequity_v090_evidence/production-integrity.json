@@ -1,0 +1,75 @@
+{
+  "result": "PASS",
+  "method": "all regular file relative paths, size and mtime_ns; authority pointers and referenced plan/receipt SHA256; OS sandbox denied production data and production .venv writes",
+  "file_count": 146647,
+  "production_venv_file_count": 6312,
+  "changed_files": 0,
+  "changed_authority": 0,
+  "changed_production_venv_files": 0,
+  "before_fingerprint": "66120ebb2e694aacc346a3448ce3a0a18c6c39d2a1d5a553051b5b76958c593c",
+  "after_fingerprint": "66120ebb2e694aacc346a3448ce3a0a18c6c39d2a1d5a553051b5b76958c593c",
+  "authority_before": {
+    "meta/asl/daily_facts/published-daily-facts-authority.json": {
+      "pointer": {
+        "manifest_hash": "6126f20103eae277f5e23f95f2e314a26f8b6c90b37cfb3e292e01f3dc36710b",
+        "plan": "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_plan.json",
+        "receipt": "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_receipt.json",
+        "schema": "ASL_PUBLISHED_DAILY_FACTS_AUTHORITY_V01"
+      },
+      "sha256": "cdc53d1bd9facaccf857c4c743ba30d2a79830a89ad6a88fe5a644bdce1d62f6"
+    },
+    "meta/asl/r3/published-daily-authority.json": {
+      "pointer": {
+        "manifest_hash": "e5364e8237e0776b139477f2284b93587bee8b0b5232b0122c583a2b28600a2b",
+        "plan": "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_plan.json",
+        "receipt": "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_receipt.json",
+        "schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01"
+      },
+      "sha256": "20731476454cdb1ca738e207e42bf519ce0210092ddce90accbe91f25e20e978"
+    },
+    "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_plan.json": {
+      "sha256": "ea37296fe85c26ce4e3266cf569ee77fb3d6b13108ade53a9e466f76d3697cdf"
+    },
+    "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_receipt.json": {
+      "sha256": "09ec455f0517fac15fcb127aebf7dee9e9e05480cfeb2d06d2528c38859744c8"
+    },
+    "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_plan.json": {
+      "sha256": "d2ce49e61c187514599f25fe09da16bebf94e4d2570c51465ebbdcdd6f757127"
+    },
+    "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_receipt.json": {
+      "sha256": "a1543a0ce750272fa43717c909de8931de77b53a6c9bdb5668bfe7c8a480813f"
+    }
+  },
+  "authority_after": {
+    "meta/asl/daily_facts/published-daily-facts-authority.json": {
+      "pointer": {
+        "manifest_hash": "6126f20103eae277f5e23f95f2e314a26f8b6c90b37cfb3e292e01f3dc36710b",
+        "plan": "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_plan.json",
+        "receipt": "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_receipt.json",
+        "schema": "ASL_PUBLISHED_DAILY_FACTS_AUTHORITY_V01"
+      },
+      "sha256": "cdc53d1bd9facaccf857c4c743ba30d2a79830a89ad6a88fe5a644bdce1d62f6"
+    },
+    "meta/asl/r3/published-daily-authority.json": {
+      "pointer": {
+        "manifest_hash": "e5364e8237e0776b139477f2284b93587bee8b0b5232b0122c583a2b28600a2b",
+        "plan": "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_plan.json",
+        "receipt": "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_receipt.json",
+        "schema": "R3_PUBLISHED_DAILY_AUTHORITY_V01"
+      },
+      "sha256": "20731476454cdb1ca738e207e42bf519ce0210092ddce90accbe91f25e20e978"
+    },
+    "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_plan.json": {
+      "sha256": "ea37296fe85c26ce4e3266cf569ee77fb3d6b13108ade53a9e466f76d3697cdf"
+    },
+    "staging/asl_20260917_minimal_update_v01/facts_publication_r4/promotion_receipt.json": {
+      "sha256": "09ec455f0517fac15fcb127aebf7dee9e9e05480cfeb2d06d2528c38859744c8"
+    },
+    "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_plan.json": {
+      "sha256": "d2ce49e61c187514599f25fe09da16bebf94e4d2570c51465ebbdcdd6f757127"
+    },
+    "staging/r3_frozen_shsz_daily_incremental_v01/trade_date=2026-09-17/promotion_receipt.json": {
+      "sha256": "a1543a0ce750272fa43717c909de8931de77b53a6c9bdb5668bfe7c8a480813f"
+    }
+  }
+}

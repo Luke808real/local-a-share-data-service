@@ -1,0 +1,16 @@
+{
+  "TARGETED_TESTS": {
+    "tests": 188,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 188
+  },
+  "FULL_TEST_SUITE": {
+    "tests": 275,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 275
+  }
+}

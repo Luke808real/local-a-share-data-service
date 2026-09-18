@@ -1,0 +1,14 @@
+{
+  "result": "PASS",
+  "file_hashes": {
+    "adapters/eastmoney/valuation.py": "2593c8dabc87863fc8af3b4a57bb892bc69e57050d3b0fcfd920408b98f27e43",
+    "domain/schemas.py": "50f5edfa3fa7030daed9b97595461d414f2c77a18813f41d023114e807ff9502",
+    "domain/datasets.py": "262e18b74908b8c913f6fa06984ad5f88d4828970fc7f9473ca292497c1735dd",
+    "domain/snapshot_guard.py": "9ac9bd9bc3db77d246482c76f5bfdffe207c440d1be7771eaf64d0660fbac86e"
+  },
+  "patch_status": {
+    "0001": "STILL_REQUIRED",
+    "0002": "STILL_REQUIRED",
+    "0003": "STILL_REQUIRED"
+  }
+}

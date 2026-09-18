@@ -1,0 +1,17 @@
+{
+  "version": "0.9.0",
+  "direct_url": {
+    "url": "https://github.com/rootSunc/CNEquity.git",
+    "vcs_info": {
+      "vcs": "git",
+      "commit_id": "ca5c568f52a4cc1fad8bd812c3c406802c39d2fc",
+      "requested_revision": "ca5c568f52a4cc1fad8bd812c3c406802c39d2fc"
+    }
+  },
+  "python_environment": ".venv-cne090",
+  "production_environment": ".venv (unchanged 0.8.0)",
+  "requested_commit": "ca5c568f52a4cc1fad8bd812c3c406802c39d2fc",
+  "observed_remote_tag_object": "3196bd89f922e1476080c1576a9550c8eb326ac1",
+  "observed_remote_tag_peeled": "44601b17c448de68c04f7cf9390f33e8881b5cec",
+  "pin_policy": "user exact immutable commit takes precedence over remote tag"
+}

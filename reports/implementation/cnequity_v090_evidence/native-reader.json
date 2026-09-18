@@ -1,0 +1,120 @@
+{
+  "daily_bars": {
+    "row_n": 1,
+    "schema": {
+      "symbol": "String",
+      "trade_date": "Date",
+      "open": "Float64",
+      "high": "Float64",
+      "low": "Float64",
+      "close": "Float64",
+      "volume": "Int64",
+      "amount": "Float64",
+      "source": "String",
+      "data_version": "String",
+      "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+    },
+    "rows": [
+      {
+        "symbol": "002311.SZ",
+        "trade_date": "2026-09-17",
+        "open": 42.3,
+        "high": 42.35,
+        "low": 41.88,
+        "close": 42.15,
+        "volume": 6359600,
+        "amount": 267742480.0,
+        "source": "tdx_protocol",
+        "data_version": "v2",
+        "fetched_at": "2026-09-17 17:47:34.195540+00:00"
+      }
+    ]
+  },
+  "trading_status": {
+    "row_n": 1,
+    "schema": {
+      "symbol": "String",
+      "trade_date": "Date",
+      "is_trading": "Boolean",
+      "status": "String",
+      "risk_warning": "Boolean",
+      "source": "String",
+      "data_version": "String",
+      "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+    },
+    "rows": [
+      {
+        "symbol": "002311.SZ",
+        "trade_date": "2026-09-17",
+        "is_trading": true,
+        "status": "normal",
+        "risk_warning": false,
+        "source": "eastmoney",
+        "data_version": "v1",
+        "fetched_at": "2026-09-18 00:45:09.129989+00:00"
+      }
+    ]
+  },
+  "valuation_metrics": {
+    "row_n": 1,
+    "schema": {
+      "symbol": "String",
+      "trade_date": "Date",
+      "pe_ttm": "Float64",
+      "pb": "Float64",
+      "ps_ttm": "Float64",
+      "total_mv": "Float64",
+      "float_mv": "Float64",
+      "turnover_rate": "Float64",
+      "source": "String",
+      "data_version": "String",
+      "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+    },
+    "rows": [
+      {
+        "symbol": "002311.SZ",
+        "trade_date": "2026-09-17",
+        "pe_ttm": 21.68,
+        "pb": 2.97,
+        "ps_ttm": 1610757330.0,
+        "total_mv": 69842984019.0,
+        "float_mv": 69775762482.0,
+        "turnover_rate": 0.38,
+        "source": "eastmoney",
+        "data_version": "v1",
+        "fetched_at": "2026-09-17 16:45:03.447447+00:00"
+      }
+    ]
+  },
+  "corporate_actions": {
+    "row_n": 1,
+    "schema": {
+      "symbol": "String",
+      "ex_date": "Date",
+      "action_type": "String",
+      "cash_dividend": "Float64",
+      "bonus_ratio": "Float64",
+      "transfer_ratio": "Float64",
+      "allotment_ratio": "Float64",
+      "allotment_price": "Float64",
+      "source": "String",
+      "data_version": "String",
+      "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+    },
+    "rows": [
+      {
+        "symbol": "002311.SZ",
+        "ex_date": "2026-09-17",
+        "action_type": "cash_dividend",
+        "cash_dividend": 0.15,
+        "bonus_ratio": 0.0,
+        "transfer_ratio": 0.0,
+        "allotment_ratio": null,
+        "allotment_price": null,
+        "source": "eastmoney",
+        "data_version": "v1",
+        "fetched_at": "2026-09-18 03:31:37.156827+00:00"
+      }
+    ]
+  }
+}

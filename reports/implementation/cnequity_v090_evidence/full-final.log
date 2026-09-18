@@ -1,0 +1,11 @@
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+...........................................................              [100%]
+=============================== warnings summary ===============================
+tests/test_mcp_server.py:16
+  /Users/luke808/ASL/tests/test_mcp_server.py:16: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+275 passed, 1 warning in 14.51s

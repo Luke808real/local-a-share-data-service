@@ -1,0 +1,12 @@
+{
+  "pin_assertions": "2 expected failures from frozen 0.8.0 assertions; updated to exact 0.9.0 version/SHA, not relaxed",
+  "reuse_fixture": {
+    "file": "tests/test_cnequity_v080_daily_reuse.py",
+    "original_sha256": "9b0524c37103f2c0c4e0bf21c4b75da40ec5e00b7353192bcef85f6676e6a7bb",
+    "preexisting_failure_reproduced_on": "0.8.0 production interpreter under read-only sandbox",
+    "root_cause": "finish_batch only updates running batches; fixture attempted failed -> success without start_batch",
+    "repair": "explicit restart, plus assertions that a delayed finish cannot erase terminal failure",
+    "after_repair": "PASS on both 0.8.0 and 0.9.0",
+    "scope": "Explicitly named in user upgrade contract; adopted into version control. Other pre-existing untracked files remain untouched."
+  }
+}

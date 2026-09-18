@@ -4,13 +4,16 @@ version = "0.0.0"
 description = "Local A-share market facts service runtime"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "cnequity @ git+https://github.com/rootSunc/CNEquity.git@d453853da766b3ba3e44489c0fb6e0089243fa25",
+    "cnequity @ git+https://github.com/rootSunc/CNEquity.git@ca5c568f52a4cc1fad8bd812c3c406802c39d2fc",
     "socksio>=1.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest==8.4.2",
+]
+query-test = [
+    "mcp==1.29.1",
 ]
 
 [tool.uv]

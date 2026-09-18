@@ -1,0 +1,1046 @@
+{
+  "status": "PASS",
+  "target": "2026-09-18",
+  "valuation_transport": "one real page replayed through native adapter/guard",
+  "corporate_actions_scope": "native exact-date event feed; daily 30-day reconciliation intentionally not invoked",
+  "event_compact": {
+    "step": "compact",
+    "status": "success",
+    "elapsed": 0.05196925002383068,
+    "rows_read": 30,
+    "rows_written": 30,
+    "dataset_revisions": {
+      "corporate_actions": {
+        "revision": 1,
+        "revision_id": "c979db9cc954484bb846aaa0d8c8d3a9",
+        "content_digest": "c3c5535fb8fb30abbd3223c2b7111bc6a2f621bbc82e31f0627a8373cb41bed6",
+        "changed_partitions": [
+          "corporate_actions/ex_date=2026"
+        ]
+      }
+    }
+  },
+  "production_publish": false,
+  "scope": [
+    "000016.SZ",
+    "002311.SZ",
+    "600301.SH",
+    "600519.SH",
+    "605507.SH",
+    "605555.SH",
+    "605566.SH",
+    "605567.SH",
+    "605577.SH",
+    "605580.SH",
+    "605588.SH",
+    "605589.SH",
+    "605598.SH",
+    "605599.SH"
+  ],
+  "valuation_scope": [
+    "605599.SH",
+    "605598.SH",
+    "605589.SH",
+    "605588.SH",
+    "605580.SH",
+    "605577.SH",
+    "605567.SH",
+    "605566.SH",
+    "605555.SH",
+    "605507.SH"
+  ],
+  "negative_guards": {
+    "wrong_session": "SNAPSHOT_SESSION_MISMATCH",
+    "future_session": "SNAPSHOT_SESSION_MISMATCH",
+    "turnover_reset": "SNAPSHOT_TURNOVER_RESET"
+  },
+  "job_result": {
+    "run_id": "77be6489-aeb4-46df-9cd3-a2a510e754cb",
+    "status": "success",
+    "results": [
+      {
+        "step": "trading_status",
+        "status": "success",
+        "elapsed": 2.477933791000396,
+        "rows_read": 14,
+        "rows_written": 14,
+        "context_updates": {}
+      },
+      {
+        "step": "valuation_metrics",
+        "status": "success",
+        "elapsed": 0.029885124997235835,
+        "rows_read": 10,
+        "rows_written": 10,
+        "context_updates": {}
+      },
+      {
+        "step": "compact",
+        "status": "success",
+        "elapsed": 0.059753459005150944,
+        "rows_read": 24,
+        "rows_written": 24,
+        "dataset_revisions": {
+          "trading_status": {
+            "revision": 1,
+            "revision_id": "657219e3653e4bd78c0f68dc8ea0da95",
+            "content_digest": "a87938025202749461a3476c4ba9add801cf5d1c389d792b2dd63c8b276de2c7",
+            "changed_partitions": [
+              "trading_status/trade_date=2026-09"
+            ]
+          },
+          "valuation_metrics": {
+            "revision": 1,
+            "revision_id": "920d90e1dcbc43369991cbca47a17efe",
+            "content_digest": "7445f262fc4b9be859e1b194d2c86edc0d50275da7cf27e76654904fb41aaaf3",
+            "changed_partitions": [
+              "valuation_metrics/trade_date=2026-09-18"
+            ]
+          }
+        }
+      }
+    ],
+    "rows_read": 48,
+    "rows_written": 48
+  },
+  "tdx_compact": {
+    "step": "compact",
+    "status": "success",
+    "elapsed": 0.301999541989062,
+    "rows_read": 14,
+    "rows_written": 14,
+    "dataset_revisions": {
+      "daily_bars": {
+        "revision": 1,
+        "revision_id": "5aed074d3f1a44e3b7c3f44223afb391",
+        "content_digest": "084a227be1dff0ea17d9052ad65e2b239dc84807ce26037d6ca46df4edc22a3e",
+        "changed_partitions": [
+          "daily_bars/trade_date=2026-09-18"
+        ]
+      }
+    }
+  },
+  "datasets": {
+    "daily_bars": {
+      "rows": 14,
+      "schema": {
+        "symbol": "String",
+        "trade_date": "Date",
+        "open": "Float64",
+        "high": "Float64",
+        "low": "Float64",
+        "close": "Float64",
+        "volume": "Int64",
+        "amount": "Float64",
+        "source": "String",
+        "data_version": "String",
+        "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+      },
+      "records": [
+        {
+          "symbol": "605599.SH",
+          "trade_date": "2026-09-18",
+          "open": 14.01,
+          "high": 14.32,
+          "low": 14.01,
+          "close": 14.23,
+          "volume": 3947200,
+          "amount": 55839896.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "000016.SZ",
+          "trade_date": "2026-09-18",
+          "open": 2.46,
+          "high": 2.46,
+          "low": 2.46,
+          "close": 2.46,
+          "volume": 0,
+          "amount": 0.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605555.SH",
+          "trade_date": "2026-09-18",
+          "open": 12.13,
+          "high": 12.54,
+          "low": 12.01,
+          "close": 12.49,
+          "volume": 6304000,
+          "amount": 77794176.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "002311.SZ",
+          "trade_date": "2026-09-18",
+          "open": 42.2,
+          "high": 42.62,
+          "low": 41.92,
+          "close": 41.98,
+          "volume": 5653300,
+          "amount": 238048544.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605598.SH",
+          "trade_date": "2026-09-18",
+          "open": 24.43,
+          "high": 25.2,
+          "low": 24.38,
+          "close": 25.01,
+          "volume": 2454500,
+          "amount": 61326996.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "600301.SH",
+          "trade_date": "2026-09-18",
+          "open": 45.43,
+          "high": 45.43,
+          "low": 45.43,
+          "close": 45.43,
+          "volume": 0,
+          "amount": 0.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605507.SH",
+          "trade_date": "2026-09-18",
+          "open": 17.4,
+          "high": 18.4,
+          "low": 17.38,
+          "close": 18.17,
+          "volume": 18048900,
+          "amount": 324372096.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605588.SH",
+          "trade_date": "2026-09-18",
+          "open": 45.61,
+          "high": 48.14,
+          "low": 45.61,
+          "close": 47.1,
+          "volume": 1415900,
+          "amount": 66801988.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605566.SH",
+          "trade_date": "2026-09-18",
+          "open": 26.77,
+          "high": 27.98,
+          "low": 26.77,
+          "close": 27.67,
+          "volume": 4544500,
+          "amount": 125415136.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605589.SH",
+          "trade_date": "2026-09-18",
+          "open": 41.34,
+          "high": 41.39,
+          "low": 40.04,
+          "close": 41.09,
+          "volume": 36496300,
+          "amount": 1486607616.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605577.SH",
+          "trade_date": "2026-09-18",
+          "open": 14.26,
+          "high": 16.23,
+          "low": 14.25,
+          "close": 15.72,
+          "volume": 51361800,
+          "amount": 778423424.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605567.SH",
+          "trade_date": "2026-09-18",
+          "open": 9.05,
+          "high": 9.18,
+          "low": 8.99,
+          "close": 9.03,
+          "volume": 3441300,
+          "amount": 31289892.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "600519.SH",
+          "trade_date": "2026-09-18",
+          "open": 1262.99,
+          "high": 1265.88,
+          "low": 1256.1,
+          "close": 1257.12,
+          "volume": 2489000,
+          "amount": 3135849216.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        },
+        {
+          "symbol": "605580.SH",
+          "trade_date": "2026-09-18",
+          "open": 23.33,
+          "high": 23.51,
+          "low": 22.5,
+          "close": 22.7,
+          "volume": 15310100,
+          "amount": 349169824.0,
+          "source": "tdx_protocol",
+          "data_version": "v2",
+          "fetched_at": "2026-09-18 15:01:21.298385+00:00"
+        }
+      ]
+    },
+    "trading_status": {
+      "rows": 14,
+      "schema": {
+        "symbol": "String",
+        "trade_date": "Date",
+        "is_trading": "Boolean",
+        "status": "String",
+        "risk_warning": "Boolean",
+        "source": "String",
+        "data_version": "String",
+        "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+      },
+      "records": [
+        {
+          "symbol": "002311.SZ",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605577.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605598.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605589.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "600301.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": false,
+          "status": "suspended",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605567.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605566.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "000016.SZ",
+          "trade_date": "2026-09-18",
+          "is_trading": false,
+          "status": "suspended",
+          "risk_warning": true,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605588.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605580.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605555.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605599.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "600519.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        },
+        {
+          "symbol": "605507.SH",
+          "trade_date": "2026-09-18",
+          "is_trading": true,
+          "status": "normal",
+          "risk_warning": false,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.820794+00:00"
+        }
+      ]
+    },
+    "valuation_metrics": {
+      "rows": 10,
+      "schema": {
+        "symbol": "String",
+        "trade_date": "Date",
+        "pe_ttm": "Float64",
+        "pb": "Float64",
+        "ps_ttm": "Float64",
+        "total_mv": "Float64",
+        "float_mv": "Float64",
+        "turnover_rate": "Float64",
+        "source": "String",
+        "data_version": "String",
+        "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+      },
+      "records": [
+        {
+          "symbol": "605566.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 45.99,
+          "pb": 1.79,
+          "ps_ttm": 40109189.5,
+          "total_mv": 3689517800.0,
+          "float_mv": 3689517800.0,
+          "turnover_rate": 3.41,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605567.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 43.91,
+          "pb": 1.62,
+          "ps_ttm": 20459949.75,
+          "total_mv": 1796970000.0,
+          "float_mv": 1796970000.0,
+          "turnover_rate": 1.73,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605598.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": -98.77,
+          "pb": 3.76,
+          "ps_ttm": -30496259.16,
+          "total_mv": 6024124911.0,
+          "float_mv": 6024124911.0,
+          "turnover_rate": 1.02,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605589.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 38.86,
+          "pb": 3.22,
+          "ps_ttm": 447436932.73,
+          "total_mv": 34777856843.0,
+          "float_mv": 34758811628.0,
+          "turnover_rate": 4.31,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605588.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": -37.5,
+          "pb": 3.74,
+          "ps_ttm": -46012663.84,
+          "total_mv": 3451275155.0,
+          "float_mv": 3442989323.0,
+          "turnover_rate": 1.94,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605577.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 44.4,
+          "pb": 1.79,
+          "ps_ttm": 78677999.37,
+          "total_mv": 6986666675.0,
+          "float_mv": 6986666675.0,
+          "turnover_rate": 11.56,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605599.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 12.67,
+          "pb": 2.5,
+          "ps_ttm": 436779234.85,
+          "total_mv": 11067778094.0,
+          "float_mv": 11067778094.0,
+          "turnover_rate": 0.51,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605580.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 33.72,
+          "pb": 6.14,
+          "ps_ttm": 94233884.52,
+          "total_mv": 6356000000.0,
+          "float_mv": 6356000000.0,
+          "turnover_rate": 5.47,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605555.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 90.0,
+          "pb": 2.11,
+          "ps_ttm": 33588432.18,
+          "total_mv": 6046022310.0,
+          "float_mv": 6046022310.0,
+          "turnover_rate": 1.3,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        },
+        {
+          "symbol": "605507.SH",
+          "trade_date": "2026-09-18",
+          "pe_ttm": 20.82,
+          "pb": 1.69,
+          "ps_ttm": 341348063.99,
+          "total_mv": 14215352193.0,
+          "float_mv": 14215352193.0,
+          "turnover_rate": 2.31,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:24.858727+00:00"
+        }
+      ]
+    },
+    "corporate_actions": {
+      "rows": 30,
+      "schema": {
+        "symbol": "String",
+        "ex_date": "Date",
+        "action_type": "String",
+        "cash_dividend": "Float64",
+        "bonus_ratio": "Float64",
+        "transfer_ratio": "Float64",
+        "allotment_ratio": "Float64",
+        "allotment_price": "Float64",
+        "source": "String",
+        "data_version": "String",
+        "fetched_at": "Datetime(time_unit='us', time_zone='UTC')"
+      },
+      "records": [
+        {
+          "symbol": "920183.BJ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.20400000000000001,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "000703.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.9,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "601607.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.1,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "601096.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.0228,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603319.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.05,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "002255.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.06,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "601838.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.489,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "000963.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.35,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "001359.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.16,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "002592.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.1,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603867.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.2,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603111.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.15,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "920445.BJ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.05,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603387.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.15,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "301525.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.05,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "688525.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.4242,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603163.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.2,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "688006.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.067,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "920176.BJ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.4,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "688002.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.5,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603698.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.06,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "600177.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.2,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "688001.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.020999999999999998,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603039.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.075,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "002972.SZ",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.1,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "600420.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.05,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603757.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.1,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "600820.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.05,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "688366.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.25,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        },
+        {
+          "symbol": "603927.SH",
+          "ex_date": "2026-09-18",
+          "action_type": "cash_dividend",
+          "cash_dividend": 0.05,
+          "bonus_ratio": 0.0,
+          "transfer_ratio": 0.0,
+          "allotment_ratio": null,
+          "allotment_price": null,
+          "source": "eastmoney",
+          "data_version": "v1",
+          "fetched_at": "2026-09-18 15:01:22.278307+00:00"
+        }
+      ]
+    }
+  },
+  "raw_observation": {
+    "row_n": 10,
+    "stamped_n": 10,
+    "latest_update": "2026-09-18T16:12:01+08:00",
+    "session_date": "2026-09-18",
+    "session_coverage": 1.0,
+    "turnover_present_n": 10,
+    "turnover_zero_n": 0,
+    "is_settled": true
+  }
+}

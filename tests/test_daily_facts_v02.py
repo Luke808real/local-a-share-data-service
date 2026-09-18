@@ -178,24 +178,24 @@ def test_load_sources_refuses_a_v1_evidence_directory(tmp_path):
 
 
 # --------------------------------------------------- upgrade / pin contract -
-CNEQUITY_080_COMMIT = 'd453853da766b3ba3e44489c0fb6e0089243fa25'
+CNEQUITY_090_COMMIT = 'ca5c568f52a4cc1fad8bd812c3c406802c39d2fc'
 
 
-def test_production_pin_targets_the_v080_commit():
+def test_production_pin_targets_the_v090_commit():
     pyproject = (ROOT / 'pyproject.toml').read_text()
-    assert CNEQUITY_080_COMMIT in pyproject
+    assert CNEQUITY_090_COMMIT in pyproject
     assert 'a18ee0484dfb0801650175471724def3228b8a17' not in pyproject
     assert 'main' not in pyproject.split('CNEquity.git@')[-1].split('"')[0]
 
 
-def test_installed_runtime_is_v080_at_the_pinned_commit():
+def test_installed_runtime_is_v090_at_the_pinned_commit():
     # Validates the runtime, not the text pin.
     import importlib.metadata as md
 
     distribution = md.distribution('cnequity')
-    assert distribution.version == '0.8.0'
+    assert distribution.version == '0.9.0'
     direct = json.loads((distribution._path / 'direct_url.json').read_text())
-    assert direct['vcs_info']['commit_id'] == CNEQUITY_080_COMMIT
+    assert direct['vcs_info']['commit_id'] == CNEQUITY_090_COMMIT
 
 
 def test_trading_status_schema_is_the_two_column_form():
