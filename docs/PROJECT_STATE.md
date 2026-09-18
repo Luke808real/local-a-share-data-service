@@ -1,5 +1,25 @@
 # PROJECT_STATE
 
+## Operational delta — 2026-09-18 (author verification)
+
+R3 daily and independent Daily Facts are now published through **2026-09-17**
+for the existing frozen SH/SZ scope. The new Facts date contains 5,208 keys and
+all five fields (preclose, pct_chg, turnover_rate, trade_status, is_st), with
+zero unresolved certification counters, 24 official reference-price cases and
+12 suspended rows. Source: CNEquity 0.8.0 plus official dividend evidence.
+Facts manifest: `6126f20103eae277f5e23f95f2e314a26f8b6c90b37cfb3e292e01f3dc36710b`.
+R3 manifest: `e5364e8237e0776b139477f2284b93587bee8b0b5232b0122c583a2b28600a2b`.
+Local query and local MCP readback passed; 99 targeted tests passed.
+
+This is local operational/author status, not independent audit or a formal
+phase advancement. FACTS_READY=false, PRECLOSE_COMPLETE=false and PARTIAL
+historical daily coverage remain unchanged. Facts for 2026-09-10 through
+2026-09-16 remain outside the newly added date. Old V1 Facts files are retained.
+Full evidence and scope are recorded in
+[the completion report](../reports/implementation/ASL_20260917_LOCAL_FIELDS_COMPLETION.md).
+The older snapshots below are historical and are superseded only where this
+delta explicitly supplies newer operational observations.
+
 ## Current operational snapshot — 2026-09-10
 
 This section supersedes the historical 2026-08-18 snapshot below. It records

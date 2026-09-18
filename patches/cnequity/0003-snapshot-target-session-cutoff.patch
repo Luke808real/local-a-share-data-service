@@ -1,0 +1,16 @@
+--- a/cnequity/domain/snapshot_guard.py
++++ b/cnequity/domain/snapshot_guard.py
+@@ -171,10 +171,11 @@
+                 f"latest vendor stamp is {observation.latest_update} and the session is not "
+                 f"final before {SETTLED_AFTER} Asia/Shanghai (now {moment:%F %T})",
+             )
+-        if moment.time() < SETTLED_AFTER:
++        settlement = datetime.combine(target, SETTLED_AFTER, tzinfo=SHANGHAI)
++        if moment < settlement:
+             raise SnapshotWindowError(
+                 "SNAPSHOT_WINDOW_NOT_OPEN",
+-                f"local time {moment:%F %T} is before the {SETTLED_AFTER} settlement cutoff; "
++                f"local time {moment:%F %T} is before the {settlement:%F %T} settlement cutoff; "
+                 "an intraday capture is partial and must not be published",
+             )
+     if observation.turnover_present_n == 0:

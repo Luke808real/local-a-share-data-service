@@ -499,6 +499,7 @@ def build_shadow_rows(
         row["status_dataset_value"] = status_value
 
         # ---- preclose -------------------------------------------------------
+        row["prior_close_session"] = prior_used.get(symbol)
         evidence = bundle.reference_price_evidence.get((symbol, day))
         if evidence is not None:
             if prior_close is None:
@@ -523,6 +524,13 @@ def build_shadow_rows(
                 row["reference_price_expected"] = float(reference)
                 row["reference_price_announcement_id"] = evidence.announcement_id
                 row["reference_price_source_hash"] = evidence.source_hash
+        elif (symbol, day) in bundle.corporate_actions:
+            # A known ex-date without official evidence is not an ordinary
+            # session. Never silently reuse yesterday's unadjusted close.
+            blockers.append("CORPORATE_ACTION_EVIDENCE_MISSING")
+            row["preclose"] = None
+            row["preclose_rule_id"] = None
+            row["preclose_source"] = None
         elif prior_close is not None:
             row["preclose"] = float(prior_close)
             row["preclose_rule_id"] = RULE_PRECLOSE_PRIOR_CLOSE

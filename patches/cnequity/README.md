@@ -14,8 +14,9 @@ UPSTREAM_PR            = not submitted
 |---|---|---|
 | 0001 | `0001-valuation-metrics-turnover-rate.patch` | add `turnover_rate` (EastMoney `f8`) |
 | 0002 | `0002-valuation-metrics-snapshot-date-guard.patch` | request `f124`; refuse a page that does not describe the requested session |
+| 0003 | `0003-snapshot-target-session-cutoff.patch` | compare against the target session's complete settlement datetime, including after midnight |
 
-Both are applied in order to the installed package. The chain has been replayed
+Patches are applied in order to the installed package. The 0001/0002 chain has been replayed
 from a pristine 0.8.0 checkout and reproduces every touched file byte-for-byte
 (`.venv`, `tests/test_snapshot_guard.py`, `tests/test_valuation_turnover_rate_v01.py`).
 
@@ -23,6 +24,7 @@ from a pristine 0.8.0 checkout and reproduces every touched file byte-for-byte
 cd /Users/luke808/ASL
 patch -p1 -d .venv/lib/python3.12/site-packages < patches/cnequity/0001-valuation-metrics-turnover-rate.patch
 patch -p1 -d .venv/lib/python3.12/site-packages < patches/cnequity/0002-valuation-metrics-snapshot-date-guard.patch
+patch -p1 -d .venv/lib/python3.12/site-packages < patches/cnequity/0003-snapshot-target-session-cutoff.patch
 ```
 
 CNEquity is a git dependency resolved into `.venv`, not a checkout, so the
@@ -96,13 +98,19 @@ requested 2026-09-10 -> SNAPSHOT_SESSION_MISMATCH (payload describes 09-11)
 
 ## Recorded hashes
 
+Patch 0003 fixes the observed 2026-09-18 00:42 rejection of a settled 09-17
+snapshot. The local-clock check now uses the target date plus 15:05, so an
+overnight capture can pass while future targets remain blocked. Vendor date,
+settlement, coherence and reset checks remain active. Two regression tests
+reproduce both the old false rejection and the old future-date false acceptance.
+
 sha256, first 16 hex digits, of the live files after the full chain:
 
 ```text
 adapters/eastmoney/valuation.py  2593c8dabc87863f
 domain/schemas.py                69bfa5380f3ab311
 domain/datasets.py               cb4ed8999c2dbe33
-domain/snapshot_guard.py         d783cb960b83f468
+domain/snapshot_guard.py         9ac9bd9bc3db77d2
 ```
 
 ## Operational consequence

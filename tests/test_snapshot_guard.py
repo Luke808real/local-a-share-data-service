@@ -161,6 +161,19 @@ def test_a_settled_payload_for_the_target_session_passes():
     assert observation.is_settled is True
 
 
+def test_previous_settled_session_is_readable_after_midnight():
+    now = datetime(2026, 9, 12, 0, 42, tzinfo=SHANGHAI)
+    observation = assert_snapshot_matches_session(_rows(_settled()), TARGET, now=now)
+    assert observation.session_date == TARGET
+
+
+def test_future_target_is_refused_even_after_todays_cutoff():
+    now = datetime(2026, 9, 10, 16, 0, tzinfo=SHANGHAI)
+    with pytest.raises(SnapshotWindowError) as error:
+        assert_snapshot_matches_session(_rows(_settled()), TARGET, now=now)
+    assert error.value.code == 'SNAPSHOT_WINDOW_NOT_OPEN'
+
+
 def test_a_suspended_symbols_zero_does_not_trip_the_reset_gate():
     # Real suspensions publish a legitimate zero; the gate is about the whole
     # cross-section collapsing, not about individual halted names.

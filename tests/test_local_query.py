@@ -122,7 +122,10 @@ def test_status_reports_current_readiness_truthfully() -> None:
     assert value["PRECLOSE_COMPLETE"] is False
     assert value["FACTS_READY"] is False
     assert value["DAILY_FACTS_PHASE1_STATUS"] == "FULL_ELIGIBLE_ONE_DAY_PUBLISHED"
-    assert value["DAILY_FACTS_PHASE1_SCOPE"] == "2026-09-09_FULL_ELIGIBLE"
+    facts_pointer = json.loads((DEFAULT_DATA_ROOT / "meta/asl/daily_facts/published-daily-facts-authority.json").read_text())
+    facts_receipt = json.loads((DEFAULT_DATA_ROOT / facts_pointer["receipt"]).read_text())
+    assert value["DAILY_FACTS_PHASE1_SCOPE"] == facts_receipt["scope"]
+    assert value["DAILY_FACTS_PUBLISHED_AS_OF"] == facts_receipt.get("published_as_of")
     # The published authority is a moving pointer, so readiness is asserted
     # against the authority itself rather than a frozen file count: the R3
     # publication advances a date at a time and a hardcoded snapshot goes

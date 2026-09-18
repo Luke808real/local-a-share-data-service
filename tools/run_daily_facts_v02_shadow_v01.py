@@ -116,7 +116,7 @@ def generate(day: str, *, root: Path = DATA_ROOT, evidence: Path | None = None) 
 
 
 
-def _v1_rows(root: Path) -> dict[str, dict[str, Any]]:
+def _v1_rows(root: Path, day: str) -> dict[str, dict[str, Any]]:
     # The certified V1 facts, resolved through its own published pointer.
     import polars as pl
 
@@ -127,7 +127,8 @@ def _v1_rows(root: Path) -> dict[str, dict[str, Any]]:
     # partition, and their fetched_at dtype differs (String vs Datetime), so
     # the files are concatenated diagonally rather than read as one dataset.
     frame = pl.concat([pl.read_parquet(str(path)) for path in files], how='diagonal_relaxed')
-    return {str(row['symbol']): row for row in frame.to_dicts()}
+    return {str(row['symbol']): row for row in frame.to_dicts()
+            if str(row.get('trade_date')) == day and row.get('schema_version') != SCHEMA}
 
 
 def _numeric(value: Any) -> float | None:
@@ -221,7 +222,7 @@ def compare(candidate: dict[str, Any], *, root: Path = DATA_ROOT) -> dict[str, A
     # Compare a frozen candidate against the certified V1 facts. This is the
     # only function that reads V1, and generate() never calls it.
     day = candidate['trade_date']
-    v1 = _v1_rows(root)
+    v1 = _v1_rows(root, day)
     v1_day = {symbol: row for symbol, row in v1.items() if str(row.get('trade_date')) == day}
     v02 = {str(row['symbol']): row for row in candidate['rows']}
 

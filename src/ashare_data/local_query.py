@@ -779,6 +779,8 @@ class LocalQuery:
                                           if self._facts_authority else "NOT_PUBLISHED"),
             "DAILY_FACTS_PHASE1_SCOPE": self._facts_authority[1].get("scope") if self._facts_authority else None,
             "DAILY_FACTS_MANIFEST_HASH": self._facts_authority[0]["manifest_hash"] if self._facts_authority else None,
+            "DAILY_FACTS_PUBLISHED_AS_OF": self._facts_authority[1].get("published_as_of") if self._facts_authority else None,
+            "DAILY_FACTS_SCHEMA": self._facts_authority[1].get("facts_schema") if self._facts_authority else None,
             "QUERY_BACKEND": self.query_backend,
             "READ_ONLY": True,
             "NETWORK_PROVIDER_DATA_FETCH": "NO",

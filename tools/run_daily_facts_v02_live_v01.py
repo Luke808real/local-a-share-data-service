@@ -64,7 +64,7 @@ def probe_snapshot_window(target: date) -> dict[str, Any]:
             break  # one full walk already spans the universe at page_size=100
     observation = observe_snapshot(sampled)
     moment = _now()
-    window_open = moment.time() >= SETTLED_AFTER
+    window_open = moment >= datetime.combine(target, SETTLED_AFTER, tzinfo=SHANGHAI)
     return {
         "probe_at": moment.isoformat(),
         "sampled_row_n": len(sampled),
@@ -283,4 +283,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
